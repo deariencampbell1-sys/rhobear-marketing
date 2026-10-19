@@ -399,7 +399,7 @@
       '  <label class="rho-greeter-label" for="rho-greeter-input">Ask a curious question</label>',
       '  <div class="rho-greeter-inputrow"><textarea id="rho-greeter-input" rows="2" maxlength="1200" placeholder="Tell me what you want to spin up…"></textarea><button type="submit">Send</button></div>',
       '</form>',
-      '<a class="rho-greeter-cta" href="https://builds.rhobear.ai">→ Spin it up</a>'
+      '<a class="rho-greeter-cta" href="spaces.html">→ Spin it up</a>'
     ].join('');
 
     root.appendChild(nudge);

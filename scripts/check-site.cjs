@@ -270,6 +270,31 @@ function checkCopy() {
   }
   check('every img has alt', noAlt.length === 0, [...new Set(noAlt)].join(', '));
 
+  // MEDIUM: 'Every plan includes credits' must be scoped (Own it has none).
+  const creditScope = (html, label) => {
+    // The universal claim is forbidden. If it appears, the sentence must also
+    // include the scoping that excludes Own it, or use "Starter and Own Space".
+    const hasUniversal = /Every plan includes/.test(html) || /Each plan includes/.test(html);
+    if (!hasUniversal) return true;
+    const scoped = /Starter and Own Space include/.test(html) ||
+      /Starter and Own Space.*include.*credits.*Own it runs on your own keys/.test(html) ||
+      /Starter and Own Space include generous model credits/.test(html) ||
+      /Starter and Own Space.*include.*credits.*Own it.*never metered/.test(html);
+    return scoped;
+  };
+  for (const [name, html] of Object.entries(pages)) {
+    check(`${name}: credit claim is scoped (not universal)`, creditScope(html, name));
+  }
+
+  // LOW: Greeter CTA must point to spaces.html, not builds.rhobear.ai
+  const shellPath = path.join(OUT, 'shell.js');
+  if (fs.existsSync(shellPath)) {
+    const shellBody = read(shellPath);
+    const hasBuildsCta = shellBody.includes('"https://builds.rhobear.ai"');
+    const hasSpacesCta = shellBody.includes('"spaces.html"');
+    check('greeter CTA points to spaces.html (not builds.rhobear.ai)', !hasBuildsCta && hasSpacesCta);
+  }
+
   // Blueprints must never be sold as its own product again.
   const bpPrice = Object.entries(pages).filter(([, h]) => /Blueprints[^.]{0,40}(price|subscription|\$\d)/i.test(h));
   check('Blueprints is never priced as a product', bpPrice.length === 0, bpPrice.map(([n]) => n).join(', '));
