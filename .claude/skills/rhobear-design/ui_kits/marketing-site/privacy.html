@@ -53,7 +53,7 @@
   </ul>
 
   <div class="callout">
-    <p><strong>The boundary is the container.</strong> Each Space is an isolated Linux machine. The connector that lists your sessions runs inside your Space, so it can only ever see that Space's work. Isolation is physical, not a query filter.</p>
+    <p><strong>The boundary is the container.</strong> An Own Space is its own server; a Starter Space is its own locked-down container with hard resource caps on a shared server. The connector that lists your sessions runs inside your Space, so it can only ever see that Space's work.</p>
   </div>
 
   <h2>2. What we collect</h2>
@@ -76,7 +76,7 @@
     <li>Any API keys you add yourself. Provider usage on your own keys is billed to you by that provider and is never metered by us.</li>
     <li>Session transcripts, checkouts, caches and scratch files on the workbench disk.</li>
   </ul>
-  <p>These live in an encrypted per-Space folder on our volume. They are not sent to our app, our cloud service or our logs. The relay between your app and your Space carries traffic; it is a pipe, not an archive.</p>
+  <p>These live on your Space's own disk. They are not sent to our app, our cloud service or our logs. The relay between your app and your Space carries traffic; it is a pipe, not an archive.</p>
 
   <h2>4. Your work, and GitHub</h2>
   <p>Your work belongs in your repositories. At each checkpoint the connector commits and pushes to a <code>rhobear/&lt;session&gt;</code> branch in the repository you granted, never to your default branch, and never by force. A secret scan runs before every push: a key, an <code>.env</code> file or a harness login folder blocks the push and tells you.</p>
@@ -96,14 +96,14 @@
     <li><strong>Hetzner</strong>: the cloud servers your Space runs on.</li>
     <li><strong>Apple</strong>: App Store subscriptions and receipts, when you buy there.</li>
     <li><strong>GitHub</strong>: repository access you grant, so work can be saved to your repos.</li>
-    <li><strong>Model providers</strong>: DeepInfra, Z.ai and OpenAI, for included credits and the requests they serve.</li>
+    <li><strong>Model providers</strong>: DeepInfra, DeepSeek, Z.ai and OpenAI, for included credits and the requests they serve. Modal runs our image and 3D generation when you use those MCP tools.</li>
     <li><strong>Our payment processor</strong>: if you buy on the web, it handles the card. We never see the card number.</li>
     <li><strong>Legal and safety</strong>: where the law requires it, or to stop abuse that threatens the service or other people.</li>
   </ul>
   <p>Customer Spaces run in a separate hosting project from our own production services, so one tenant's conduct cannot take another tenant's workspace down.</p>
 
   <h2>7. Admin access and break-glass</h2>
-  <p>We do not browse customer Spaces. We enter a Space only when it is necessary: to fix a fault you asked us to fix, to respond to a security incident, or where the law requires it. Break-glass access is logged, and the <a href="terms.html">Terms</a> say so, because you are trusting us with a computer.</p>
+  <p>We do not browse customer Spaces. We enter a Space only when it is necessary: to fix a fault you asked us to fix, to respond to a security incident, or where the law requires it. Every break-glass entry is recorded by us, and the <a href="terms.html">Terms</a> say so, because you are trusting us with a computer.</p>
 
   <h2>8. Retention and deletion</h2>
   <ul>
@@ -115,7 +115,7 @@
   </ul>
 
   <h2>9. Security</h2>
-  <p>Credentials and tokens are encrypted at rest. Tenants are separated by container and hard resource caps. Access to production is restricted. No system is perfectly secure, and we will tell you if a breach affects your information.</p>
+  <p>Tokens we only need to check are stored as one-way hashes, never in readable form. Own Spaces are separate servers; Starter Spaces are separate containers with hard resource caps. Access to production is restricted. No system is perfectly secure, and we will tell you if a breach affects your information.</p>
 
   <h2>10. Your rights</h2>
   <p>Depending on where you live, you may have the right to access, correct, delete, restrict or port your personal information, and to object to certain processing. We do not sell personal information, so there is nothing to opt out of there. Contact us using the details below to exercise a right.</p>
@@ -124,7 +124,7 @@
   <p>The services are not directed to children under 13 and we do not knowingly collect their personal information. If you believe a child has given us information, contact us and we will delete it.</p>
 
   <h2>12. International users</h2>
-  <p>We operate in the United States and our servers are in the European Union (Nuremberg) and the United States. If you use the services from elsewhere, your information may be processed in those places.</p>
+  <p>We operate in the United States and our servers and Spaces are in the European Union (Nuremberg, Germany); the model and generation providers listed above may process requests in the United States. If you use the services from elsewhere, your information may be processed in those places.</p>
 
   <h2>13. Changes</h2>
   <p>If this policy changes in a way that matters, we will tell you before it takes effect, in the app or by email. Continuing to use the services after that means you accept the change.</p>
