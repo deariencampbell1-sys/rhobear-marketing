@@ -2459,3 +2459,18 @@ section.wrap-md > .card-paper.stitched{ margin-top:18px; }
 }
 .stars-pill{ color:var(--c-amber) !important; }
 .license-pill,.cb-step-tag{ border-radius:8px !important; }
+
+/* ===== MOBILE NAV — two rows instead of a 794px-wide overflow =====
+   The re-skin above set .nav-tabs/.top-nav-inner to overflow:visible (to un-clip
+   the dropdown panel), which reopened the narrow-viewport bug: five tabs plus the
+   CTA ran 794px wide at a 390px viewport. Wrap the tabs onto their own row and let
+   them wrap again if a page has more. No overflow scrolling, so the dropdown panel
+   still shows in full. */
+@media (max-width: 820px) {
+  .top-nav-inner { flex-wrap: wrap; height: auto; padding: 10px 16px 8px; row-gap: 6px; }
+  .nav-tabs { flex: 1 0 100%; order: 3; flex-wrap: wrap; gap: 2px; }
+  .nav-spacer { display: none; }
+  .nav-cta { margin-left: auto; padding: 7px 13px; font-size: 10px; }
+  .nav-tab { padding: 0 9px; font-size: 10.5px; letter-spacing: 0.06em; }
+  .brand-lockup span { font-size: 15px; }
+}

@@ -1,50 +1,72 @@
-# Marketing site — UI kit
+# Marketing site — UI kit and current page set
 
-The 20-page story-flow website for RHOBEAR. Each `.html` is a short page on one topic, linked via the top nav + a sticky prev/next bar. Substrate-first, ingredients-later.
+The public site is static HTML assembled from this folder by
+`.github/workflows/pages.yml`. No build step, no framework, no server: every page opens cold on a
+double-click.
 
-## Open it
+## Pages that are the site (NORTH_STAR §1, 2026-10-19)
 
-Double-click any `.html` file. No build step, no server. All assets come from `../../assets/` (the flat sibling folder at the project root).
+| File | What it says |
+|---|---|
+| `index.html` | Your own AI workspace in the cloud, and a remote control for it |
+| `spaces.html` | The three ways to buy: Starter $19/mo, Own Space $29/mo, Own it (one-time, price not set) |
+| `mcp.html` | The RHOBEAR MCP: Blueprints, images and 3D from any harness. Account-only |
+| `blueprints.html` | Blueprints as a feature of the harness and the MCP, not a separate app |
+| `download.html` | What ships (iPhone, iPad, Android, Mac, `rho` on Mac + Linux), and that nothing is downloadable yet |
+| `privacy.html` | Privacy policy for Spaces |
+| `terms.html` | Terms of service for Spaces |
+| `aup.html` | Acceptable use policy |
 
-## Pages
+`shell.css` + `shell.js` (deep-space chassis, live starfield, nav, footer, Rho greeter) and
+`../../colors_and_type.css` (tokens) are shared by all eight. Edit page bodies only; a change to
+`shell.css` should be the smallest fix that helps every page, and named in the change note.
 
-| # | File | Topic |
-|---|------|-------|
-| 01 | `index.html` | Home — hero, 9-pillar ribbon, integration marquees, "It's lean." callout, install |
-| 02 | `crew.html` | The six characters as roles |
-| 03 | `hub.html` | One window, six tabs |
-| 04 | `workbench.html` | 3-pane Cursor-2.0 workbench |
-| 05 | `drop-in.html` | Drop a model card on a lane |
-| 06 | `ease-of-use.html` | OAuth, voice, Telegram |
-| 07 | `goal-autoloop.html` | `/goal` + autoloop hero |
-| 08 | `judgment-loop.html` | The judge decision engine |
-| 09 | `substrate.html` | Substrate overview, ingredients-vs-recipe |
-| 10 | `compass.html` | Goal system + judge + autoloop + orchestrator |
-| 11 | `worker-sessions.html` | Store + event stream + adapter contract |
-| 12 | `handoff-bus.html` | Router, envelope, message bus, aggregator |
-| 13 | `safety-registry.html` | Gates, registry, drift sync, neo mode |
-| 14 | `hub-contract.html` | Visible workers contract |
-| 15 | `openclaw.html` | Local bridge (we integrate, didn't build) |
-| 16 | `built-with.html` | All 10 ingredients with receipts + hero stats |
-| 17 | `worlds.html` | Three reskins — SPACE / WEST / NEON |
-| 18 | `story.html` | Founder pull-quote, lesson band |
-| 19 | `faq.html` | Six verbatim Q&A |
-| 20 | `closer.html` | Curtain call + "It's yours." |
+**Vendor names are plain text** (Pi, Claude Code, Codex, OpenClaw, Hermes). No vendor logos, no
+invented progress, no prices that the app does not show.
+
+**Credit is shown as credits and tokens, never as its dollar cost.** The included allowance at
+our cost ($9 Starter, $11 Own Space) is internal and must never appear on a page.
+
+## Older pages
+
+`app.html`, `plans.html`, `designs.html`, `capturd.html`, `reviews.html`, `sales.html`, `rho.html`,
+`lab.html`, `workbench.html`, `story.html`, `faq.html`, `crew.html`, `ease-of-use.html`,
+`closer.html`, `learn.html`, `academy.html`, `plans-use.html` and `book-*.html` describe the
+pre-North-Star product line. They still deploy (other products in the family, e.g. Reviews, are
+still real) but nothing on the new site links to them, and `sitemap.xml` no longer lists them.
+Do not link them from the eight pages above. Retiring or archiving them is an owner/integrator
+decision, not a page edit.
+
+## The gate
+
+```bash
+node scripts/check-site.cjs          # assemble like pages.yml, then check links + copy rules
+node scripts/shoot-site.cjs          # same, plus screenshots at 390 px and 1440 px
+```
+
+`check-site.cjs` reproduces the `pages.yml` assembly in `.site-build/`, then asserts: every page
+self-describes (title, description, canonical, nav, footer legal links, balanced tags), every
+local `href`/`src`/CSS `url()` resolves, no `../../` survives the flatten, the copy rules above
+hold, and the sitemap is exactly the pages we sell. Exit code 1 on any failure. `--keep` leaves
+`.site-build/` on disk for inspection.
+
+Playwright is not a dependency of this repo; `shoot-site.cjs` finds a cached Chromium or uses
+`PLAYWRIGHT_PATH` / `CHROME_PATH`. Screenshots land in `screenshots/` (gitignored) as
+`<page>-390.png` and `<page>-1440.png`.
 
 ## Components in here
 
-- **Shell** (`shell.css`) — top nav + sticky prev/next + footer.
-- **Card patterns** — `card-paper.stitched feature-card` (the default), `card-paper.stitched paired` (HOOK/TECH split).
-- **Marquee** — two-row opposite-direction logo scroller, pause-on-hover.
-- **Terminal block** — `.terminal` with role-coloured speakers, used in every CLI trace.
-- **Sprite perch** — `.sprite-tr / .sprite-tl / .sprite-br / .sprite-bl` for character placement, plus `.bob` for the idle loop.
-- **Worlds card** — `.world-card` with full-bleed background and sprite-in-scene drop-shadow (this is the lifelike-realism anchor).
-- **9-pillar ribbon** — `.pillar-ribbon` containing `.chip-amber` chips.
-- **Receipt** — built-with.html per-ingredient block: logo + stars pill + repo link + 5 bullet subsections.
+- **Shell** (`shell.css`) — top nav, sticky prev/next, footer, dark-glass cards.
+- **Relay band** — the hand-to-hand rail above the footer. `shell.js` injects the old one unless
+  a page already contains `.relay-next`; the eight pages carry their own.
+- **Card patterns** — `card-paper.stitched feature-card`, `card-grid.cols-2/.cols-3`.
+- **Tier table** — `.tiers` in `spaces.html`: a four-column grid that stacks into labelled cards
+  below 860 px, keeping the plan names and prices visible.
+- **Approval card** — the Blueprints gate: lanes, paths, worktree, model, integrator, cost.
 
 ## Notes
 
-- All character images get `image-rendering: pixelated` so browser scaling doesn't soften the pixel art.
-- Sprite drop-shadows use `filter: drop-shadow()` (not box-shadow) so they follow the silhouette.
-- No webfonts loaded. Pixel-display family relies on OS-installed Silkscreen / Press Start 2P / VT323 with monospace fallback.
-- Animations gated on `prefers-reduced-motion: no-preference`.
+- No webfonts from a CDN. Nacelle is self-hosted in `../../assets/fonts/`.
+- All character images get `image-rendering: pixelated`; the brand mark is the constellation bear
+  (`../../assets/rhobear-logo.png`) and is never redrawn.
+- Animations are gated on `prefers-reduced-motion: no-preference`.
