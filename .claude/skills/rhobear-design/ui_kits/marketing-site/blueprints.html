@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blueprints · draw the plan, approve the team, run the lanes</title>
+<link rel="stylesheet" href="../../colors_and_type.css?v=1784300000"><link rel="stylesheet" href="shell.css?v=1784300000"><link rel="icon" type="image/png" href="../../assets/rhobear-logo.png?v=1782900000">
+<meta name="description" content="Blueprints draws your architecture, proposes the lanes with a cost, and waits for your approval before anything runs. A feature of the RHOBEAR harness and MCP.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Blueprints · draw the plan, approve the team, run the lanes">
+<meta property="og:description" content="Blueprints draws your architecture, proposes the lanes with a cost, and waits for your approval before anything runs.">
+<meta property="og:url" content="https://rhobear.ai/blueprints.html">
+<meta property="og:image" content="https://rhobear.ai/assets/brand/og-image.png">
+<meta property="og:image:width" content="1200"><meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Blueprints · draw the plan, approve the team, run the lanes">
+<meta name="twitter:description" content="Blueprints draws your architecture, proposes the lanes with a cost, and waits for your approval before anything runs.">
+<meta name="twitter:image" content="https://rhobear.ai/assets/brand/og-image.png">
+<link rel="canonical" href="https://rhobear.ai/blueprints.html">
+<style>
+  .split{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:clamp(24px,4vw,52px);align-items:start}
+  @media (max-width:900px){.split{grid-template-columns:1fr}}
+  .steps{display:grid;gap:2px;margin-top:24px;border-top:1px solid var(--c-line)}
+  .step{display:grid;grid-template-columns:56px minmax(0,1fr);gap:18px;padding:22px 2px;border-bottom:1px solid var(--c-line)}
+  .step .n{font-family:var(--font-display);font-size:1.5rem;line-height:1;color:var(--c-amber-deep);opacity:.75;padding-top:2px}
+  .step b{display:block;font-family:var(--font-display);font-size:1.08rem;margin-bottom:6px}
+  .step p{margin:0;font-size:.95rem;color:var(--c-ink-2);line-height:1.6}
+  .step p + p{margin-top:8px}
+  .callout{border:1px solid rgba(59,214,195,.45);background:rgba(59,214,195,.08);border-radius:var(--r-3);
+    padding:20px 22px;margin:26px 0 0}
+  .callout b{display:block;font-family:var(--font-display);font-size:1.05rem;margin-bottom:6px}
+  .callout p{margin:0;font-size:.95rem;color:var(--c-ink-2);line-height:1.6}
+  .card-list{list-style:none;margin:0;padding:0}
+  .card-list li{display:flex;justify-content:space-between;gap:14px;padding:12px 0;border-top:1px solid var(--c-line);
+    font-size:.93rem;color:var(--c-ink-2);line-height:1.5}
+  .card-list li b{color:var(--c-ink);font-weight:600;font-family:var(--font-mono);font-size:.82rem;
+    letter-spacing:.03em;white-space:nowrap}
+  .approve-card{padding:26px 24px}
+  .approve-card h3{font-family:var(--font-display);font-size:1.12rem;margin:0 0 4px}
+  .approve-card .sub{font-size:.88rem;color:var(--c-ink-3);margin:0 0 16px}
+  .approve-card .row{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+  .approve-card .yes{font-family:var(--font-display);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    padding:9px 16px;border-radius:999px;background:var(--c-amber);color:#062521}
+  .approve-card .later{font-family:var(--font-display);font-size:11px;letter-spacing:.08em;text-transform:uppercase;
+    padding:9px 16px;border-radius:999px;border:1px solid var(--c-line-strong);color:var(--c-ink-2)}
+  .approve-card .cost{display:flex;justify-content:space-between;align-items:baseline;margin-top:16px;
+    padding-top:14px;border-top:1px solid var(--c-line-strong)}
+  .approve-card .cost .amt{font-family:var(--font-mono);font-size:.78rem;letter-spacing:.04em;color:var(--c-amber-deep)}
+  .approve-card .cost .lbl{font-family:var(--font-mono);font-size:.7rem;letter-spacing:.07em;text-transform:uppercase;color:var(--c-ink-3)}
+  .fine{font-size:.86rem;color:var(--c-ink-3);line-height:1.6;margin-top:14px}
+  .plain-list{list-style:none;margin:14px 0 0;padding:0}
+  .plain-list li{position:relative;padding:10px 0 10px 26px;border-top:1px solid var(--c-line);
+    color:var(--c-ink-2);font-size:.95rem;line-height:1.55}
+  .plain-list li::before{content:"";position:absolute;left:2px;top:19px;width:8px;height:8px;
+    border-radius:2px;background:var(--c-amber-deep);opacity:.8}
+  .plain-list.no li::before{background:var(--c-ink-4)}
+</style>
+</head>
+<body>
+<nav class="top-nav" aria-label="Primary"><div class="top-nav-inner"><a class="brand-lockup" href="index.html"><img src="../../assets/rhobear-logo.png?v=1782900000" alt="" class="pixelated"><span>RHOBEAR</span></a><div class="nav-tabs"><a href="index.html" class="nav-tab">HOME</a><a href="spaces.html" class="nav-tab">SPACES</a><a href="mcp.html" class="nav-tab">MCP</a><a href="blueprints.html" class="nav-tab active">BLUEPRINTS</a><a href="download.html" class="nav-tab">DOWNLOAD</a></div><span class="nav-spacer"></span><a href="mailto:dearien@rhobear.ai?subject=RHOBEAR%20Spaces%20early%20access" class="btn-amber nav-cta">Get early access →</a></div></nav>
+
+<main>
+  <section class="wrap">
+    <div class="eyebrow-row">BLUEPRINTS · A FEATURE, NOT AN APP</div>
+    <h1 class="h1-page" style="max-width:24ch;">Draw the plan before you spend the money.</h1>
+    <p class="lead">Blueprints is not a separate app any more. It is a feature of our harness and a tool set on the RHOBEAR MCP. Ask for it in any chat thread and it draws your architecture, proposes the team with a real cost, and then waits for your yes before a single lane starts.</p>
+    <div class="cta-row"><a href="mcp.html" class="btn-amber">Where it lives →</a><a href="spaces.html" class="btn-ghost">Which plan includes it →</a></div>
+    <div class="callout"><b>One product, one subscription.</b><p>There is no second thing to buy and no second bill to watch. Blueprints draws on the credits already in your plan. If you are on Starter or Own Space, it is already in the harness.</p></div>
+  </section>
+
+  <section class="wrap">
+    <div class="split">
+      <div>
+        <div class="eyebrow-row">THE SIX STEPS</div>
+        <h2 style="font-size:clamp(1.8rem,3vw,2.5rem);margin:0 0 6px;">Read, draw, propose, ask, run, report.</h2>
+        <div class="steps">
+          <div class="step"><div class="n">01</div><div><b>Read-only first</b><p>It gathers the thread, the repo, the notes or the email you point at, and does web research when the answer is not in front of it. Reading changes nothing.</p></div></div>
+          <div class="step"><div class="n">02</div><div><b>Draw the plan</b><p>A colourful flowchart in the orientation you ask for, left to right or swimlanes. The flow has to make sense, not just stack boxes in a neat column.</p></div></div>
+          <div class="step"><div class="n">03</div><div><b>Propose the team</b><p>As many lanes as the work needs, each with exact file paths, its own worktree, and a model chosen for cost: fast models for build lanes, a vision model for UX, a frontier model where architecture is being decided. One integrator stays on. The estimated cost is on the card.</p></div></div>
+          <div class="step"><div class="n">04</div><div><b>Ask for the yes</b><p>An approval card in the app: here is the order, here is the team, here is the bill. Nothing launches without a yes. A plan is not a purchase order.</p></div></div>
+          <div class="step"><div class="n">05</div><div><b>Run the lanes</b><p>Lanes work in parallel. Each finished lane goes through the review cycle you already use, whatever that is. Findings get fixed and re-reviewed until clean.</p></div></div>
+          <div class="step"><div class="n">06</div><div><b>The integrator stays on</b><p>It merges, watches for conflicts, and tells you where every lane is: running, back, verifying, done. You never have to ask "is it still going".</p></div></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="eyebrow-row">THE APPROVAL CARD</div>
+        <h2 style="font-size:clamp(1.7rem,2.9vw,2.3rem);margin:0 0 6px;">What you actually see.</h2>
+        <p class="sub-2">Every field on the card is real: it comes from the plan, not from a template. If a number is unknown, the card does not invent it.</p>
+        <div class="card-paper approve-card">
+          <h3>Here is the team</h3>
+          <p class="sub">Nothing has started yet.</p>
+          <ul class="card-list">
+            <li><b>LANES</b><span>How many, and what each one owns</span></li>
+            <li><b>PATHS</b><span>The exact files each lane will touch</span></li>
+            <li><b>WORKTREE</b><span>Its own checkout, so lanes cannot collide</span></li>
+            <li><b>MODEL</b><span>Chosen per lane for cost, named in plain text</span></li>
+            <li><b>INTEGRATOR</b><span>Who merges and who reports back</span></li>
+          </ul>
+          <div class="cost"><span class="lbl">Estimated cost</span><span class="amt">per lane, in credits</span></div>
+          <div class="row"><span class="yes">Approve</span><span class="later">Not yet</span></div>
+        </div>
+        <p class="fine">The card is the gate. Approve and the lanes start. Not yet and nothing runs, nothing is spent, and the plan is still there to change.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="eyebrow-row">IN THE APP</div>
+    <h2 style="font-size:clamp(1.7rem,2.9vw,2.3rem);margin:0 0 12px;">The diagram opens where you can use it.</h2>
+    <div class="card-grid cols-3">
+      <div class="card-paper stitched feature-card">
+        <div class="num">01 · OPEN IT</div>
+        <h3>A real viewer</h3>
+        <p>The diagram opens in the app's own viewer. Pan, zoom, drag, reorient, tap a colour to change it. It does not need a browser tab or a third-party service.</p>
+      </div>
+      <div class="card-paper stitched feature-card">
+        <div class="num">02 · KEEP IT</div>
+        <h3>Saved with the work</h3>
+        <p>Save it, share it, or send it to your repo with the rest of the work. The plan lives next to the code it describes.</p>
+      </div>
+      <div class="card-paper stitched feature-card">
+        <div class="num">03 · WATCH IT</div>
+        <h3>Lane status, live</h3>
+        <p>Each lane reports as it moves. The integrator's report is the same one a coordinator reads, in plain language, not a spinner.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="band-dark" style="padding:clamp(26px,4vw,44px);">
+      <div class="split">
+        <div>
+          <div class="eyebrow-row">WHY IT EXISTS</div>
+          <h2 style="font-size:clamp(1.7rem,2.8vw,2.3rem);margin:0 0 12px;">Teams of agents fail in the planning, not the typing.</h2>
+          <p class="sub-2">Five agents working from a vague brief produce five different products. The fix is not a bigger model, it is an order of work: who owns which file, which lane waits for which, and what "done" means before anyone starts.</p>
+          <p class="sub-2">Blueprints is that order of work, drawn where you can argue with it before it costs anything.</p>
+        </div>
+        <div>
+          <div class="eyebrow-row">WHAT IT DOES NOT DO</div>
+          <ul class="plain-list no">
+            <li>It does not launch anything without an approval.</li>
+            <li>It does not invent a cost, a path or a lane count.</li>
+            <li>It does not require our reviewer. Bring the review cycle you already trust.</li>
+            <li>It does not replace your judgement. It gives you something concrete to judge.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<section class="relay-band"><div class="rb-label">One workspace · it hands off</div><div class="relay-next"><a href="spaces.html">Your own Space</a><span class="arw">→</span><a href="mcp.html">The RHOBEAR MCP</a><span class="arw">→</span><a href="index.html">The whole picture</a><span class="arw">→</span><a href="download.html">The apps</a></div></section>
+
+<footer class="site-footer"><div class="site-footer-inner"><div class="footer-row"><div class="footer-copy">© 2026 Sun Sponge LLC · <a href="https://github.com/rhobear-ai" rel="noopener">GitHub</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a> · <a href="aup.html">Acceptable use</a></div><div class="footer-tag">Lean. Local. Private. Yours.</div></div><div class="footer-disclaimer">Vendor names appear as plain text. All third-party trademarks remain the property of their respective owners; no partnership, sponsorship or endorsement is implied.</div></div></footer>
+<script src="shell.js?v=1782980000" defer></script>
+</body></html>
