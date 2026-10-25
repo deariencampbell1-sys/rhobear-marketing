@@ -3,10 +3,20 @@ import {
   RELEASE_MANIFEST_SCHEMA,
   RELEASE_SCHEMA,
   isRfc3339,
-  parseManifest,
-  parseRelease,
+  parseManifest as parseManifestStrict,
+  parseRelease as parseReleaseStrict,
   platforms,
+  type ParseOptions,
 } from '../src/clients/release/schema';
+
+// The host policy is required by design (an open default is a fail-open default),
+// so the suite states it once, exactly as the site will.
+const HOSTS: ParseOptions = {
+  allowedArtifactHosts: ['releases.example.com', 'downloads.example.com'],
+  allowedStoreHosts: ['apps.apple.com', 'play.google.com'],
+};
+const parseRelease = (raw: unknown, options: ParseOptions = HOSTS) => parseReleaseStrict(raw, options);
+const parseManifest = (raw: unknown, options: ParseOptions = HOSTS) => parseManifestStrict(raw, options);
 
 const SOURCE_SHA = 'a'.repeat(40);
 
@@ -134,11 +144,6 @@ describe('parseManifest', () => {
 // Every rejection path of the row parser, one test per ManifestProblem code, so
 // a dropped or reordered check cannot ship unnoticed.
 describe('parseRelease rejection codes', () => {
-  const code = (row: unknown): string => {
-    const parsed = parseRelease(row);
-    return 'problem' in parsed ? parsed.problem : 'parsed';
-  };
-
   it('not-an-object: a non-object, and each untyped field', () => {
     expect(code('a string')).toBe('not-an-object');
     expect(code(null)).toBe('not-an-object');
@@ -396,7 +401,28 @@ describe('parseRelease — a row without a binary carries no hash', () => {
   });
 });
 
-describe('parseRelease — optional artifact host policy', () => {
+describe('parseRelease — host policy is fail-closed', () => {
+  it('an empty artifact allowlist trusts nothing', () => {
+    expect(parseRelease(wellFormedRow('linux'), { allowedArtifactHosts: [] }))
+      .toEqual({ problem: 'bad-url' });
+  });
+
+  it('the store default covers the two stores we ship through', () => {
+    const store = wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    });
+    expect(parseRelease(store, { allowedArtifactHosts: [] })).toHaveProperty('release');
+  });
+
+  it('a store host off the default list is refused', () => {
+    const store = wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://store.example.com/app', signer: null,
+    });
+    expect(parseRelease(store, { allowedArtifactHosts: [] })).toEqual({ problem: 'bad-url' });
+  });
+});
+
+describe('parseRelease — artifact host policy', () => {
   const allowed = { allowedArtifactHosts: ['downloads.example.com', 'apps.apple.com'] } as const;
 
   it('accepts a host on the allowlist and refuses any other', () => {
@@ -405,8 +431,11 @@ describe('parseRelease — optional artifact host policy', () => {
       .toEqual({ problem: 'bad-url' });
   });
 
-  it('without an allowlist any https origin is accepted, which is the documented default', () => {
-    expect(parseRelease(wellFormedRow('linux', { artifactUrl: 'https://cdn.elsewhere.example/x' })))
+  it('states the policy, so there is no open default to fall back on', () => {
+    // The type requires allowedArtifactHosts; an empty list trusts nothing, and
+    // an off-list host is refused (both asserted above). Nothing here can be
+    // read as "any https origin".
+    expect(parseRelease(wellFormedRow('linux'), { allowedArtifactHosts: ['downloads.example.com'] }))
       .toHaveProperty('release');
   });
 });
@@ -446,8 +475,13 @@ describe('parseRelease — host policy per link', () => {
     const store = wellFormedRow('ios', {
       artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
     });
-    expect(parseRelease(store, { allowedStoreHosts: ['play.google.com'] })).toEqual({ problem: 'bad-url' });
-    expect(parseRelease(store, { allowedStoreHosts: ['apps.apple.com'] })).toHaveProperty('release');
+    const android = wellFormedRow('android', {
+      artifactUrl: null, storeUrl: 'https://play.google.com/store/apps/details?id=x', signer: null,
+    });
+    expect(parseRelease(store, { allowedArtifactHosts: [], allowedStoreHosts: ['play.google.com'] }))
+      .toEqual({ problem: 'bad-url' });
+    expect(parseRelease(android, { allowedArtifactHosts: [], allowedStoreHosts: ['play.google.com'] }))
+      .toHaveProperty('release');
   });
 
   it('an off-list download host is refused', () => {
@@ -486,5 +520,52 @@ describe('parseRelease — signer and padded ids', () => {
       ok: false,
       problems: ['duplicate-platform'],
     });
+  });
+});
+
+// Apollo's round-6 review: the gates follow the offer, not a leftover URL; an id
+// of spaces is not an id; a duplicate version is a duplicate row; and an
+// impossible calendar date is not a timestamp.
+describe('parseRelease — the offer decides the gates', () => {
+  it('an emergency pull may keep its artifact fields and still parse', () => {
+    // availability flipped, URL and digest left in place, no ticket and no signer:
+    // the row ships nothing, so it must not fail the whole manifest.
+    const pulled = wellFormedRow('macos', {
+      availability: 'unavailable', notarization: 'required', signer: null,
+    });
+    expect(parseRelease(pulled)).toHaveProperty('release');
+  });
+
+  it('a waitlist row needs no signer and no digest', () => {
+    const waitlist = wellFormedRow('linux', {
+      availability: 'waitlist', artifactUrl: null, storeUrl: null, signer: null, bytes: null, sha256: null,
+    });
+    expect(parseRelease(waitlist)).toHaveProperty('release');
+  });
+});
+
+describe('parseRelease — ids and calendar', () => {
+  it('refuses an id of spaces', () => {
+    expect(code(wellFormedRow('linux', { product: '   ' }))).toBe('not-an-object');
+    expect(code(wellFormedRow('linux', { version: '   ' }))).toBe('not-an-object');
+  });
+
+  it('refuses a duplicate version even when neither row is live', () => {
+    const rows = [
+      wellFormedRow('linux', { version: '1.0.0', supersededBy: '1.1.0' }),
+      wellFormedRow('linux', { version: '1.0.0', supersededBy: '1.1.0' }),
+      wellFormedRow('linux', { version: '1.1.0' }),
+    ];
+    expect(parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: rows })).toEqual({
+      ok: false,
+      problems: ['duplicate-platform'],
+    });
+  });
+
+  it('refuses an impossible calendar date', () => {
+    expect(isRfc3339('2026-02-30T12:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-13-01T12:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-02-28T12:00:00Z')).toBe(true);
+    expect(code(wellFormedRow('linux', { acceptedAt: '2026-02-30T12:00:00Z' }))).toBe('bad-accepted-at');
   });
 });

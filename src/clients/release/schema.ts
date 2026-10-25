@@ -58,7 +58,12 @@ const RFC3339_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:
 /** Strict shape first, then a real instant — never a junk string Date coerces. */
 export function isRfc3339(value: string): boolean {
   if (!RFC3339_SHAPE.test(value)) return false;
-  return Number.isFinite(Date.parse(value));
+  if (!Number.isFinite(Date.parse(value))) return false;
+  // Date.parse normalises an impossible date (2026-02-30 becomes 2 March), so
+  // the calendar is checked against the digits that were actually written.
+  const [year, month, day] = value.slice(0, 10).split('-').map(Number);
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  return probe.getUTCFullYear() === year && probe.getUTCMonth() === month - 1 && probe.getUTCDate() === day;
 }
 
 /** https only; a URL carrying credentials (user:pass@) is never a download. */
@@ -72,27 +77,30 @@ export function isHttpsUrl(value: string): boolean {
 }
 
 /**
- * The optional host policy. `isHttpsUrl` proves the scheme and that no
- * credential is smuggled in; it cannot know which hosts we ship from. A caller
- * that knows (the site, once the release host is fixed) passes the allowlist
- * here, so a tampered manifest cannot point the button at an attacker's host.
- * Without it the contract is "any https origin", which is what a first release
- * with an undecided CDN needs; the test below pins both behaviours.
+ * The host policy, and it is not optional. `isHttpsUrl` proves the scheme and
+ * that no credential is smuggled in; it cannot know which hosts we ship from, so
+ * "any https origin" would let a tampered manifest point the button at an
+ * attacker's host. Every caller states the download hosts it trusts.
+ *
+ * An **empty** artifact list is not "allow all": it trusts nothing, so every
+ * row offering a download is refused (fail closed, as an empty security list
+ * should read).
  */
 export type ParseOptions = {
-  /** Hosts a download may come from. Omitted or empty means any https origin. */
-  allowedArtifactHosts?: readonly string[];
+  /** Hosts a download may come from. Empty trusts nothing. */
+  allowedArtifactHosts: readonly string[];
   /**
    * Hosts a store link may point at. Separate from the artifact list on purpose:
    * a caller that pins only its own download CDN must not thereby reject every
    * App Store and Play row (and, with an all-or-nothing manifest, blank the
-   * whole page).
+   * whole page). Omitted means the two stores we ship through.
    */
   allowedStoreHosts?: readonly string[];
 };
 
-function hostAllowed(value: string, hosts: readonly string[] | undefined): boolean {
-  if (hosts === undefined || hosts.length === 0) return true;
+const DEFAULT_STORE_HOSTS: readonly string[] = ['apps.apple.com', 'play.google.com'];
+
+function hostAllowed(value: string, hosts: readonly string[]): boolean {
   try {
     return hosts.includes(new URL(value).host);
   } catch {
@@ -128,10 +136,14 @@ function isNotarization(value: unknown): value is Notarization {
 /**
  * Validate one row, returning the first problem in a fixed order so callers
  * and tests always see the same reason for the same broken row:
- * not-an-object → wrong-schema → bad-platform → bad-source-sha → bad-sha256 →
- * bad-bytes → bad-url → bad-accepted-at → no-target → notarization-not-passed.
+ * not-an-object → wrong-schema → bad-platform → bad-source-sha → bad-bytes →
+ * bad-sha256 → bad-url → bad-accepted-at → no-target → signer-missing →
+ * notarization-not-passed.
  */
-export function parseRelease(raw: unknown, options: ParseOptions = {}): { release: Release } | { problem: ManifestProblem } {
+export function parseRelease(
+  raw: unknown,
+  options: ParseOptions,
+): { release: Release } | { problem: ManifestProblem } {
   if (!isRecord(raw)) return { problem: 'not-an-object' };
   const schema = raw.schema;
   const product = raw.product;
@@ -148,8 +160,10 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   const acceptedAt = raw.acceptedAt;
   const supersededBy = raw.supersededBy;
   // Shape of fields that carry no dedicated problem code: not-an-object.
-  if (typeof product !== 'string' || product.length === 0) return { problem: 'not-an-object' };
-  if (typeof version !== 'string' || version.length === 0) return { problem: 'not-an-object' };
+  // An id of spaces is not an id: it would trim to '' and then the chain and
+  // duplicate rules would run on an empty string.
+  if (typeof product !== 'string' || product.trim().length === 0) return { problem: 'not-an-object' };
+  if (typeof version !== 'string' || version.trim().length === 0) return { problem: 'not-an-object' };
   if (!isAvailability(availability)) return { problem: 'not-an-object' };
   if (!isNotarization(notarization)) return { problem: 'not-an-object' };
   if (signer !== undefined && signer !== null && typeof signer !== 'string') {
@@ -179,15 +193,19 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   let store: string | null = null;
   if (storeUrl !== undefined && storeUrl !== null) {
     if (typeof storeUrl !== 'string' || !isHttpsUrl(storeUrl)
-      || !hostAllowed(storeUrl, options.allowedStoreHosts)) {
+      || !hostAllowed(storeUrl, options.allowedStoreHosts ?? DEFAULT_STORE_HOSTS)) {
       return { problem: 'bad-url' };
     }
     store = storeUrl;
   }
-  if (artifact !== null && (bytes === undefined || bytes === null || typeof bytes !== 'number')) {
+  // Gates apply to a row that is **offered**, not to one that merely still
+  // carries a URL: an emergency pull flips `availability` and may leave the
+  // artifact fields in place, and that must not fail the whole manifest.
+  const offered = availability === 'available' && artifact !== null;
+  if (offered && (bytes === undefined || bytes === null || typeof bytes !== 'number')) {
     return { problem: 'bad-bytes' };
   }
-  if (artifact !== null && (sha256 === undefined || sha256 === null || typeof sha256 !== 'string')) {
+  if (offered && (sha256 === undefined || sha256 === null || typeof sha256 !== 'string')) {
     return { problem: 'bad-sha256' };
   }
   if (typeof acceptedAt !== 'string' || !isRfc3339(acceptedAt)) return { problem: 'bad-accepted-at' };
@@ -199,7 +217,7 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   // Every direct download is signed: the manifest refuses an artifact without a
   // signer, so the all-or-nothing rationale covers the field the button depends
   // on, not just notarization. (A store row is signed by the store.)
-  if (artifact !== null) {
+  if (offered) {
     const signerValue = typeof signer === 'string' ? signer.trim() : '';
     if (signerValue.length === 0) return { problem: 'signer-missing' };
   }
@@ -208,7 +226,7 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   // nothing at all, so neither may be forced to assert a ticket it has not got
   // (that would be a false attestation, and with an all-or-nothing manifest it
   // would blank every other platform too).
-  if (platform === 'macos' && artifact !== null && notarization !== 'passed') {
+  if (platform === 'macos' && offered && notarization !== 'passed') {
     return { problem: 'notarization-not-passed' };
   }
   // Trimmed and stored trimmed: the chain rules compare these strings, so a
@@ -249,7 +267,7 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
  * still carries a per-row `notarization-incomplete` reason; it is a belt for a
  * `Release[]` that did not come through this function, not a second policy.
  */
-export function parseManifest(raw: unknown, options: ParseOptions = {}): ParsedManifest {
+export function parseManifest(raw: unknown, options: ParseOptions): ParsedManifest {
   const problems: ManifestProblem[] = [];
   let rows: unknown[];
   if (Array.isArray(raw)) {
@@ -286,6 +304,10 @@ export function parseManifest(raw: unknown, options: ParseOptions = {}): ParsedM
     // duplicate; two rows that both claim to be current are.
     const live = group.filter((release) => release.supersededBy === null);
     if (live.length > 1) problems.push('duplicate-platform');
+    // Two rows claiming the same version in one group are a duplicate too, live
+    // or not: the chain rules key on version and would otherwise pick one.
+    const versions = new Set(group.map((release) => release.version));
+    if (versions.size !== group.length) problems.push('duplicate-platform');
   }
   for (const group of groups.values()) {
     // A supersede target must exist in the same group — a macos row superseded

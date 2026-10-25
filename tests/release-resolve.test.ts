@@ -62,7 +62,9 @@ function row(platform: Platform, patch: Partial<Release> = {}): Release {
 const MANIFEST: ReleaseManifest = {
   releases: [
     row('windows', { artifactUrl: ARTIFACT.windows }),
-    row('macos', { artifactUrl: ARTIFACT.macos, notarization: 'passed' }),
+    // The 1.4.0 macOS build is history: exactly one live row per (product, platform)
+    // is the rule parseManifest enforces, so the fixture obeys it too.
+    row('macos', { artifactUrl: ARTIFACT.macos, notarization: 'passed', supersededBy: EXTRA_VERSION }),
     row('macos', { artifactUrl: ARTIFACT.macos, notarization: 'passed', version: EXTRA_VERSION }),
     row('linux', { artifactUrl: ARTIFACT.linux }),
     row('ios', { storeUrl: STORE.ios, signer: null }),
@@ -98,9 +100,19 @@ function rowWhere(rows: readonly ReleaseRow[], match: (r: ReleaseRow) => boolean
 describe('resolveReleases', () => {
   it('resolves one row per platform in manifest order', () => {
     const rows = rowsOf(MANIFEST);
-    // One result row per manifest entry (the extra macos row included);
-    // the fixture lists platforms in canonical order, so order is preserved.
-    expect(rows.map((r) => r.platform)).toEqual(MANIFEST.releases.map((r) => r.platform));
+    // One result row per manifest entry, and the pair is asserted rather than the
+    // platform name alone: a reorder inside a platform would otherwise pass. The
+    // resolver sorts the live row of a platform above its history, which is the
+    // manifest's own order here (1.4.1 live, 1.4.0 superseded).
+    const expected = [...MANIFEST.releases]
+      .map((r) => [r.platform, r.version] as const)
+      .sort((a, b) => {
+        const byPlatform = ['windows', 'macos', 'linux', 'ios', 'android', 'web', 'cli'].indexOf(a[0])
+          - ['windows', 'macos', 'linux', 'ios', 'android', 'web', 'cli'].indexOf(b[0]);
+        if (byPlatform !== 0) return byPlatform;
+        return a[1] === b[1] ? 0 : a[1] < b[1] ? 1 : -1; // live (newer) first
+      });
+    expect(rows.map((r) => [r.platform, r.version])).toEqual(expected);
   });
 
   it('a signed https artifact is downloadable', () => {
@@ -121,7 +133,7 @@ describe('resolveReleases', () => {
   it('a macos build with complete notarization is downloadable', () => {
     // Brief says 'complete'; the schema spells a passed notarization 'passed'.
     const rows = rowsOf(MANIFEST);
-    const macos = rowWhere(rows, (r) => r.platform === 'macos' && r.version === '1.4.0');
+    const macos = rowWhere(rows, (r) => r.platform === 'macos' && r.version === EXTRA_VERSION);
     expect(macos.state).toBe('downloadable');
   });
 });
@@ -327,7 +339,9 @@ describe('resolveReleases — fail-closed branches', () => {
     const rows = rowsOf(manifest);
     const linux = rowWhere(rows, (r) => r.platform === 'linux');
     expect(linux.state).toBe('waitlist');
-    expect(linux.reason).toBeNull();
+    // A waitlist row is a real answer for the device: it names its reason, so a
+    // screen can say "join the list" instead of rendering nothing.
+    expect(linux.reason).toBe('waitlist');
   });
 
   it('never offers an artifact URL that carries credentials', () => {
@@ -525,5 +539,38 @@ describe('resolveReleases — featured reasons and digests', () => {
     const live = rowWhere(rows, (r) => r.platform === 'macos' && r.version === EXTRA_VERSION);
     expect(live.bytes).not.toBeNull();
     expect(live.sha256).not.toBeNull();
+  });
+});
+
+// Apollo's round-6 review: a waitlist device gets a reason, and a Release[] that
+// bypassed the manifest cannot hand out a download with no digest.
+describe('resolveReleases — waitlist reason and bypassed rows', () => {
+  it('names the waitlist for the device it belongs to', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'linux'
+          ? { ...release, availability: 'waitlist', artifactUrl: null, storeUrl: null, signer: null }
+          : release,
+      ),
+    };
+    const result = resolveReleases(PRODUCT, manifest.releases, {
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+    });
+    if (!result.ok) throw new Error('a waitlist device still gets rows');
+    expect(result.currentPlatform).toBe('linux');
+    expect(result.featured).toBeNull();
+    // Not a blank: the screen can say "join the list" for this device.
+    expect(result.featuredReason).toBe('waitlist');
+  });
+
+  it('refuses a downloadable row with no digest when the manifest was bypassed', () => {
+    const broken = MANIFEST.releases.map((release) =>
+      release.platform === 'linux' ? { ...release, bytes: null, sha256: null } : release,
+    );
+    const rows = rowsOf({ releases: broken });
+    const linux = rowWhere(rows, (r) => r.platform === 'linux');
+    expect(linux.state).toBe('unavailable');
+    expect(linux.reason).toBe('incomplete-artifact');
+    expect(linux.artifactUrl).toBeNull();
   });
 });

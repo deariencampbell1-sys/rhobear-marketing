@@ -23,6 +23,8 @@ export type UnavailableReason =
   | 'signer-missing'
   | 'marked-unavailable'
   | 'superseded'
+  | 'waitlist'
+  | 'incomplete-artifact'
   | 'platform-unavailable';
 
 export type ReleaseRow = {
@@ -93,7 +95,9 @@ export function detectPlatform(hints: DeviceHints): Platform | null {
 
 /** Every field a row must satisfy before a control may exist. */
 function classify(release: Release): { state: ReleaseRow['state']; reason: UnavailableReason | null } {
-  if (release.availability === 'waitlist') return { state: 'waitlist', reason: null };
+  // A waitlist row is a real answer for the device, not a blank: the reason
+  // travels so a screen can say "join the list" instead of rendering nothing.
+  if (release.availability === 'waitlist') return { state: 'waitlist', reason: 'waitlist' };
   // An owner pulling a build must win over anything the row still carries: an
   // emergency 'unavailable' with a store URL left in place is not a live link.
   if (release.availability !== 'available')
@@ -118,6 +122,10 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
     return { state: 'unavailable', reason: 'notarization-incomplete' };
   if (release.signer === null || release.signer.trim() === '')
     return { state: 'unavailable', reason: 'signer-missing' };
+  // Belt for a Release[] that bypassed parseManifest: a download with no digest
+  // is not something to hand a user.
+  if (release.bytes === null || release.sha256 === null)
+    return { state: 'unavailable', reason: 'incomplete-artifact' };
   return { state: 'downloadable', reason: null };
 }
 
