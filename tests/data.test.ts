@@ -80,6 +80,65 @@ describe('one-liners are verbatim', () => {
   });
 });
 
+describe('product copy is verbatim', () => {
+  const expectedProductCopy: Record<
+    string,
+    { promise: string; whatItIs: readonly string[] }
+  > = {
+    builds: {
+      promise:
+        'Builds is the native and web GUI for rho, our own harness — your local device plus a private shell or server, with your work, memory, models and one account usage bank.',
+      whatItIs: [
+        'A native and web GUI for rho, our own harness.',
+        'Your local device plus a private shell or server.',
+        'Your work, memory, models and one account usage bank.',
+      ],
+    },
+    forge: {
+      promise:
+        'Forge takes a photo, a sentence or a model to an approved concept, then a checked printable model, with precise edits, paint and split, a matching slice, printer handoff and physical completion.',
+      whatItIs: [
+        'A photo, a sentence or a model becomes an approved concept.',
+        'A checked printable model with precise edits, paint and split, and a matching slice.',
+        'Printer handoff through to physical completion.',
+      ],
+    },
+    herald: {
+      promise:
+        'Herald is your business phone and assistant: your card, your assistant, your business, answered.',
+      whatItIs: [
+        'A business phone and an assistant for your business.',
+        'Your card, your assistant, your business, answered.',
+      ],
+    },
+    regent: {
+      promise: 'Regent is the desk beside the call.',
+      whatItIs: [
+        'The desk beside the call.',
+        'Early access is by invitation, with terms set in its own lane.',
+      ],
+    },
+    reviews: {
+      promise:
+        'Reviews checks the code, reviews the change, and fixes and merges with proof, at the levels Verifier, Apollo and Zeus.',
+      whatItIs: [
+        'Checks the code, reviews the change, and fixes and merges with proof.',
+        'Levels: Verifier, Apollo and Zeus.',
+      ],
+    },
+  };
+
+  it('pins every product promise and what-it-is bullet', () => {
+    expect(Object.keys(expectedProductCopy).sort()).toEqual([...brand.appOrder].sort());
+    for (const product of products) {
+      expect(product.promise, product.id).toBe(expectedProductCopy[product.id].promise);
+      expect(product.whatItIs, product.id).toEqual(
+        expectedProductCopy[product.id].whatItIs,
+      );
+    }
+  });
+});
+
 describe('brand copy is verbatim', () => {
   it('pins every public brand string and the product order', () => {
     expect(brand).toEqual({
@@ -267,8 +326,13 @@ describe('public data is frozen at runtime', () => {
       expect(Object.isFrozen(product), product.id).toBe(true);
       expect(Object.isFrozen(product.whatItIs), product.id).toBe(true);
       expect(Object.isFrozen(product.availability), product.id).toBe(true);
+      expect(Object.isFrozen(product.links), product.id).toBe(true);
+      expect(Object.isFrozen(product.source), product.id).toBe(true);
       if (product.extraSources) {
         expect(Object.isFrozen(product.extraSources), product.id).toBe(true);
+        for (const source of product.extraSources) {
+          expect(Object.isFrozen(source), product.id).toBe(true);
+        }
       }
     }
   });

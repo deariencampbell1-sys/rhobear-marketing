@@ -10,7 +10,7 @@ import { brand } from './brand';
 export type ProductId = (typeof brand.appOrder)[number];
 
 export interface ProductEntry {
-  id: (typeof brand.appOrder)[number];
+  id: ProductId;
   publicName: string;
   oneLiner: string;
   promise: string;
@@ -147,7 +147,12 @@ const productsUnfrozen: ProductEntry[] = [
 for (const product of productsUnfrozen) {
   Object.freeze(product.whatItIs);
   Object.freeze(product.availability);
+  Object.freeze(product.links);
+  Object.freeze(product.source);
   if (product.extraSources) {
+    for (const source of product.extraSources) {
+      Object.freeze(source);
+    }
     Object.freeze(product.extraSources);
   }
   Object.freeze(product);

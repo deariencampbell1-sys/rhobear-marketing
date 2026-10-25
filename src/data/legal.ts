@@ -29,9 +29,11 @@ export const checkoutState = {
 Object.freeze(checkoutState.source);
 Object.freeze(checkoutState);
 
-// Q10 Retention explicitly contains the deletion timing clause ("stops billing,
-// offers export, erases primary data and removes backups within 30 days"). Q13
-// approves the deletion runbook, not this wording, so the source stays on Q10.
+// Q10 Retention explicitly contains the grace-period and deletion clauses:
+// "Paid access continues through the paid period, then 7-day read-only/export
+// grace, then hosted deletion" and "account deletion still stops billing, offers
+// export, erases primary data and removes backups within 30 days." Q13 approves
+// the deletion runbook, not this wording, so the source stays on Q10.
 export const retention = {
   afterPaidPeriod:
     'A 7-day read-only grace period: you can read and export your work, but you cannot start new jobs.',

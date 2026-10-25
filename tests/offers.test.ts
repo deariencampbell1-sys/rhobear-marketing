@@ -157,8 +157,11 @@ describe('runtime immutability', () => {
 });
 
 describe('launch offer', () => {
-  it('is announced, not active', () => {
+  it('is announced, not active, with a pinned headline', () => {
     expect(launchOffer.state).toBe('announced');
+    expect(launchOffer.headline).toBe(
+      'The first 100 accounts get 90 days of no metered engine usage.',
+    );
   });
 
   it('pins the exact launch offer body', () => {

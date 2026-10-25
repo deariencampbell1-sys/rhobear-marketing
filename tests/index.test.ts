@@ -27,7 +27,7 @@ import * as data from '../src/data';
 
 const sourceFiles = import.meta.glob(
   [
-    '../**/*.{ts,tsx,js,mjs,cjs}',
+    '../**/*.{ts,tsx,js,jsx,mjs,cjs,astro,mdx}',
     '!../node_modules/**',
     '!../dist/**',
     '!../tests/**',
@@ -158,7 +158,9 @@ describe('entry-point boundary', () => {
   it('keeps the internal caveats out of every other source import', () => {
     for (const [path, source] of Object.entries(sourceFiles)) {
       if (path === '../src/data/products.internal.ts') continue;
-      expect(source, path).not.toMatch(/from\s+['"][^'"]*products\.internal['"]/);
+      expect(source, path).not.toMatch(
+        /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"][^'"]*products\.internal['"]/,
+      );
     }
   });
 });
