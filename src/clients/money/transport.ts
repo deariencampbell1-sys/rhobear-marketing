@@ -4,18 +4,28 @@
 // endpoints are not live yet, so nothing here assumes a response — each
 // failure mode maps to a MoneyFailureReason the caller can render honestly.
 //
+// Deployment constraint: baseUrl (VITE_RHOBEAR_API_BASE) must be an absolute
+// https origin that is either same-origin with this site or reached through a
+// same-origin proxy. Requests use credentials: 'same-origin' and
+// cache: 'no-store'; the transport has no auth-header mechanism and never
+// attaches a token or cookie itself.
+//
 // Invariants enforced in code:
-//   - a missing/unsafe baseUrl or path never touches fetch;
+//   - a missing/unsafe baseUrl, an unsafe path or a non-GET request never
+//     touches fetch;
+//   - redirects are refused (redirect: 'error'), never followed out of the
+//     guarded origin, and a redirect response is never parsed;
 //   - exactly one retry, only for GET network/timeout failures;
-//   - one X-Request-Id per request, never derived from any credential;
+//   - one X-Request-Id per logical request, never derived from any credential;
 //   - nothing is logged, and no detail ever carries a token, cookie,
 //     Authorization header, query string or body.
 
 export type MoneyTransportConfig = {
-  baseUrl: string | undefined; // import.meta.env.VITE_RHOBEAR_API_BASE at the call site
+  // Absolute https origin, same-origin with this site or behind a same-origin proxy.
+  baseUrl: string | undefined;
   timeoutMs?: number; // default 10_000
   now?: () => number; // injectable clock, default Date.now
-  requestId?: () => string; // injectable, default crypto.randomUUID()
+  requestId?: () => string; // injectable; default crypto.randomUUID(), with a safe fallback
 };
 
 export type MoneyRequest = {
@@ -25,12 +35,12 @@ export type MoneyRequest = {
 };
 
 export type MoneyFailureReason =
-  | 'not-configured' // baseUrl absent
+  | 'not-configured' // baseUrl absent/unsafe, or path unsafe, or non-GET
   | 'network' // fetch threw
   | 'timeout' // abort at timeoutMs
   | 'http' // non-2xx
-  | 'invalid-shape' // schema validation failed
-  | 'parse'; // body was not JSON
+  | 'invalid-shape' // schema validation failed, or the parser threw
+  | 'parse'; // body was not JSON, or refused before parsing
 
 export type MoneyResult<T> =
   | { ok: true; data: T; requestId: string; fetchedAt: number }
@@ -42,50 +52,113 @@ type AttemptResult<T> =
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
-const MAX_BODY_BYTES = 1_048_576;
-const SAFE_REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
+const MAX_BODY_BYTES = 262_144;
+const JSON_CONTENT_TYPE = 'application/json';
+// CR, LF or any other control character would break (or inject into) the
+// X-Request-Id header line, so such a value is never sent.
+const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+
+// Conservative path allowlist: normal route characters and percent escapes
+// only. It excludes '\', whitespace, C0/C1 controls, '?' and '#'.
+const SAFE_PATH_PATTERN = /^[A-Za-z0-9\-._~%/]+$/;
+const COMPLETE_PERCENT_ESCAPE = /^(?:[^%]|%[0-9A-Fa-f]{2})*$/;
+
+let fallbackRequestIdCounter = 0;
+
+function fallbackRequestId(): string {
+  fallbackRequestIdCounter += 1;
+  return `fallback-${Date.now().toString(36)}-${fallbackRequestIdCounter.toString(36)}`;
+}
 
 function defaultRequestId(): string {
-  return crypto.randomUUID();
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return fallbackRequestId();
+  }
+}
+
+// crypto.randomUUID() is unavailable outside secure contexts and an injected
+// generator may throw or return nothing; get() must never reject for this.
+// A value carrying CR, LF or any control character is refused too: it would
+// corrupt the header line, and fetch would reject it as a TypeError that
+// looks like a network failure and triggers a pointless retry.
+function safeRequestId(newRequestId: () => string): string {
+  let candidate: unknown;
+  try {
+    candidate = newRequestId();
+  } catch {
+    return fallbackRequestId();
+  }
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    return fallbackRequestId();
+  }
+  if (CONTROL_CHAR.test(candidate)) return defaultRequestId();
+  return candidate;
 }
 
 // baseUrl must be an absolute https origin; anything else never reaches fetch.
+// Userinfo, search and hash are rejected so the configured base cannot smuggle
+// a credential or a second scope into every request.
 function safeBaseUrl(baseUrl: string | undefined): URL | null {
-  // A trailing CR or a line continuation in an env file must not silently
-  // disable the client, so the value is trimmed before it is judged.
+  // A CRLF checkout or a quoted env value must not turn a configured base
+  // into not-configured, so the value is trimmed before it is judged.
   const trimmed = typeof baseUrl === 'string' ? baseUrl.trim() : '';
   if (trimmed.length === 0) return null;
   if (!trimmed.startsWith('https://')) return null;
   try {
     const parsed = new URL(trimmed);
     if (parsed.protocol !== 'https:' || parsed.hostname === '') return null;
+    if (parsed.username !== '' || parsed.password !== '') return null;
+    if (parsed.search !== '' || parsed.hash !== '') return null;
     return parsed;
   } catch {
     return null;
   }
 }
 
-// A path must be site-relative: no scheme, no protocol-relative '//', so a
-// caller can never point the client at another host.
-function safePath(path: string): boolean {
-  if (!path.startsWith('/')) return false;
-  if (path.startsWith('//')) return false;
-  if (path.includes('://')) return false;
-  return true;
+function isDotSegment(segment: string): boolean {
+  try {
+    const decoded = decodeURIComponent(segment);
+    return decoded === '.' || decoded === '..';
+  } catch {
+    return true; // malformed percent escape: refuse rather than guess
+  }
 }
 
-function buildUrl(base: URL, req: MoneyRequest): string {
-  const url = new URL(req.path, base);
+// A path must be site-relative: no scheme, no protocol-relative '//' and no
+// character the URL parser could reinterpret as a host boundary. Backslashes
+// matter here: new URL('/\evil.com', 'https://api.example.com') escapes to
+// evil.com, so they are refused before URL parsing ever sees them.
+function safePath(path: string): boolean {
+  if (!path.startsWith('/') || path.startsWith('//')) return false;
+  if (!SAFE_PATH_PATTERN.test(path)) return false;
+  if (!COMPLETE_PERCENT_ESCAPE.test(path)) return false;
+  return !path.split('/').some(isDotSegment);
+}
+
+// Keep the configured base path prefix (e.g. '/v1') instead of resolving the
+// request path against the origin root, then assert the result stayed on the
+// configured https origin.
+function buildUrl(base: URL, req: MoneyRequest): string | null {
+  const basePath = base.pathname.replace(/\/+$/, '');
+  const url = new URL(`${basePath}${req.path}`, base.origin);
   if (req.query !== undefined) {
     for (const key of Object.keys(req.query)) {
       url.searchParams.set(key, req.query[key]);
     }
   }
+  if (url.protocol !== 'https:' || url.origin !== base.origin) return null;
   return url.toString();
 }
 
+// Thrown by readCappedBody once the running byte count passes the cap; the
+// caller maps it to a failure before any of the body is parsed.
+const BODY_TOO_LARGE = Symbol('money.body-too-large');
+
 // The cap is enforced on the bytes actually received, so a chunked or
-// header-less response cannot stream past it.
+// header-less response cannot stream past it the way a content-length-only
+// check allows.
 async function readCappedBody(response: Response): Promise<string> {
   const body = response.body;
   if (body === null) return '';
@@ -99,8 +172,9 @@ async function readCappedBody(response: Response): Promise<string> {
     if (value === undefined) continue;
     received += value.byteLength;
     if (received > MAX_BODY_BYTES) {
+      // Stop the stream immediately: an over-cap body is never fully read.
       await reader.cancel();
-      throw new Error('body-too-large');
+      throw BODY_TOO_LARGE;
     }
     text += decoder.decode(value, { stream: true });
   }
@@ -121,8 +195,10 @@ async function attempt<T>(
       response = await fetch(url, {
         method: 'GET',
         headers: { 'X-Request-Id': requestId },
+        cache: 'no-store',
+        credentials: 'same-origin',
         signal: controller.signal,
-        redirect: 'manual',
+        redirect: 'error',
       });
     } catch {
       if (controller.signal.aborted) {
@@ -131,27 +207,47 @@ async function attempt<T>(
       return { outcome: 'fail', reason: 'network' };
     }
     if (response.status >= 300 && response.status < 400) {
-      // A redirect is refused, never followed: the origin guard must constrain
-      // the response that is actually parsed.
-      return { outcome: 'fail', reason: 'http', detail: `HTTP ${response.status} redirect` };
+      // A redirect is never followed and never parsed: it only survives as a
+      // failure whose detail records why the body is not here.
+      return { outcome: 'fail', reason: 'http', detail: 'redirect' };
     }
     if (response.status < 200 || response.status >= 300) {
       // detail carries at most the HTTP status; never query, headers or body.
       return { outcome: 'fail', reason: 'http', detail: `HTTP ${response.status}` };
     }
+    const contentType = response.headers.get('content-type');
+    if (contentType !== null && !contentType.toLowerCase().startsWith(JSON_CONTENT_TYPE)) {
+      // Refuse without reading the body: the wire shape is declared non-JSON.
+      return { outcome: 'fail', reason: 'parse' };
+    }
+    const contentLength = response.headers.get('content-length');
+    if (contentLength !== null) {
+      const declared = contentLength.trim();
+      if (!/^\d+$/.test(declared) || Number(declared) > MAX_BODY_BYTES) {
+        // Declared oversize (or unparseable) body: refuse before reading it.
+        return { outcome: 'fail', reason: 'parse' };
+      }
+    }
     let raw: unknown;
     try {
+      // The body is read through the stream with a running byte count and
+      // parsed by hand; response.json() would ignore the cap.
       raw = JSON.parse(await readCappedBody(response));
     } catch (error) {
       if (controller.signal.aborted) {
         return { outcome: 'fail', reason: 'timeout' };
       }
-      if (error instanceof Error && error.message === 'body-too-large') {
+      if (error === BODY_TOO_LARGE) {
         return { outcome: 'fail', reason: 'http', detail: 'body-too-large' };
       }
       return { outcome: 'fail', reason: 'parse' };
     }
-    const data = parse(raw);
+    let data: T | null;
+    try {
+      data = parse(raw);
+    } catch {
+      return { outcome: 'fail', reason: 'invalid-shape' };
+    }
     if (data === null) return { outcome: 'fail', reason: 'invalid-shape' };
     return { outcome: 'ok', data };
   } finally {
@@ -161,8 +257,10 @@ async function attempt<T>(
 
 export function createMoneyTransport(config: MoneyTransportConfig): {
   get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>>;
-  timeoutMs: number;
+  timeoutMs: number; // the validated value in use, exposed for callers and tests
 } {
+  // timeoutMs must be a finite number in (0, 60_000]; 0, -5, NaN, Infinity and
+  // anything above the ceiling fall back to the default instead of throwing.
   const requestedTimeout = config.timeoutMs;
   const timeoutMs =
     typeof requestedTimeout === 'number' &&
@@ -178,17 +276,18 @@ export function createMoneyTransport(config: MoneyTransportConfig): {
     req: MoneyRequest,
     parse: (raw: unknown) => T | null,
   ): Promise<MoneyResult<T>> {
-    const generated = newRequestId();
-    // A CR/LF in a header value makes fetch throw; that would be misread as a
-    // network failure and retried, so an unsafe id is replaced, never sent.
-    const requestId = SAFE_REQUEST_ID.test(generated) ? generated : defaultRequestId();
+    const requestId = safeRequestId(newRequestId);
     const base = safeBaseUrl(config.baseUrl);
     if (base === null || !safePath(req.path) || req.method !== 'GET') {
       return { ok: false, reason: 'not-configured', requestId };
     }
     let url: string;
     try {
-      url = buildUrl(base, req);
+      const built = buildUrl(base, req);
+      if (built === null) {
+        return { ok: false, reason: 'not-configured', requestId };
+      }
+      url = built;
     } catch {
       return { ok: false, reason: 'not-configured', requestId };
     }
@@ -198,7 +297,10 @@ export function createMoneyTransport(config: MoneyTransportConfig): {
       req.method === 'GET' &&
       (result.reason === 'network' || result.reason === 'timeout');
     if (retriable) {
-      // Exactly one retry, and only for GET network/timeout failures.
+      // Exactly one retry, and only for GET network/timeout failures. Reusing
+      // the same X-Request-Id across the pair is intentional: both attempts are
+      // one logical request, so server logs can join them. Worst-case latency
+      // for a single get() is therefore 2 × timeoutMs.
       result = await attempt<T>(url, timeoutMs, requestId, parse);
     }
     if (result.outcome === 'fail') {
