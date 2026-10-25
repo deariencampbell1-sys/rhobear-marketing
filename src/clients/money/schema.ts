@@ -230,8 +230,8 @@ export function parseQuote(raw: unknown): Quote | null {
   if (!isMoney(total)) return null; // total is required; never recomputed
   if (currency !== 'USD') return null;
   if (renewal !== 'monthly') return null;
-  if (typeof paidThroughRule !== 'string') return null;
-  if (typeof createdAt !== 'string') return null;
+  if (typeof paidThroughRule !== 'string' || paidThroughRule.length === 0) return null;
+  if (typeof createdAt !== 'string' || createdAt.length === 0) return null;
   if (typeof expiresAt !== 'string' || !isRfc3339(expiresAt)) return null;
   return {
     operationId,
@@ -315,7 +315,7 @@ export function parseBank(raw: unknown): Bank | null {
   if (!isMoney(creditReserved)) return null;
   if (!isMoney(allowanceRemaining)) return null;
   if (!isMoney(purchasedRemaining)) return null;
-  if (typeof resetsAt !== 'string') return null;
+  if (typeof resetsAt !== 'string' || resetsAt.length === 0) return null;
   if (state !== 'available' && state !== 'low' && state !== 'empty' && state !== 'reconciling') {
     return null;
   }
