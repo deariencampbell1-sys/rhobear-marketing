@@ -71,7 +71,9 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
       // a re-load must be able to observe that the catalog on disk is old.
       const fetchedAt = Number.isFinite(res.fetchedAt) ? res.fetchedAt : now();
       const view = buildView(res.data, fetchedAt);
-      if (view.purchasable) last = { view };
+      // Every successful load is remembered: a screen must still be able to
+      // show the plans, the capabilities and the reason when it cannot sell.
+      last = { view };
       return { ok: true, view };
     },
     lastView() {

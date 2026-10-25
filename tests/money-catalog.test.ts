@@ -98,3 +98,43 @@ describe('money catalog client', () => {
     expect(JSON.stringify(viewed)).not.toContain('providerCost');
   });
 });
+
+// Appended after Apollo's review of PR #56: a successful load is remembered even
+// when it cannot be sold from, because the screen still has to show the plans,
+// the capabilities and the reason.
+describe('money catalog memory', () => {
+  it('remembers a successful view that is not purchasable, and marks it stale for reuse', async () => {
+    const catalog = fakeCatalog({ plans: [
+      { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'available' },
+      { sku: 'space', name: 'Space', monthlyPrice: '69.99', creditIncluded: '39.60', availability: 'unavailable', reason: 'renewal review' },
+    ] });
+    const client = createCatalogClient(fakeTransport(catalog));
+    const view = await loadView(client);
+    expect(view.purchasable).toBe(false);
+
+    const remembered = client.lastView();
+    expect(remembered).not.toBeNull();
+    expect(remembered?.catalogVersion).toBe('2026-10-25.1');
+    expect(remembered?.purchasable).toBe(false);
+    expect(remembered?.stale).toBe(true);
+    expect(remembered?.reason).toBe('stale');
+  });
+
+  it('answers capabilitiesFor from the remembered view, per product', async () => {
+    const client = createCatalogClient(fakeTransport(fakeCatalog({ plans: [
+      { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'unavailable' },
+    ] })));
+    await loadView(client);
+
+    expect(client.capabilitiesFor('builds')).toHaveLength(2);
+    expect(client.capabilitiesFor('reviews')).toEqual([]);
+  });
+
+  it('still remembers nothing after a failed load', async () => {
+    const client = createCatalogClient(failingTransport);
+    await client.load();
+    expect(client.lastView()).toBeNull();
+    expect(client.capabilitiesFor('builds')).toEqual([]);
+  });
+});
+

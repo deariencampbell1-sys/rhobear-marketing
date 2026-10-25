@@ -97,3 +97,70 @@ describe('money quote client', () => {
     }
   });
 });
+
+// Appended after Apollo's review of PR #56: reconfirm() must re-fetch and
+// re-judge a live quote, and must refuse a state it never issued.
+describe('money quote reconfirm', () => {
+  const liveCatalog = (catalogVersion = 'v1'): CatalogClient => {
+    const view = {
+      catalogVersion, sourceSha: 'a'.repeat(40), purchasable: true,
+      generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [],
+    };
+    return {
+      async load() { return { ok: true as const, view }; },
+      lastView() { return view; },
+      capabilitiesFor() { return []; },
+    };
+  };
+
+  const mutableTransport = (payload: () => unknown) => {
+    let calls = 0;
+    const transport: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        calls += 1;
+        return { ok: true, data: payload() as T, requestId: `req-${calls}`, fetchedAt: 1 };
+      },
+    };
+    return { transport, calls: () => calls };
+  };
+
+  it('re-fetches and re-judges a ready quote', async () => {
+    const wire = mutableTransport(() => fakeQuote());
+    const client = createQuoteClient(wire.transport, liveCatalog(), { now: () => Date.parse('2026-10-25T00:00:00Z') });
+
+    const ready = await client.bind(input);
+    expect(ready.kind).toBe('ready');
+
+    const again = await client.reconfirm(ready);
+    expect(again.kind).toBe('ready');
+    expect(wire.calls()).toBe(2);
+  });
+
+  it('re-fetches a stale quote and still reports the drift it can see', async () => {
+    let version = 'v1';
+    const wire = mutableTransport(() => fakeQuote({ catalogVersion: version }));
+    const client = createQuoteClient(wire.transport, liveCatalog('v1'), { now: () => Date.parse('2026-10-25T00:00:00Z') });
+
+    const stale = await client.bind(input);
+    expect(stale.kind).toBe('ready');
+
+    version = 'v2';
+    const reconfirmed = await client.reconfirm(stale);
+    expect(reconfirmed.kind).toBe('stale');
+    expect(reconfirmed.kind === 'stale' ? reconfirmed.differences : []).toContain('catalogVersion');
+    expect(wire.calls()).toBe(2);
+  });
+
+  it('refuses to reconfirm a quote it never issued', async () => {
+    const wire = mutableTransport(() => fakeQuote());
+    const client = createQuoteClient(wire.transport, liveCatalog(), { now: () => Date.parse('2026-10-25T00:00:00Z') });
+
+    const forged = { kind: 'ready' as const, quote: fakeQuote({ operationId: 'never-issued' }), requestId: 'req-x' };
+    const result = await client.reconfirm(forged);
+
+    expect(result.kind).toBe('unavailable');
+    expect(result.kind === 'unavailable' ? result.reason : '').toBe('invalid-shape');
+    expect(wire.calls()).toBe(0);
+  });
+});
+
