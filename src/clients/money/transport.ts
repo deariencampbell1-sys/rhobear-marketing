@@ -262,6 +262,14 @@ async function attempt<T>(
   }
 }
 
+export type MoneyTransport = ReturnType<typeof createMoneyTransport>;
+
+/**
+ * What a client actually needs from a transport: one read. A client that takes
+ * this cannot be handed a fake that lies about a timeout it never uses.
+ */
+export type MoneyTransportGet = Pick<MoneyTransport, 'get'>;
+
 export function createMoneyTransport(config: MoneyTransportConfig): {
   get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>>;
   timeoutMs: number; // the validated value in use, exposed for callers and tests

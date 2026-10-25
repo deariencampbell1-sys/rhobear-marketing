@@ -7,14 +7,14 @@ import {
   type EntitlementView,
   type Presentation,
 } from '../src/clients/money/entitlement';
-import type { MoneyTransport } from '../src/clients/money/catalog';
+import type { MoneyTransportGet } from '../src/clients/money/transport';
 import type { MoneyRequest, MoneyResult } from '../src/clients/money/transport';
 import type { Entitlement, EntitlementState } from '../src/clients/money/schema';
 
 // No network: the fake runs the payload through the parser the client handed
 // it, so every fixture below is judged by parseEntitlement itself — the same
 // refusal the real transport would apply.
-const okTransport = (payload: unknown): MoneyTransport => ({
+const okTransport = (payload: unknown): MoneyTransportGet => ({
   async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
     const data = parse(payload);
     if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
@@ -22,7 +22,7 @@ const okTransport = (payload: unknown): MoneyTransport => ({
   },
 });
 
-const failingTransport: MoneyTransport = {
+const failingTransport: MoneyTransportGet = {
   async get<T>(): Promise<MoneyResult<T>> {
     return { ok: false, reason: 'network', requestId: 'req-1' };
   },
@@ -43,7 +43,7 @@ const fixture = (over: Partial<Entitlement> = {}): Entitlement => ({
   ...over,
 });
 
-const loadWith = (transport: MoneyTransport) =>
+const loadWith = (transport: MoneyTransportGet) =>
   createEntitlementClient(transport).load({ accountUuid: 'acct-1', product: 'builds' });
 
 const viewOf = (over: Partial<Entitlement> = {}) => loadWith(okTransport(fixture(over)));
@@ -169,12 +169,12 @@ describe('money entitlement fail-closed paths', () => {
   });
 });
 
-// Apollo's round-5 review: the capability the screen asked for is cross-checked
-// against the answer, and the capability query branch is exercised.
+// The capability the screen asked for is cross-checked against the answer, and
+// the capability query branch is exercised.
 describe('money entitlement capability', () => {
   it('asks for the capability it was given', async () => {
     const seen: MoneyRequest[] = [];
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         seen.push(req);
         const data = parse(fixture({ capability: 'apollo' }));
@@ -189,7 +189,7 @@ describe('money entitlement capability', () => {
   });
 
   it('treats another capability as a session mismatch, not a view', async () => {
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         const data = parse(fixture({ capability: 'zeus' }));
         if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
@@ -202,7 +202,7 @@ describe('money entitlement capability', () => {
   });
 
   it('does not cross-check a capability that was never asked for', async () => {
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         const data = parse(fixture({ capability: 'zeus' }));
         if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };

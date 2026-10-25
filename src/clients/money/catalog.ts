@@ -1,11 +1,9 @@
-import type { MoneyRequest, MoneyResult } from './transport';
+// The transport type has exactly one definition (transport.ts, derived from the
+// factory's return type); a client only needs `get`.
+import type { MoneyTransportGet } from './transport';
 import { parseCatalog, type CatalogPlan, type CatalogCapability } from './schema';
 
-// Local alias: transport.ts exports createMoneyTransport but no MoneyTransport
-// type; this mirrors the exact signature returned by createMoneyTransport.
-export type MoneyTransport = {
-  get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>>;
-};
+
 
 export type CatalogUnavailableReason =
   | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'stale'
@@ -76,7 +74,7 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-export function createCatalogClient(transport: MoneyTransport, options: CatalogOptions = {}): CatalogClient {
+export function createCatalogClient(transport: MoneyTransportGet, options: CatalogOptions = {}): CatalogClient {
   const now = options.now ?? (() => Date.now());
   const freshnessMs = options.freshnessMs ?? DEFAULT_FRESHNESS_MS;
   const generatedFreshnessMs = options.generatedFreshnessMs ?? DEFAULT_GENERATED_FRESHNESS_MS;
@@ -96,13 +94,17 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
     const fetchedBad = !Number.isFinite(fetchedAt);
     // Two ages matter: how long ago we fetched, and how long ago the catalog was
     // generated. A fresh fetch of a ten-day-old catalog is still a stale price.
-    const fetchedAge = fetchedBad ? Number.POSITIVE_INFINITY : now() - fetchedAt;
+    // A clock that is not a finite number cannot age anything: fail closed
+    // rather than treat NaN comparisons (always false) as fresh.
+    const current = now();
+    const nowBad = !Number.isFinite(current);
+    const fetchedAge = fetchedBad || nowBad ? Number.POSITIVE_INFINITY : current - fetchedAt;
     // A generatedAt in the future is server-side clock skew, not age; it is
     // clamped rather than trusted, and the fetch age still governs freshness.
-    const generatedAge = generatedBad ? Number.POSITIVE_INFINITY : Math.max(0, now() - generatedAt);
+    const generatedAge = generatedBad || nowBad ? Number.POSITIVE_INFINITY : Math.max(0, current - generatedAt);
     // A negative fetch age means our clock moved backwards since the fetch; that
     // is not evidence of freshness, so it is stale too.
-    const stale = refreshFailed || fetchedBad || generatedBad
+    const stale = refreshFailed || fetchedBad || generatedBad || nowBad
       || fetchedAge < 0
       || fetchedAge > freshnessMs || generatedAge > generatedFreshnessMs;
     const allAvailable = catalog.plans.every((p) => p.availability === 'available');
@@ -116,7 +118,9 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
       stale,
       plans: catalog.plans,
       capabilities: catalog.capabilities,
-      reason: stale ? 'stale' : undefined,
+      // A view that is fresh but cannot be sold says why, so a screen never has
+      // to infer it from `purchasable: false` alone.
+      reason: stale ? 'stale' : purchasable ? undefined : 'not-purchasable',
     };
   }
 

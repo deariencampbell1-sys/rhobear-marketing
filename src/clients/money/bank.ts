@@ -5,9 +5,9 @@
 // fetch is state 'reconciling' with stale: true, revision -1 and placeholder
 // strings the renderer must never print as a real balance — never 'empty'.
 
-// MoneyTransport lives in catalog.ts: a local alias for the exact signature
-// createMoneyTransport returns (transport.ts exports the factory, not the type).
-import type { MoneyTransport } from './catalog';
+// One transport type in the tree: transport.ts derives it from the factory's
+// return type, and this client takes only the read it uses.
+import type { MoneyTransportGet } from './transport';
 import { parseBank, type Bank, type BankState } from './schema';
 
 export type BankSnapshot = {
@@ -39,7 +39,7 @@ export type BankOptions = {
 const DEFAULT_BANK_FRESHNESS_MS = 900_000;
 
 export function createBankClient(
-  transport: MoneyTransport,
+  transport: MoneyTransportGet,
   options: BankOptions = {},
 ): {
   load(): Promise<BankResult>;
@@ -54,6 +54,9 @@ export function createBankClient(
   const now = options.now ?? (() => Date.now());
   const freshnessMs = options.freshnessMs ?? DEFAULT_BANK_FRESHNESS_MS;
   let previous: BankSnapshot | null = null;
+  // Whether the most recent load failed: a remembered balance from before an
+  // unreachable read is not evidence of anything now.
+  let lastLoadFailed = false;
 
   function toSnapshot(bank: Bank, fetchedAt: number, stale: boolean): BankSnapshot {
     const parsedResetsAt = Date.parse(bank.resetsAt);
@@ -92,23 +95,50 @@ export function createBankClient(
     };
   }
 
+  // A snapshot whose two verdict fields are computed when they are read, not
+  // when the object was built. Frozen, so the values themselves cannot be
+  // rewritten; the getters are what make a held object age.
+  function liveSnapshot(base: BankSnapshot): BankSnapshot {
+    const snapshot = { ...base };
+    Object.defineProperty(snapshot, 'stale', {
+      enumerable: true,
+      get() {
+        const age = now() - base.fetchedAt;
+        return base.stale || lastLoadFailed || !Number.isFinite(age) || age < 0 || age > freshnessMs;
+      },
+    });
+    Object.defineProperty(snapshot, 'canStartPaidWork', {
+      enumerable: true,
+      get() {
+        const age = now() - base.fetchedAt;
+        const aged = lastLoadFailed || !Number.isFinite(age) || age < 0 || age > freshnessMs;
+        return !aged && (base.state === 'available' || base.state === 'low');
+      },
+    });
+    return Object.freeze(snapshot);
+  }
+
   return {
     async load(): Promise<BankResult> {
       const res = await transport.get<Bank>({ path: '/v1/bank', method: 'GET' }, parseBank);
       if (!res.ok) {
+        lastLoadFailed = true;
         const snapshot = unreachable(now());
         return { ok: false, snapshot, reason: res.reason };
       }
       // A fetchedAt that is not a finite number is not a timestamp: the balance
       // cannot be aged, so it is never remembered as a live balance.
       if (!Number.isFinite(res.fetchedAt)) {
+        lastLoadFailed = true;
         return { ok: false, snapshot: unreachable(now()), reason: 'invalid-shape' };
       }
-      // Frozen and stored: a caller cannot rewrite the remembered balance, and
-      // `currentSnapshot()` re-judges its age instead of trusting this moment.
-      const snapshot = Object.freeze(toSnapshot(res.data, res.fetchedAt, false));
-      previous = snapshot;
-      return { ok: true, snapshot: { ...snapshot } };
+      lastLoadFailed = false;
+      // The stored balance is frozen and carries live verdicts: `stale` and
+      // `canStartPaidWork` are re-judged on every read, so a screen that holds
+      // this object cannot keep authorising paid work with an old balance.
+      const stored = liveSnapshot(toSnapshot(res.data, res.fetchedAt, false));
+      previous = stored;
+      return { ok: true, snapshot: liveSnapshot(toSnapshot(res.data, res.fetchedAt, false)) };
     },
     lastSnapshot() {
       // A remembered snapshot is history: it never authorises new paid work,
@@ -117,10 +147,7 @@ export function createBankClient(
     },
     currentSnapshot() {
       if (previous === null) return null;
-      const age = now() - previous.fetchedAt;
-      const aged = !Number.isFinite(age) || age < 0 || age > freshnessMs;
-      if (!aged) return { ...previous };
-      return { ...previous, stale: true, canStartPaidWork: false };
+      return liveSnapshot(previous);
     },
   };
 }

@@ -5,9 +5,9 @@
 // fail closed to state 'unknown' / 'reconcile', never to 'free-local'.
 
 import { parseEntitlement, type Entitlement } from './schema';
-// MoneyTransport lives in catalog.ts: a local alias for the exact signature
-// createMoneyTransport returns (transport.ts exports the factory, not the type).
-import type { MoneyTransport } from './catalog';
+// One transport type in the tree: transport.ts derives it from the factory's
+// return type, and this client takes only the read it uses.
+import type { MoneyTransportGet } from './transport';
 
 export type Presentation =
   | 'manage' | 'upgrade' | 'export-only' | 'expired'
@@ -46,7 +46,7 @@ export function conflictSupport(): { route: '/support'; mustVerifyFirst: true } 
 }
 
 export function createEntitlementClient(
-  transport: MoneyTransport,
+  transport: MoneyTransportGet,
   options: { now?: () => number } = {},
 ): {
   load(input: EntitlementLoadInput): Promise<EntitlementView>;

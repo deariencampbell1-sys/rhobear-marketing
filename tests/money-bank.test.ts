@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createBankClient, formatMoney, type BankSnapshot } from '../src/clients/money/bank';
-import type { MoneyTransport } from '../src/clients/money/catalog';
+import type { MoneyTransportGet } from '../src/clients/money/transport';
 import type { MoneyRequest, MoneyResult } from '../src/clients/money/transport';
 import type { Bank, BankState } from '../src/clients/money/schema';
 
 // No network: the fake runs the payload through the parser the client handed
 // it, so a fixture below is judged by parseBank exactly as the wire would be.
-const okTransport = (payload: unknown): MoneyTransport => ({
+const okTransport = (payload: unknown): MoneyTransportGet => ({
   async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
     const data = parse(payload);
     if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
@@ -14,7 +14,7 @@ const okTransport = (payload: unknown): MoneyTransport => ({
   },
 });
 
-const failingTransport: MoneyTransport = {
+const failingTransport: MoneyTransportGet = {
   async get<T>(): Promise<MoneyResult<T>> {
     return { ok: false, reason: 'network', requestId: 'req-1' };
   },
@@ -60,8 +60,10 @@ describe('money bank client', () => {
   ];
 
   it('passes state through without computing it', async () => {
+    // The transport stamps fetchedAt 42, so the client's clock sits on it: a
+    // fresh snapshot, and the wire state is the only input to canStartPaidWork.
     for (const [state, canStart] of wireStates) {
-      const res = await createBankClient(okTransport(fixture({ state }))).load();
+      const res = await createBankClient(okTransport(fixture({ state })), { now: () => 42 }).load();
       expect(res.ok).toBe(true);
       expect(res.snapshot.state).toBe(state);
       expect(res.snapshot.canStartPaidWork).toBe(canStart);
@@ -79,8 +81,8 @@ describe('money bank client', () => {
 
   it('marks lastSnapshot stale and does not resurrect a balance', async () => {
     // One client, two transports: the wire goes quiet after a good load.
-    let transport: MoneyTransport = failingTransport;
-    const gate: MoneyTransport = {
+    let transport: MoneyTransportGet = failingTransport;
+    const gate: MoneyTransportGet = {
       async get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         return transport.get<T>(req, parse);
       },
@@ -116,7 +118,7 @@ describe('money bank client', () => {
 // becomes a live balance, and a placeholder snapshot carries no balance claim.
 describe('money bank fetchedAt guard', () => {
   it('fails closed when the transport stamps a non-finite fetchedAt', async () => {
-    const badStamp: MoneyTransport = {
+    const badStamp: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         const data = parse(fixture());
         if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
@@ -135,15 +137,17 @@ describe('money bank fetchedAt guard', () => {
   });
 });
 
-// Apollo's round-5 review: the remembered balance is immutable, its age is
-// re-judged on every read, and a large credit still renders.
+// The remembered balance is immutable, its age is re-judged on every read, and
+// a large credit still renders.
 describe('money bank memory and age', () => {
   it('freezes the remembered snapshot and hands out a copy', async () => {
     const client = createBankClient(okTransport(fixture()), { now: () => 1_000 });
     const res = await client.load();
     if (!res.ok) throw new Error('the fixture bank loads');
-    // The returned object is a copy: writing to it cannot rewrite history.
-    (res.snapshot as { creditAvailable: string }).creditAvailable = '999.00';
+    // The returned object is frozen: writing to it throws, and history is intact.
+    expect(() => {
+      (res.snapshot as { creditAvailable: string }).creditAvailable = '999.00';
+    }).toThrow();
     expect(client.lastSnapshot()?.creditAvailable).toBe('12.00');
     expect(client.currentSnapshot()?.creditAvailable).toBe('12.00');
   });
@@ -151,7 +155,7 @@ describe('money bank memory and age', () => {
   it('stops authorising paid work once the snapshot ages past its window', async () => {
     let clock = 1_000_000;
     // The transport stamps fetchedAt on the same clock the client judges with.
-    const stamped: MoneyTransport = {
+    const stamped: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         const data = parse(fixture());
         if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
@@ -179,5 +183,63 @@ describe('money bank memory and age', () => {
     expect(formatMoney('1234567.89')).toBe('$1234567.89');
     expect(formatMoney('123456789012.34')).toBe('$123456789012.34');
     expect(formatMoney('1.2')).toBe('1.2');
+  });
+});
+
+// A held snapshot must age on its own, and a failed read must withdraw whatever
+// the previous good read authorised.
+describe('money bank live verdicts', () => {
+  const stampedTransport = (clock: () => number): MoneyTransportGet => ({
+    async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+      const data = parse(fixture());
+      if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
+      return { ok: true, data, requestId: 'req-1', fetchedAt: clock() };
+    },
+  });
+
+  it('a snapshot a screen holds stops authorising paid work as it ages', async () => {
+    let clock = 1_000_000;
+    const client = createBankClient(stampedTransport(() => clock), { now: () => clock, freshnessMs: 60_000 });
+    const res = await client.load();
+    if (!res.ok) throw new Error('the fixture bank loads');
+    const held = res.snapshot;
+    expect(held.canStartPaidWork).toBe(true);
+
+    clock += 60_001; // the screen did not reload, the object is the same one
+    expect(held.canStartPaidWork).toBe(false);
+    expect(held.stale).toBe(true);
+    expect(held.creditAvailable).toBe('12.00'); // still readable, marked stale
+  });
+
+  it('a failed read withdraws authorisation from the balance loaded before it', async () => {
+    let clock = 1_000_000;
+    let failing = false;
+    const transport: MoneyTransportGet = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        if (failing) return { ok: false, reason: 'network', requestId: 'req-1' };
+        const data = parse(fixture());
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
+        return { ok: true, data, requestId: 'req-1', fetchedAt: clock };
+      },
+    };
+    const client = createBankClient(transport, { now: () => clock });
+    const good = await client.load();
+    if (!good.ok) throw new Error('the fixture bank loads');
+    const held = good.snapshot;
+    expect(held.canStartPaidWork).toBe(true);
+
+    failing = true;
+    expect((await client.load()).ok).toBe(false);
+    // The same held object now refuses paid work, and so does the accessor.
+    expect(held.canStartPaidWork).toBe(false);
+    expect(client.currentSnapshot()?.canStartPaidWork).toBe(false);
+  });
+
+  it('fails closed on a clock that is not a number', async () => {
+    const client = createBankClient(okTransport(fixture()), { now: () => Number.NaN });
+    const res = await client.load();
+    if (!res.ok) throw new Error('the fixture bank loads');
+    expect(res.snapshot.canStartPaidWork).toBe(false);
+    expect(res.snapshot.stale).toBe(true);
   });
 });

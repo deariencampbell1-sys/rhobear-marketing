@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createCatalogClient, type CatalogView, type MoneyTransport } from '../src/clients/money/catalog';
+import { createCatalogClient, type CatalogView } from '../src/clients/money/catalog';
+import type { MoneyTransportGet } from '../src/clients/money/transport';
 import type { MoneyRequest, MoneyResult } from '../src/clients/money/transport';
 
 const fakeCatalog = (over: Record<string, unknown> = {}) => ({
@@ -23,7 +24,7 @@ const fakeCatalog = (over: Record<string, unknown> = {}) => ({
 // The fake transport pushes the wire shape through catalog.ts's own parser and
 // stamps fetchedAt on the injected clock when the payload was recorded, so a
 // payload replayed after the freshness window is honestly old. No network.
-const fakeTransport = (payload: unknown, clock: () => number = Date.now, requestId = 'r1'): MoneyTransport => {
+const fakeTransport = (payload: unknown, clock: () => number = Date.now, requestId = 'r1'): MoneyTransportGet => {
   const fetchedAt = clock();
   return {
     async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
@@ -34,7 +35,7 @@ const fakeTransport = (payload: unknown, clock: () => number = Date.now, request
   };
 };
 
-const failingTransport: MoneyTransport = { get: async <T>(): Promise<MoneyResult<T>> => ({ ok: false, reason: 'network', requestId: 'r1' }) };
+const failingTransport: MoneyTransportGet = { get: async <T>(): Promise<MoneyResult<T>> => ({ ok: false, reason: 'network', requestId: 'r1' }) };
 
 const loadView = async (client: ReturnType<typeof createCatalogClient>): Promise<CatalogView> => {
   const res = await client.load();
@@ -185,7 +186,7 @@ describe('money catalog sell gate', () => {
   // A transport whose next response can be made to fail on demand.
   const controllableTransport = (payload: unknown, clock: () => number) => {
     let failing = false;
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         if (failing) return { ok: false, reason: 'network', requestId: 'r1' };
         const data = parse(payload);
@@ -230,7 +231,7 @@ describe('money catalog sell gate', () => {
 
   it('fails closed when fetchedAt is not a timestamp', async () => {
     const now = () => 1_000_000_000;
-    const badFetchedAt: MoneyTransport = {
+    const badFetchedAt: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         const data = parse(fakeCatalog());
         if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
@@ -280,8 +281,8 @@ describe('money catalog sell gate', () => {
   });
 });
 
-// Apollo's round-5 review: the generation cadence gets its own window, and a
-// fresh catalog that cannot be sold from is not an ok load.
+// The generation cadence gets its own window, and a fresh catalog that cannot
+// be sold from is not an ok load.
 describe('money catalog windows and sellability', () => {
   const at = (iso: string) => () => Date.parse(iso);
 
@@ -322,5 +323,30 @@ describe('money catalog windows and sellability', () => {
     expect(client.currentView()?.purchasable).toBe(false);
     expect(client.currentView()?.stale).toBe(false);
     expect(client.lastView()?.plans).toHaveLength(1);
+  });
+});
+
+// A clock that is not a number cannot age anything, and a fresh-but-unsellable
+// view says why it cannot be sold.
+describe('money catalog clock and reason', () => {
+  it('fails closed on a clock that is not a number', async () => {
+    const client = createCatalogClient(fakeTransport(fakeCatalog()), { now: () => Number.NaN });
+    expect(await client.load()).toEqual({ ok: false, reason: 'stale', requestId: 'r1' });
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.stale).toBe(true);
+  });
+
+  it('names not-purchasable on a fresh view that cannot be sold from', async () => {
+    const clock = () => Date.parse('2026-10-25T12:05:00Z');
+    const client = createCatalogClient(
+      fakeTransport(fakeCatalog({ plans: [
+        { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'unavailable' },
+      ] }), clock),
+      { now: clock },
+    );
+    await client.load();
+    expect(client.currentView()?.stale).toBe(false);
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.reason).toBe('not-purchasable');
   });
 });

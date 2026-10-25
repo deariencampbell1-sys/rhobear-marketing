@@ -603,8 +603,7 @@ describe('request id generation never rejects get()', () => {
   );
 });
 
-// Apollo's round-4 review: the fallback request-id path (crypto.randomUUID
-// unavailable or throwing) was the only new branch without a test.
+// The fallback request-id path: crypto.randomUUID unavailable or throwing.
 describe('request id fallback', () => {
   it('still issues a request when crypto.randomUUID throws', async () => {
     const original = globalThis.crypto.randomUUID;
@@ -626,5 +625,43 @@ describe('request id fallback', () => {
       spy.mockRestore();
       expect(globalThis.crypto.randomUUID).toBe(original);
     }
+  });
+});
+
+// The over-cap path must survive a rejecting cancel(), and a body-less response
+// is an empty body rather than a parse failure.
+describe('body cap and body-less responses', () => {
+  it('classifies an over-cap body as body-too-large even when cancel() rejects', async () => {
+    const bytes = new TextEncoder().encode('x'.repeat(300_000));
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+      },
+      cancel() {
+        throw new Error('cancel failed');
+      },
+    });
+    fetchMock.mockResolvedValue(
+      new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }),
+    );
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-cap' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result).toEqual({
+      ok: false, reason: 'http', requestId: 'req-cap', detail: 'body-too-large',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a body-less response as an empty body, not a parse failure', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200, headers: { 'content-type': 'application/json' } }));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-null' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    // '' is not JSON: the failure is a parse failure of an empty body, which is
+    // the honest classification (the body was read, and it was empty).
+    expect(result).toEqual({ ok: false, reason: 'parse', requestId: 'req-null' });
   });
 });

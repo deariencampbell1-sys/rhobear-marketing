@@ -4,9 +4,10 @@
 // is no argument anywhere that can turn a stale quote into a ready one.
 
 import { parseQuote, type Quote } from './schema';
-// MoneyTransport lives in catalog.ts: a local alias for the exact signature
-// createMoneyTransport returns (transport.ts exports the factory, not the type).
-import type { CatalogClient, MoneyTransport } from './catalog';
+// One transport type in the tree: transport.ts derives it from the factory's
+// return type, and this client takes only the read it uses.
+import type { CatalogClient } from './catalog';
+import type { MoneyTransportGet } from './transport';
 
 export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel';
 
@@ -29,12 +30,12 @@ export type QuoteClient = {
 };
 
 export function createQuoteClient(
-  transport: MoneyTransport,
+  transport: MoneyTransportGet,
   catalog: CatalogClient,
   options: { now?: () => number } = {},
 ): QuoteClient {
   const now = options.now ?? (() => Date.now());
-  const bound = new Map<string, QuoteBindInput & { requestId: string }>(); // operationId -> the input that made it
+  const bound = new Map<string, QuoteBindInput>(); // operationId -> the input that made it
   const BOUND_LIMIT = 32;
 
   function judge(quote: Quote, input: QuoteBindInput, requestId: string): QuoteState {
@@ -78,7 +79,7 @@ export function createQuoteClient(
         const oldest = bound.keys().next();
         if (!oldest.done) bound.delete(oldest.value);
       }
-      bound.set(res.data.operationId, { ...input, requestId: res.requestId });
+      bound.set(res.data.operationId, { ...input });
     }
     return state;
   }

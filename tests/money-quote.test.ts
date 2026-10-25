@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { createQuoteClient, type QuoteBindInput } from '../src/clients/money/quote';
-import type { CatalogClient, MoneyTransport } from '../src/clients/money/catalog';
+import type { CatalogClient } from '../src/clients/money/catalog';
+import type { MoneyTransportGet } from '../src/clients/money/transport';
 import type { MoneyRequest, MoneyResult } from '../src/clients/money/transport';
 import type { Quote } from '../src/clients/money/schema';
 
 // No network, no account, no card, no fixture from src/. The fake hands the raw
 // payload to the client unparsed: judge() — not the wire parser — owns every
 // refusal this file checks (a no-total quote never survives parseQuote).
-const fakeTransport = (payload: unknown): MoneyTransport => ({
+const fakeTransport = (payload: unknown): MoneyTransportGet => ({
   async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
     if (typeof payload !== 'object' || payload === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
     return { ok: true, data: payload as T, requestId: 'req-1', fetchedAt: 1 };
@@ -42,7 +43,7 @@ const input: QuoteBindInput = { accountUuid: 'acct-1', sku: 'shell', channel: 'w
 const countingTransport = (payload: unknown) => {
   let calls = 0;
   const inner = fakeTransport(payload);
-  const transport: MoneyTransport = {
+  const transport: MoneyTransportGet = {
     async get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
       calls += 1;
       return inner.get(req, parse);
@@ -120,7 +121,7 @@ describe('money quote reconfirm', () => {
 
   const mutableTransport = (payload: () => unknown) => {
     let calls = 0;
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         calls += 1;
         return { ok: true, data: payload() as T, requestId: `req-${calls}`, fetchedAt: 1 };
@@ -238,7 +239,7 @@ describe('money quote sell gate and binding limit', () => {
 
   it('drops the oldest binding once 32 are open, and keeps the newest', async () => {
     let issued = 0;
-    const transport: MoneyTransport = {
+    const transport: MoneyTransportGet = {
       async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
         issued += 1;
         return { ok: true, data: fakeQuote({ operationId: `op-${issued}` }) as T, requestId: `req-${issued}`, fetchedAt: 1 };
@@ -266,7 +267,7 @@ describe('money quote sell gate and binding limit', () => {
 // sees it, so the state a screen receives is invalid-shape. judge()'s own
 // no-total guard is a belt for a fake or a hand-built quote.
 describe('money quote production parser path', () => {
-  const parsingTransport = (payload: unknown): MoneyTransport => ({
+  const parsingTransport = (payload: unknown): MoneyTransportGet => ({
     async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
       const data = parse(payload);
       if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
