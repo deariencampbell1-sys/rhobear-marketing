@@ -67,7 +67,10 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
         parseCatalog,
       );
       if (!res.ok) return { ok: false, reason: res.reason, requestId: res.requestId };
-      const view = buildView(res.data, now());
+      // Age is measured from when the transport fetched the body, not from this call:
+      // a re-load must be able to observe that the catalog on disk is old.
+      const fetchedAt = Number.isFinite(res.fetchedAt) ? res.fetchedAt : now();
+      const view = buildView(res.data, fetchedAt);
       if (view.purchasable) last = { view };
       return { ok: true, view };
     },
