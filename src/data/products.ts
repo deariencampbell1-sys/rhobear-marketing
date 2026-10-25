@@ -5,13 +5,14 @@
 import { brand } from './brand';
 
 // local until W0-02c composes the model
+export type ProductId = (typeof brand.appOrder)[number];
+
 export interface ProductEntry {
-  id: 'builds' | 'forge' | 'herald' | 'regent' | 'reviews';
+  id: ProductId;
   publicName: string;
   oneLiner: string;
   promise: string;
   whatItIs: string[];
-  truthBoundary: string;
   availability: {
     state: 'not-available' | 'testflight' | 'waitlist';
     label: string;
@@ -20,6 +21,11 @@ export interface ProductEntry {
   links: { download?: string };
   source: { doc: string; section: string };
   extraSources?: { doc: string; section: string }[];
+}
+
+// Internal-only caveats: never rendered, never spread into public data.
+export interface ProductInternals {
+  truthBoundary: string;
 }
 
 export const products: readonly ProductEntry[] = [
@@ -34,16 +40,22 @@ export const products: readonly ProductEntry[] = [
       'Your local device plus a private shell or server.',
       'Your work, memory, models and one account usage bank.',
     ],
-    truthBoundary:
-      'Cloud and native substance are real, the locked UX is being rebuilt, and TestFlight 1.0 (build 32) is owner-confirmed as the only accepted mobile release; other release targets are not proved available.',
     availability: {
       state: 'testflight',
       label: 'TestFlight 1.0 (32) by invitation',
       reason: 'App Store and other platform releases are not published yet.',
     },
     links: {},
-    source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products' },
-    extraSources: [{ doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q13' }],
+    source: {
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. What each product really is — and what the front door may say',
+    },
+    extraSources: [
+      {
+        doc: 'lanes/L9-front-door/INTENT.md',
+        section: '4. Money, account, download and demo reality — Get / release truth',
+      },
+    ],
   },
   {
     id: 'forge',
@@ -56,15 +68,16 @@ export const products: readonly ProductEntry[] = [
       'A checked printable model with precise edits, paint and split, and a matching slice.',
       'Printer handoff through to physical completion.',
     ],
-    truthBoundary:
-      'The engine, desktop and scripts are substantial, but direct printing, camera control, farm and six-platform release are not all production-proven, and Dojo Hinge V3, the first commercial kit, awaits physical-fit acceptance.',
     availability: {
       state: 'waitlist',
       label: 'Early access by invitation',
       reason: 'First commercial kit is in physical-fit validation.',
     },
     links: {},
-    source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products' },
+    source: {
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. What each product really is — and what the front door may say',
+    },
   },
   {
     id: 'herald',
@@ -76,15 +89,16 @@ export const products: readonly ProductEntry[] = [
       'A business phone and an assistant for your business.',
       'Your card, your assistant, your business, answered.',
     ],
-    truthBoundary:
-      'Availability and entitlements come from its own lane; there is no self-serve checkout on this site.',
     availability: {
       state: 'waitlist',
       label: 'Talk to us',
       reason: 'Herald is quoted and set up with you, not bought from a price card here.',
     },
     links: {},
-    source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products' },
+    source: {
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. What each product really is — and what the front door may say',
+    },
   },
   {
     id: 'regent',
@@ -95,15 +109,16 @@ export const products: readonly ProductEntry[] = [
       'The desk beside the call.',
       'Early access is by invitation, with terms set in its own lane.',
     ],
-    truthBoundary:
-      'There is no self-serve quote, no agency data is published, and no live call handling is claimed in public.',
     availability: {
       state: 'waitlist',
       label: 'Early access by invitation',
       reason: 'Regent has no self-serve quote; terms come from its own lane.',
     },
     links: {},
-    source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products' },
+    source: {
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. What each product really is — and what the front door may say',
+    },
   },
   {
     id: 'reviews',
@@ -115,30 +130,64 @@ export const products: readonly ProductEntry[] = [
       'Checks the code, reviews the change, and fixes and merges with proof.',
       'Levels: Verifier, Apollo and Zeus.',
     ],
-    truthBoundary:
-      'Apollo and Zeus work today as reviewer and builder agents; standalone paid Reviews plans are not published.',
     availability: {
       state: 'waitlist',
       label: 'Included with a plan',
       reason: 'Standalone Reviews pricing is not published; it comes with the plans that include it.',
     },
     links: {},
-    source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products' },
+    source: {
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. What each product really is — and what the front door may say',
+    },
   },
 ];
 
-// The ids in display order, straight from brand.appOrder.
-export const productOrder: readonly ProductEntry['id'][] = brand.appOrder;
+// Internal-only caveats kept out of the public product objects, keyed by id.
+export const productInternals: Readonly<Record<ProductId, ProductInternals>> = {
+  builds: {
+    truthBoundary:
+      'Cloud and native substance are real, the locked UX is being rebuilt, and TestFlight 1.0 (build 32) is owner-confirmed as the only accepted mobile release; other release targets are not proved available.',
+  },
+  forge: {
+    truthBoundary:
+      'The engine, desktop and scripts are substantial, but direct printing, camera control, farm and six-platform release are not all production-proven, and Dojo Hinge V3, the first commercial kit, awaits physical-fit acceptance.',
+  },
+  herald: {
+    truthBoundary:
+      'Availability and entitlements come from its own lane; there is no self-serve checkout on this site.',
+  },
+  regent: {
+    truthBoundary:
+      'There is no self-serve quote, no agency data is published, and no live call handling is claimed in public.',
+  },
+  reviews: {
+    truthBoundary:
+      'Apollo and Zeus work today as reviewer and builder agents; standalone paid Reviews plans are not published.',
+  },
+};
 
-function productById(id: ProductEntry['id']): ProductEntry {
+// The ids in display order, frozen so callers cannot mutate the ordering.
+export const productOrder: readonly ProductId[] = Object.freeze([...brand.appOrder]);
+
+// Module-scope guard: drift between the product table and the display order is a
+// programming error and must fail loudly at import time.
+if (
+  products.length !== productOrder.length ||
+  products.some((product, index) => product.id !== productOrder[index])
+) {
+  throw new Error('products: products and productOrder disagree');
+}
+
+export function productById(id: ProductId): ProductEntry {
   const found = products.find((product) => product.id === id);
   if (!found) {
-    throw new Error('products: products and productOrder disagree');
+    throw new Error(`products: no entry for id "${id}"`);
   }
   return found;
 }
 
-export const productsById: Readonly<Record<ProductEntry['id'], ProductEntry>> = {
+export const productsById: Readonly<Record<ProductId, ProductEntry>> = {
   builds: productById('builds'),
   forge: productById('forge'),
   herald: productById('herald'),

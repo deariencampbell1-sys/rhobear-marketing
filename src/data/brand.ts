@@ -9,11 +9,12 @@ export const brand = {
   familyLine:
     'Five apps on one account: Builds, Forge, Herald, Regent and Reviews, plus the Engines that run inside them.',
   appOrder: ['builds', 'forge', 'herald', 'regent', 'reviews'],
-  enginesDestination: 'engines',
+  enginesDestination: '/engines',
 } as const;
 
 // local until W0-02c composes the model
 export const brandSources = {
   tagline: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — The tagline' },
   taglineExplanation: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — The tagline' },
+  familyLine: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — Five apps' },
 } as const;
