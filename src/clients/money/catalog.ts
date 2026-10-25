@@ -44,7 +44,11 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
   function buildView(catalog: ReturnType<typeof parseCatalog> & object, fetchedAt: number): CatalogView {
     const generatedAt = Date.parse(catalog.generatedAt);
     const generatedBad = Number.isNaN(generatedAt);
-    const stale = generatedBad || now() - fetchedAt > freshnessMs;
+    // Two ages matter: how long ago we fetched, and how long ago the catalog was
+    // generated. A fresh fetch of a ten-day-old catalog is still a stale price.
+    const fetchedAge = now() - fetchedAt;
+    const generatedAge = generatedBad ? Number.POSITIVE_INFINITY : now() - generatedAt;
+    const stale = generatedBad || fetchedAge > freshnessMs || generatedAge > freshnessMs;
     const allAvailable = catalog.plans.every((p) => p.availability === 'available');
     const purchasable = !stale && allAvailable;
     return {

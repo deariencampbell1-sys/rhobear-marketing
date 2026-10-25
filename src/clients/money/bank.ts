@@ -63,10 +63,13 @@ export function createBankClient(
     return {
       state: 'reconciling',
       revision: -1,
-      creditAvailable: '0.00',
-      creditReserved: '0.00',
-      allowanceRemaining: '0.00',
-      purchasedRemaining: '0.00',
+      // Empty, not '0.00': a plausible-looking zero is a balance claim, and we
+      // do not have one. formatMoney('') returns '' unchanged, so a renderer
+      // that forgets to gate on state prints nothing rather than "$0.00".
+      creditAvailable: '',
+      creditReserved: '',
+      allowanceRemaining: '',
+      purchasedRemaining: '',
       resetsAtMs: null,
       stale: true,
       fetchedAt,
@@ -86,7 +89,9 @@ export function createBankClient(
       return { ok: true, snapshot };
     },
     lastSnapshot() {
-      return previous ? { ...previous, stale: true } : null;
+      // A remembered snapshot is history: it never authorises new paid work,
+      // because the balance on disk may already be spent.
+      return previous ? { ...previous, stale: true, canStartPaidWork: false } : null;
     },
   };
 }

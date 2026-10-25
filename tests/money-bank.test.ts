@@ -92,7 +92,7 @@ describe('money bank client', () => {
     const good = await client.load();
     expect(good.ok).toBe(true);
     const remembered: BankSnapshot | null = client.lastSnapshot();
-    expect(remembered).toEqual({ ...good.snapshot, stale: true });
+    expect(remembered).toEqual({ ...good.snapshot, stale: true, canStartPaidWork: false });
     expect(remembered?.stale).toBe(true);
 
     // The later failure keeps the remembered values under their stale mark:
@@ -100,7 +100,8 @@ describe('money bank client', () => {
     transport = failingTransport;
     const failed = await client.load();
     expect(failed.ok).toBe(false);
-    expect(client.lastSnapshot()).toEqual({ ...good.snapshot, stale: true });
+    // Remembered, but it may not authorise paid work: the disk balance is old.
+    expect(client.lastSnapshot()).toEqual({ ...good.snapshot, stale: true, canStartPaidWork: false });
   });
 
   it('formatMoney never invents a zero', () => {

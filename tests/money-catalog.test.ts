@@ -54,7 +54,10 @@ describe('money catalog client', () => {
       { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'available' },
       { sku: 'space', name: 'Space', monthlyPrice: '69.99', creditIncluded: '39.60', availability: 'unavailable', reason: 'renewal review' },
     ] });
-    const view = await loadView(createCatalogClient(fakeTransport(catalog)));
+    // The clock sits five minutes after the catalog was generated, so the
+    // freshness window is genuinely open and this test is about plan rows.
+    const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
+    const view = await loadView(createCatalogClient(fakeTransport(catalog), { now: nearGeneratedAt }));
     expect(view.purchasable).toBe(false);
     expect(view.reason).toBeUndefined();
     expect(view.plans.find((p) => p.sku === 'space')?.reason).toBe('renewal review');
