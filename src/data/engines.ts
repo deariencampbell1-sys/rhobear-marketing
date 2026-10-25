@@ -29,7 +29,7 @@ const enginesSource = {
   section: '3. Products — Engines',
 } as const;
 
-export const engines: readonly EngineRow[] = [
+export const engines = [
   {
     id: 'teams',
     publicName: 'Teams',
@@ -93,11 +93,18 @@ export const engines: readonly EngineRow[] = [
     scenarioIds: ['spaces-01'],
     source: enginesSource,
   },
-];
+] as const satisfies readonly EngineRow[];
 
-export const enginesById: Readonly<Record<string, EngineRow>> = Object.fromEntries(
-  engines.map((engine) => [engine.id, engine]),
-);
+export type EngineId = (typeof engines)[number]['id'];
+
+// Null prototype: an unknown id must never resolve through Object.prototype.
+const enginesByIdUnfrozen = Object.create(null) as Record<EngineId, EngineRow>;
+for (const engine of engines) {
+  enginesByIdUnfrozen[engine.id] = engine;
+}
+
+export const enginesById: Readonly<Record<EngineId, EngineRow>> =
+  Object.freeze(enginesByIdUnfrozen);
 
 export const engineScenarios: readonly {
   scenarioId: string;

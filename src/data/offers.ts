@@ -89,7 +89,7 @@ export const billingTerms = {
 export const launchOffer = {
   headline: 'The first 100 accounts get 90 days of no metered engine usage.',
   body:
-    'Engine and MCP calls — Imagine, Forge renders, Designs, Captur’d, Vision, Search and Teams — are not metered for the first 100 accounts for 90 days from the day each account starts. It is not a free plan: your subscription and your model tokens bill as usual, and the usual abuse and rate limits still apply.',
+    'Engine and MCP calls — Spaces, Forge renders, Designs, Captur\'d, Vision, Search and Teams — are not metered for the first 100 accounts for 90 days from the day each account starts. It is not a free plan: your subscription and your model tokens bill as usual, and the usual abuse and rate limits still apply.',
   state: 'announced', // not 'active': the counter is L2's entitlement flag, not built yet
   source: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — Launch offer' },
 } as const;
