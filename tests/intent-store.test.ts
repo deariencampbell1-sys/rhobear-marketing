@@ -4,11 +4,11 @@
 // injected storage adapter and an injected clock — no setTimeout, no real
 // sessionStorage, no sleep.
 import { describe, expect, it } from 'vitest';
+import { INTENT_KINDS } from '../src/clients/intent/schema';
 import {
   CHECKOUT_TTL_MS,
   CONSUMED_RETENTION_MS,
   DAY_TTL_MS,
-  INTENT_KINDS,
   INTENT_STORAGE_KEY,
   STORED_MAX_BYTES,
   createIntentStore,
@@ -115,10 +115,8 @@ describe('intent store', () => {
       const created = await store.create({ product: 'builds', kind, returnRoute: '/get' });
       expect(created.ok, kind).toBe(true);
       if (created.ok) {
-        expect(Date.parse(created.intent.expiresAt) - Date.parse(created.intent.createdAt)).toBe(
-          ttlMsForKind(kind),
-          kind,
-        );
+        const span = Date.parse(created.intent.expiresAt) - Date.parse(created.intent.createdAt);
+        expect(span, kind).toBe(ttlMsForKind(kind));
         const expected = kind === 'checkout' ? CHECKOUT_TTL_MS : DAY_TTL_MS;
         expect(ttlMsForKind(kind), kind).toBe(expected);
       }
