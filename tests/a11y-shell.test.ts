@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute } from '../src/app/routes';
@@ -28,7 +29,7 @@ describe('page shell', () => {
 
 describe('kit: Button', () => {
   it('renders a 44 px minimum target and a real button by default', () => {
-    const html = renderToStaticMarkup(<Button>Get</Button>);
+    const html = renderToStaticMarkup(React.createElement(Button, null, 'Get'));
     expect(html).toContain('<button type="button"');
     expect(html).toContain('min-height:44px');
     expect(html).toContain('min-width:44px');
@@ -36,12 +37,12 @@ describe('kit: Button', () => {
 
   it('renders an anchor with as="a" and uses real disabled semantics', () => {
     const html = renderToStaticMarkup(
-      <Button as="a" href="/plans">
-        Plans
-      </Button>,
+      React.createElement(Button, { as: 'a', href: '/plans', children: 'Plans' }),
     );
     expect(html).toMatch(/^<a href="\/plans"/);
-    const disabled = renderToStaticMarkup(<Button disabled>Get</Button>);
+    const disabled = renderToStaticMarkup(
+      React.createElement(Button, { disabled: true, children: 'Get' }),
+    );
     expect(disabled).toContain('disabled');
   });
 });
@@ -49,9 +50,11 @@ describe('kit: Button', () => {
 describe('kit: rows', () => {
   it('renders a label · value pair with a divider and no box on the row', () => {
     const html = renderToStaticMarkup(
-      <InfoList>
-        <InfoRow label="Plan" value="Studio" />
-      </InfoList>,
+      React.createElement(
+        InfoList,
+        null,
+        React.createElement(InfoRow, { label: 'Plan', value: 'Studio' }),
+      ),
     );
     expect(html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')).toContain('Plan · Studio');
     const styles = [...html.matchAll(/style="([^"]*)"/g)].map((m) => m[1]);
@@ -64,9 +67,11 @@ describe('kit: rows', () => {
 
 describe('kit: Progress', () => {
   it('renders nothing without a determinate numeric value', () => {
-    expect(renderToStaticMarkup(<Progress />)).toBe('');
-    expect(renderToStaticMarkup(<Progress value={Number.NaN} />)).toBe('');
-    const html = renderToStaticMarkup(<Progress value={3} label="Loading" />);
+    expect(renderToStaticMarkup(React.createElement(Progress, {}))).toBe('');
+    expect(renderToStaticMarkup(React.createElement(Progress, { value: Number.NaN }))).toBe('');
+    const html = renderToStaticMarkup(
+      React.createElement(Progress, { value: 3, label: 'Loading' }),
+    );
     expect(html).toContain('<progress');
     expect(html).toContain('value="3"');
   });
@@ -75,18 +80,27 @@ describe('kit: Progress', () => {
 describe('kit: Sheet', () => {
   it('is a labelled aria-modal dialog and renders nothing when closed', () => {
     const html = renderToStaticMarkup(
-      <Sheet open={true} label="Details" onClose={() => {}}>
-        <p>Body</p>
-      </Sheet>,
+      React.createElement(
+        Sheet,
+        {
+          open: true,
+          label: 'Details',
+          onClose: () => {},
+          children: React.createElement('p', null, 'Body'),
+        },
+      ),
     );
     expect(html).toContain('role="dialog"');
     expect(html).toContain('aria-modal="true"');
     expect(html).toContain('aria-label="Details"');
     expect(
       renderToStaticMarkup(
-        <Sheet open={false} label="Details" onClose={() => {}}>
-          <p>Body</p>
-        </Sheet>,
+        React.createElement(Sheet, {
+          open: false,
+          label: 'Details',
+          onClose: () => {},
+          children: React.createElement('p', null, 'Body'),
+        }),
       ),
     ).toBe('');
   });
@@ -109,7 +123,7 @@ describe('kit: Sheet', () => {
 
     const first = { focus: vi.fn() };
     const last = { focus: vi.fn() };
-    const dialog = { querySelectorAll: () => [first, last] };
+    const dialog = { querySelectorAll: () => [first, last], focus: vi.fn() };
     const tab = { key: 'Tab', shiftKey: false, preventDefault: vi.fn() };
     handleSheetKeyDown(tab, dialog, last, onClose);
     expect(first.focus).toHaveBeenCalledTimes(1);
@@ -121,15 +135,13 @@ describe('kit: useMotion', () => {
   it('returns only the kit motion names', () => {
     function Probe() {
       const motion = useMotion();
-      return (
-        <ul>
-          {Object.keys(motion).map((name) => (
-            <li key={name}>{name}</li>
-          ))}
-        </ul>
+      return React.createElement(
+        'ul',
+        null,
+        Object.keys(motion).map((name) => React.createElement('li', { key: name }, name)),
       );
     }
-    const html = renderToStaticMarkup(<Probe />);
+    const html = renderToStaticMarkup(React.createElement(Probe));
     const names = [...html.matchAll(/<li>([^<]+)<\/li>/g)].map((m) => m[1]);
     expect(names).toEqual([...MOTION_NAMES]);
   });

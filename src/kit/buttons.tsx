@@ -45,6 +45,7 @@ export function Button({
     return (
       <a
         href={href}
+        data-variant={variant}
         aria-label={ariaLabel}
         aria-disabled={disabled || undefined}
         onClick={(e) => {
@@ -61,6 +62,7 @@ export function Button({
   return (
     <button
       type="button"
+      data-variant={variant}
       disabled={disabled}
       aria-label={ariaLabel}
       onClick={onClick}
