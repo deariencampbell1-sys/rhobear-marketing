@@ -194,10 +194,11 @@ describe('resolveReleases — availability and detection', () => {
     const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)';
     expect(detectPlatform({ userAgent: ua, maxTouchPoints: 5 })).toBe('ipados');
     expect(detectPlatform({ userAgent: ua, maxTouchPoints: 0 })).toBe('macos');
-    // No touch hint at all: a Mac and an iPad in desktop mode are the same UA,
-    // so the device is unknown rather than guessed as macOS.
-    expect(detectPlatform({ userAgent: ua })).toBe(null);
-    expect(detectPlatform({ userAgent: ua, maxTouchPoints: null })).toBe(null);
+    // No touch information at all (a server-side render, a WebView, a smoke
+    // test): the device is the desktop Mac it claims to be. A caller rendering
+    // for iPadOS passes maxTouchPoints, and a known count still moves it there.
+    expect(detectPlatform({ userAgent: ua })).toBe('macos');
+    expect(detectPlatform({ userAgent: ua, maxTouchPoints: null })).toBe('macos');
   });
 
   it('a Linux desktop and a Chromebook both resolve to linux', () => {
@@ -572,5 +573,43 @@ describe('resolveReleases — waitlist reason and bypassed rows', () => {
     expect(linux.state).toBe('unavailable');
     expect(linux.reason).toBe('incomplete-artifact');
     expect(linux.artifactUrl).toBeNull();
+  });
+});
+
+// Apollo's round-7 review: a bare Mac UA still gets its row, a bypassed store
+// link is held to the store host policy, and a valid store link survives a
+// leftover insecure artifact URL.
+describe('resolveReleases — desktop Mac, store host, leftover artifact', () => {
+  it('features the macOS row for a Mac with no touch information', () => {
+    const result = resolveReleases(PRODUCT, MANIFEST.releases, {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+    });
+    if (!result.ok) throw new Error('a bare Mac resolves');
+    expect(result.currentPlatform).toBe('macos');
+    expect(result.featured?.platform).toBe('macos');
+    expect(result.featured?.state).toBe('downloadable');
+  });
+
+  it('refuses a store link to a host we do not ship through', () => {
+    const bypassed = MANIFEST.releases.map((release) =>
+      release.platform === 'ios' ? { ...release, storeUrl: 'https://store.example.com/app' } : release,
+    );
+    const rows = rowsOf({ releases: bypassed });
+    const ios = rowWhere(rows, (r) => r.platform === 'ios');
+    expect(ios.state).toBe('unavailable');
+    expect(ios.storeUrl).toBeNull();
+  });
+
+  it('offers the store link when the leftover artifact URL is insecure', () => {
+    const mixed = MANIFEST.releases.map((release) =>
+      release.platform === 'ios'
+        ? { ...release, artifactUrl: 'http://insecure.example.com/app.apk', storeUrl: STORE.ios }
+        : release,
+    );
+    const rows = rowsOf({ releases: mixed });
+    const ios = rowWhere(rows, (r) => r.platform === 'ios');
+    expect(ios.state).toBe('store');
+    expect(ios.storeUrl).toBe(STORE.ios);
+    expect(ios.artifactUrl).toBeNull();
   });
 });

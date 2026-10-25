@@ -1,4 +1,6 @@
 import {
+  DEFAULT_STORE_HOSTS,
+  hostAllowed,
   isHttpsUrl,
   platforms,
   type Platform,
@@ -83,9 +85,13 @@ export function detectPlatform(hints: DeviceHints): Platform | null {
     ua.includes('Macintosh') || ua.includes('Mac OS X') || hints.platform === 'MacIntel';
   if (macLike) {
     // An iPad in desktop mode sends a Macintosh UA and no literal 'iPad'; the
-    // touch count is the only tell. Without it we do not guess: a Mac is
-    // ambiguous with an iPad, and guessing 'macos' would hand an iPad a .dmg.
-    if (!touchKnown) return null;
+    // touch count is the only tell, so a *known* touch count moves the device to
+    // iPadOS. When the caller has no touch information at all (a server-side
+    // render, a WebView, a smoke test) the device is the desktop Mac it claims to
+    // be: the alternative is that the most common desktop gets no featured row
+    // and is told its device is unknown. A page rendering for iPadOS passes
+    // maxTouchPoints.
+    if (!touchKnown) return 'macos';
     return touch ? 'ipados' : 'macos';
   }
   if (ua.includes('CrOS')) return 'linux';
@@ -104,12 +110,14 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
     return { state: 'unavailable', reason: 'marked-unavailable' };
   // A superseded build is history: it is shown, named, and not downloadable.
   if (release.supersededBy !== null) return { state: 'unavailable', reason: 'superseded' };
-  if (release.storeUrl !== null && release.artifactUrl === null) {
+  if (release.storeUrl !== null && (release.artifactUrl === null || !isHttpsUrl(release.artifactUrl))) {
     // The store link is a live link too: it gets the same https-and-no-credentials
     // check as an artifact, so a bypassing Release[] cannot surface it. It does
     // not need a notarization ticket: the store notarizes what it ships, and
     // requiring 'passed' here would refuse every genuine App Store row.
-    if (!isHttpsUrl(release.storeUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
+    if (!isHttpsUrl(release.storeUrl) || !hostAllowed(release.storeUrl, DEFAULT_STORE_HOSTS)) {
+      return { state: 'unavailable', reason: 'insecure-artifact' };
+    }
     return { state: 'store', reason: null };
   }
   if (release.artifactUrl === null) return { state: 'unavailable', reason: 'no-artifact' };

@@ -569,3 +569,30 @@ describe('parseRelease — ids and calendar', () => {
     expect(code(wellFormedRow('linux', { acceptedAt: '2026-02-30T12:00:00Z' }))).toBe('bad-accepted-at');
   });
 });
+
+// Apollo's round-7 review: a pulled row that keeps its URL and drops its digest
+// must parse, and the group rules must not run over a partial set.
+describe('parseRelease — pulled rows and partial sets', () => {
+  it('parses a pulled row that keeps artifactUrl and has no digest', () => {
+    const pulled = wellFormedRow('linux', {
+      availability: 'unavailable', artifactUrl: ARTIFACT_URL, bytes: null, sha256: null, signer: null,
+    });
+    const parsed = parseRelease(pulled);
+    if (!('release' in parsed)) throw new Error('a pulled row must parse: ' + parsed.problem);
+    // No fabricated numbers on a row that ships nothing.
+    expect(parsed.release.bytes).toBeNull();
+    expect(parsed.release.sha256).toBeNull();
+  });
+
+  it('does not invent ambiguous-supersede for a row whose target failed to parse', () => {
+    const rows = [
+      wellFormedRow('linux', { version: '1.0.0', supersededBy: '1.1.0' }),
+      wellFormedRow('linux', { version: '1.1.0', sourceSha: 'not-a-sha' }),
+    ];
+    // The real code is reported; the group rules need a complete set and stay out.
+    expect(parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: rows })).toEqual({
+      ok: false,
+      problems: ['bad-source-sha'],
+    });
+  });
+});

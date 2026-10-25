@@ -98,9 +98,11 @@ export type ParseOptions = {
   allowedStoreHosts?: readonly string[];
 };
 
-const DEFAULT_STORE_HOSTS: readonly string[] = ['apps.apple.com', 'play.google.com'];
+/** The two stores we ship through; the default for a store link's host policy. */
+export const DEFAULT_STORE_HOSTS: readonly string[] = ['apps.apple.com', 'play.google.com'];
 
-function hostAllowed(value: string, hosts: readonly string[]): boolean {
+/** Exported for the resolver's belt: same policy, same answer. */
+export function hostAllowed(value: string, hosts: readonly string[]): boolean {
   try {
     return hosts.includes(new URL(value).host);
   } catch {
@@ -243,8 +245,11 @@ export function parseRelease(
       sourceSha: sourceSha.toLowerCase(),
       artifactUrl: artifact,
       storeUrl: store,
-      bytes: artifact === null ? null : (bytes as number),
-      sha256: artifact === null ? null : (sha256 as string).toLowerCase(),
+      // Only a row that actually carries a binary carries its numbers: a pulled
+      // row may keep its artifact URL and drop the digest, and that must parse
+      // (it must not throw, and it must not fabricate a hash).
+      bytes: artifact !== null && typeof bytes === 'number' ? bytes : null,
+      sha256: artifact !== null && typeof sha256 === 'string' ? sha256.toLowerCase() : null,
       signer: signerValue,
       notarization,
       availability,
@@ -289,6 +294,11 @@ export function parseManifest(raw: unknown, options: ParseOptions): ParsedManife
     if ('problem' in parsed) problems.push(parsed.problem);
     else releases.push(parsed.release);
   }
+  // The group and chain rules are judged over the whole set, so they only run
+  // when every row parsed: over a partial set they invent problems (a missing
+  // supersede target whose row simply failed to parse becomes
+  // 'ambiguous-supersede') and bury the real code.
+  if (problems.length > 0) return { ok: false, problems };
   // Group by (product, platform): the owner launches platform by platform, so
   // that pair is the unit both manifest rules are judged in.
   const groups = new Map<string, Release[]>();
@@ -330,6 +340,7 @@ export function parseManifest(raw: unknown, options: ParseOptions): ParsedManife
       if (cursor === undefined || cursor.supersededBy !== null) problems.push('ambiguous-supersede');
     }
   }
+
   if (problems.length > 0) return { ok: false, problems };
   return { ok: true, releases };
 }
