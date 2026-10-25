@@ -47,7 +47,12 @@ await mkdir(distDir, { recursive: true });
 // page (including 404); only dynamic routes get the hydration script.
 async function assetTags() {
   const assetsDir = path.join(distDir, 'assets');
-  if (!existsSync(assetsDir)) return { styles: '', scripts: '' };
+  if (!existsSync(assetsDir)) {
+    console.error(
+      'prerender failed: dist/assets is missing — run `vite build` before `scripts/prerender.mjs`.',
+    );
+    process.exit(1);
+  }
   const files = await readdir(assetsDir);
   const styles = files
     .filter((f) => f.endsWith('.css'))
@@ -76,13 +81,13 @@ for (const route of routes) {
       : path.join(distDir, route.path.slice(1), 'index.html');
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, html);
-  written.push({ file, html });
+  written.push({ file, html, kind: route.kind });
 }
 
 const notFoundFile = path.join(distDir, '404.html');
 const notFoundHtml = injectAssets(renderNotFound(), styles);
 await writeFile(notFoundFile, notFoundHtml);
-written.push({ file: notFoundFile, html: notFoundHtml });
+written.push({ file: notFoundFile, html: notFoundHtml, kind: 'static' });
 
 const sitemap =
   '<?xml version="1.0" encoding="UTF-8"?>\n' +
@@ -97,11 +102,14 @@ await writeFile(
 
 // Validate: fail the build loudly rather than ship a broken page.
 const problems = [];
-for (const { file, html } of written) {
+for (const { file, html, kind } of written) {
   const rel = path.relative(distDir, file);
   if (!existsSync(file)) problems.push(`missing page: ${rel}`);
   const h1Count = (html.match(/<h1[\s>]/g) ?? []).length;
   if (h1Count !== 1) problems.push(`${rel}: expected exactly one <h1>, found ${h1Count}`);
+  if (kind === 'dynamic' && !html.includes('<script type="module"')) {
+    problems.push(`${rel}: dynamic route is missing its module script`);
+  }
   if (!html.includes('lang="en"')) problems.push(`${rel}: missing lang="en"`);
   if (html.includes('undefined') || html.includes('NaN')) {
     problems.push(`${rel}: rendered HTML contains undefined or NaN`);

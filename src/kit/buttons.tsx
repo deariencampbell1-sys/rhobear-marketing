@@ -29,12 +29,14 @@ export function Button({
   'aria-label': ariaLabel,
 }: ButtonProps) {
   const [focused, setFocused] = React.useState(false);
+  // Caller style comes first so it cannot shrink the 44 px hit region or
+  // replace the focus outline: the guarantees are re-applied after it.
   const hit: React.CSSProperties = {
+    ...style,
     minHeight: 44,
     minWidth: 44,
     boxSizing: 'border-box',
     ...(focused ? { outline: '2px solid AccentColor', outlineOffset: 2 } : {}),
-    ...style,
   };
   const focusHandlers = {
     onFocus: () => setFocused(true),

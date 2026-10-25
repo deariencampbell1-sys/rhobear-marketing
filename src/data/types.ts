@@ -15,7 +15,8 @@ export interface Engine {
 }
 
 export interface Price {
-  amount: number;
+  /** Integer minor units (e.g. 1999 = $19.99); never a floating-point amount. */
+  amountMinor: number;
   currency: string;
   /** 'month' | 'year' | 'once' — set only when billing is real. */
   period: string;

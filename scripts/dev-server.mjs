@@ -1,15 +1,21 @@
 // W0-01: tiny static server for checking `dist` locally (npm run dev).
 // No dependencies: node:http only. Serves dist/<path>/index.html for clean
 // URLs and dist/404.html with status 404 for anything unknown — mirroring
-// what the production host must do.
-import { createReadStream, statSync } from 'node:fs';
+// what the production host must do. Run `npm run build` first.
+import { createReadStream, existsSync, statSync } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import { resolveRequestPath } from './request-path.mjs';
 
 const distDir = path.resolve(process.cwd(), 'dist');
 const notFoundFile = path.join(distDir, '404.html');
 const port = Number(process.env.PORT ?? 4173);
 const host = process.env.HOST ?? '127.0.0.1';
+
+if (!existsSync(path.join(distDir, 'index.html'))) {
+  console.error('dev server: dist/index.html is missing — run `npm run build` first.');
+  process.exit(1);
+}
 
 const types = {
   '.html': 'text/html; charset=utf-8',
@@ -59,23 +65,17 @@ function sendNotFound(res) {
 }
 
 const server = http.createServer((req, res) => {
-  let urlPath;
-  try {
-    urlPath = decodeURIComponent((req.url ?? '/').split('?')[0]);
-  } catch {
+  const resolution = resolveRequestPath(req.url, distDir);
+  if (resolution.status === 'bad-request') {
     sendText(res, 400, 'Bad request');
     return;
   }
-  if (urlPath.includes('\0')) {
-    sendText(res, 400, 'Bad request');
-    return;
-  }
-
-  let file = path.resolve(distDir, '.' + urlPath);
-  if (file !== distDir && !file.startsWith(distDir + path.sep)) {
+  if (resolution.status === 'not-found') {
     sendNotFound(res);
     return;
   }
+
+  let file = resolution.file;
   if (isDirectory(file)) file = path.join(file, 'index.html');
   if (!isFile(file)) {
     sendNotFound(res);

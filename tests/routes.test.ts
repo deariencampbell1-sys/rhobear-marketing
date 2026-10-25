@@ -69,7 +69,9 @@ describe('route table', () => {
 
 describe('prerender output', () => {
   beforeAll(() => {
-    cp.execSync(fs.existsSync('dist/assets') ? 'node scripts/prerender.mjs' : 'npm run build', {
+    // Always build from source: `vite build` empties dist first, so these
+    // assertions can never run against a stale bundle from an earlier build.
+    cp.execSync('npm run build', {
       encoding: 'utf8',
       timeout: 240_000,
     });

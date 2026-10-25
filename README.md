@@ -9,6 +9,10 @@ canonical route to real HTML, hydrates only the screens that need live state, an
 - **Content:** `src/data/` — typed content model; `loadContent()` returns `null` today and pages fall back to honest
   placeholder copy until real content exists.
 
+The old site source, the `rhobear-design` and `rhobear-hatch` agent skills, the brand icons, stills, previews and the
+deploy workflow were deleted on 2026-10-24 (lane L0). Do not recover them from git history or copy from `gh-pages`.
+The only reference for how RHOBEAR looks is **rhobear-north-star** (boards, marks, `docs/north-star/FONTS.md`).
+
 ## Build
 
 ```sh
@@ -18,7 +22,8 @@ npm run build     # tsc --noEmit -> vite build -> scripts/prerender.mjs -> dist/
 ```
 
 `dist/` contains one `index.html` per canonical route plus `404.html`, `sitemap.xml` and `robots.txt`. Every page is
-readable with JavaScript disabled. `npm run dev` serves `dist/` locally.
+readable with JavaScript disabled. Run `npm run build` first; `npm run dev` then serves `dist/` locally at
+`http://127.0.0.1:4173` (it exits with an error if `dist/index.html` is missing).
 
 The site currently online is still served from the `gh-pages` branch; cutover is a later wave and only after the owner
 sees the site. `PRIVACY.md` is the privacy policy.

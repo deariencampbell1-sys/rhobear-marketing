@@ -33,3 +33,9 @@ information row is never a control, and a control row is never information.
 
 Nothing else changes: every screen already imports from `src/kit`, so the
 adapter keeps the API stable across the swap.
+
+The two focus-helper tests in `tests/a11y-shell.test.ts` (`openSheetEffect` and
+`handleSheetKeyDown`) import `overlays.tsx` directly because those helpers are
+internal, not part of the public adapter. They move with the swap: delete those
+two tests alongside `overlays.tsx`; the kit owns focus-trap coverage after
+1.0.0. The remaining kit tests import from `src/kit` and are unaffected.
