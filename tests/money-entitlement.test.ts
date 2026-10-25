@@ -169,3 +169,47 @@ describe('money entitlement fail-closed paths', () => {
   });
 });
 
+// Apollo's round-5 review: the capability the screen asked for is cross-checked
+// against the answer, and the capability query branch is exercised.
+describe('money entitlement capability', () => {
+  it('asks for the capability it was given', async () => {
+    const seen: MoneyRequest[] = [];
+    const transport: MoneyTransport = {
+      async get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        seen.push(req);
+        const data = parse(fixture({ capability: 'apollo' }));
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: 1 };
+      },
+    };
+    const client = createEntitlementClient(transport, { now: () => Date.parse('2026-10-25T12:00:00Z') });
+    const view = await client.load({ accountUuid: 'acct-1', product: 'builds', capability: 'apollo' });
+    expect(view.state).toBe('known');
+    expect(seen[0].query).toMatchObject({ capability: 'apollo' });
+  });
+
+  it('treats another capability as a session mismatch, not a view', async () => {
+    const transport: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        const data = parse(fixture({ capability: 'zeus' }));
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: 1 };
+      },
+    };
+    const client = createEntitlementClient(transport);
+    const view = await client.load({ accountUuid: 'acct-1', product: 'builds', capability: 'apollo' });
+    expect(view).toMatchObject({ state: 'unknown', reason: 'session-mismatch' });
+  });
+
+  it('does not cross-check a capability that was never asked for', async () => {
+    const transport: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        const data = parse(fixture({ capability: 'zeus' }));
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: 1 };
+      },
+    };
+    const view = await createEntitlementClient(transport).load({ accountUuid: 'acct-1', product: 'builds' });
+    expect(view.state).toBe('known');
+  });
+});

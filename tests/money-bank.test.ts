@@ -134,3 +134,50 @@ describe('money bank fetchedAt guard', () => {
     expect(client.lastSnapshot()).toBeNull();
   });
 });
+
+// Apollo's round-5 review: the remembered balance is immutable, its age is
+// re-judged on every read, and a large credit still renders.
+describe('money bank memory and age', () => {
+  it('freezes the remembered snapshot and hands out a copy', async () => {
+    const client = createBankClient(okTransport(fixture()), { now: () => 1_000 });
+    const res = await client.load();
+    if (!res.ok) throw new Error('the fixture bank loads');
+    // The returned object is a copy: writing to it cannot rewrite history.
+    (res.snapshot as { creditAvailable: string }).creditAvailable = '999.00';
+    expect(client.lastSnapshot()?.creditAvailable).toBe('12.00');
+    expect(client.currentSnapshot()?.creditAvailable).toBe('12.00');
+  });
+
+  it('stops authorising paid work once the snapshot ages past its window', async () => {
+    let clock = 1_000_000;
+    // The transport stamps fetchedAt on the same clock the client judges with.
+    const stamped: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        const data = parse(fixture());
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
+        return { ok: true, data, requestId: 'req-1', fetchedAt: clock };
+      },
+    };
+    const client = createBankClient(stamped, { now: () => clock, freshnessMs: 60_000 });
+    const res = await client.load();
+    expect(res.ok).toBe(true);
+    expect(client.currentSnapshot()?.canStartPaidWork).toBe(true);
+
+    clock += 60_001;
+    const aged = client.currentSnapshot();
+    expect(aged?.stale).toBe(true);
+    expect(aged?.canStartPaidWork).toBe(false);
+    // The value is still there to show, marked stale.
+    expect(aged?.creditAvailable).toBe('12.00');
+  });
+
+  it('answers currentSnapshot with null before any load', () => {
+    expect(createBankClient(okTransport(fixture())).currentSnapshot()).toBeNull();
+  });
+
+  it('formatMoney renders a large credit and still refuses a bad shape', () => {
+    expect(formatMoney('1234567.89')).toBe('$1234567.89');
+    expect(formatMoney('123456789012.34')).toBe('$123456789012.34');
+    expect(formatMoney('1.2')).toBe('1.2');
+  });
+});

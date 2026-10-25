@@ -30,14 +30,29 @@ export type BankResult =
 export type BankUnavailableReason =
   | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape';
 
+export type BankOptions = {
+  now?: () => number;
+  /** How old a fetched balance may be before it stops authorising paid work. Default 15 minutes. */
+  freshnessMs?: number;
+};
+
+const DEFAULT_BANK_FRESHNESS_MS = 900_000;
+
 export function createBankClient(
   transport: MoneyTransport,
-  options: { now?: () => number } = {},
+  options: BankOptions = {},
 ): {
   load(): Promise<BankResult>;
   lastSnapshot(): BankSnapshot | null;
+  /**
+   * The last balance, re-judged against the clock now: a snapshot held by a
+   * screen for an hour stops authorising paid work on its own. `null` when
+   * nothing was ever loaded.
+   */
+  currentSnapshot(): BankSnapshot | null;
 } {
   const now = options.now ?? (() => Date.now());
+  const freshnessMs = options.freshnessMs ?? DEFAULT_BANK_FRESHNESS_MS;
   let previous: BankSnapshot | null = null;
 
   function toSnapshot(bank: Bank, fetchedAt: number, stale: boolean): BankSnapshot {
@@ -89,20 +104,32 @@ export function createBankClient(
       if (!Number.isFinite(res.fetchedAt)) {
         return { ok: false, snapshot: unreachable(now()), reason: 'invalid-shape' };
       }
-      const snapshot = toSnapshot(res.data, res.fetchedAt, false);
+      // Frozen and stored: a caller cannot rewrite the remembered balance, and
+      // `currentSnapshot()` re-judges its age instead of trusting this moment.
+      const snapshot = Object.freeze(toSnapshot(res.data, res.fetchedAt, false));
       previous = snapshot;
-      return { ok: true, snapshot };
+      return { ok: true, snapshot: { ...snapshot } };
     },
     lastSnapshot() {
       // A remembered snapshot is history: it never authorises new paid work,
       // because the balance on disk may already be spent.
       return previous ? { ...previous, stale: true, canStartPaidWork: false } : null;
     },
+    currentSnapshot() {
+      if (previous === null) return null;
+      const age = now() - previous.fetchedAt;
+      const aged = !Number.isFinite(age) || age < 0 || age > freshnessMs;
+      if (!aged) return { ...previous };
+      return { ...previous, stale: true, canStartPaidWork: false };
+    },
   };
 }
 
 // Display only: validate the decimal string, prefix '$', never re-round it.
 // An unrecognised value is returned unchanged — never coerced, never '0.00'.
+// Twelve integer digits is deliberate headroom over the nine a price needs:
+// a large credit balance must still render, and the shape is what is validated,
+// not the magnitude.
 export function formatMoney(value: string): string {
-  return /^\d{1,9}\.\d{2}$/.test(value) ? `$${value}` : value;
+  return /^\d{1,12}\.\d{2}$/.test(value) ? `$${value}` : value;
 }

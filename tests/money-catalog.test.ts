@@ -57,10 +57,13 @@ describe('money catalog client', () => {
     // The clock sits five minutes after the catalog was generated, so the
     // freshness window is genuinely open and this test is about plan rows.
     const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
-    const view = await loadView(createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt }));
-    expect(view.purchasable).toBe(false);
-    expect(view.reason).toBeUndefined();
-    expect(view.plans.find((p) => p.sku === 'space')?.reason).toBe('renewal review');
+    const client = createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt });
+    // Fresh, but a plan row cannot be sold, so this is not an ok load.
+    expect(await client.load()).toEqual({ ok: false, reason: 'not-purchasable', requestId: 'r1' });
+    const view = client.currentView();
+    expect(view?.purchasable).toBe(false);
+    expect(view?.stale).toBe(false);
+    expect(view?.plans.find((p) => p.sku === 'space')?.reason).toBe('renewal review');
   });
 
   it('marks a fetched catalog stale after the freshness window and never purchasable', async () => {
@@ -118,8 +121,7 @@ describe('money catalog memory', () => {
     // about plan rows rather than the clock.
     const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
     const client = createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt });
-    const view = await loadView(client);
-    expect(view.purchasable).toBe(false);
+    expect(await client.load()).toEqual({ ok: false, reason: 'not-purchasable', requestId: 'r1' });
 
     const remembered = client.lastView();
     expect(remembered).not.toBeNull();
@@ -134,7 +136,7 @@ describe('money catalog memory', () => {
     const client = createCatalogClient(fakeTransport(fakeCatalog({ plans: [
       { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'unavailable' },
     ] }), nearGeneratedAt), { now: nearGeneratedAt });
-    await loadView(client);
+    await client.load(); // not-purchasable, and still remembered
 
     expect(client.capabilitiesFor('builds')).toHaveLength(2);
     expect(client.capabilitiesFor('reviews')).toEqual([]);
@@ -170,6 +172,7 @@ describe('money catalog unparseable date', () => {
     const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
     const client = createCatalogClient(fakeTransport(fakeCatalog(), nearGeneratedAt), { now: nearGeneratedAt });
     const view = await loadView(client);
+    expect(view.fetchedAt).toBe(nearGeneratedAt());
     expect(view.stale).toBe(false);
     expect(view.purchasable).toBe(true);
   });
@@ -274,5 +277,50 @@ describe('money catalog sell gate', () => {
     expect(client.currentView()?.purchasable).toBe(true);
     expect(client.currentView()?.plans[0].availability).toBe('available');
     expect(client.currentView()).not.toBe(client.currentView());
+  });
+});
+
+// Apollo's round-5 review: the generation cadence gets its own window, and a
+// fresh catalog that cannot be sold from is not an ok load.
+describe('money catalog windows and sellability', () => {
+  const at = (iso: string) => () => Date.parse(iso);
+
+  it('judges generation age on its own window, not the fetch window', async () => {
+    // Fetched now, generated 12 hours ago: the fetch is fresh and the catalog is
+    // current (L2 publishes daily), so this is sellable.
+    const clock = at('2026-10-26T00:00:00Z');
+    const client = createCatalogClient(
+      fakeTransport(fakeCatalog({ generatedAt: '2026-10-25T12:00:00Z' }), clock),
+      { now: clock },
+    );
+    const view = await loadView(client);
+    expect(view.stale).toBe(false);
+    expect(view.purchasable).toBe(true);
+  });
+
+  it('refuses a catalog generated past the generation window', async () => {
+    const clock = at('2026-10-27T13:00:00Z'); // 49 h after generatedAt
+    const client = createCatalogClient(
+      fakeTransport(fakeCatalog({ generatedAt: '2026-10-25T12:00:00Z' }), clock),
+      { now: clock },
+    );
+    expect(await client.load()).toEqual({ ok: false, reason: 'stale', requestId: 'r1' });
+    expect(client.currentView()?.stale).toBe(true);
+  });
+
+  it('reports not-purchasable, not ok, when a plan row cannot be sold', async () => {
+    const clock = at('2026-10-25T12:05:00Z');
+    const client = createCatalogClient(
+      fakeTransport(fakeCatalog({ plans: [
+        { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'unavailable' },
+      ] }), clock),
+      { now: clock },
+    );
+    // Fresh, so not stale; still not an ok load, because no price may be offered.
+    expect(await client.load()).toEqual({ ok: false, reason: 'not-purchasable', requestId: 'r1' });
+    // The rows stay readable for the screen that explains why.
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.stale).toBe(false);
+    expect(client.lastView()?.plans).toHaveLength(1);
   });
 });

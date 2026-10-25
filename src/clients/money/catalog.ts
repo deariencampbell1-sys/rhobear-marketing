@@ -8,7 +8,10 @@ export type MoneyTransport = {
 };
 
 export type CatalogUnavailableReason =
-  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'stale';
+  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'stale'
+  // The catalog is fresh, but a plan row in it cannot be sold (unavailable):
+  // the screen renders the plan's own reason, and no price is offered.
+  | 'not-purchasable';
 
 export type CatalogView = {
   purchasable: boolean;
@@ -42,9 +45,21 @@ export type CatalogClient = {
   capabilitiesFor(product: string): readonly CatalogCapability[];
 };
 
-export type CatalogOptions = { now?: () => number; freshnessMs?: number };
+export type CatalogOptions = {
+  now?: () => number;
+  /** How old a *fetch* may be before the catalog is stale. Default 15 minutes. */
+  freshnessMs?: number;
+  /**
+   * How old the catalog's own `generatedAt` may be. Separate from the fetch
+   * window on purpose: L2 publishes the catalog on a daily cadence, so a
+   * ten-minute-old fetch of a twelve-hour-old catalog is current, while a
+   * two-day-old generation is not. Default 24 hours.
+   */
+  generatedFreshnessMs?: number;
+};
 
 const DEFAULT_FRESHNESS_MS = 900_000;
+const DEFAULT_GENERATED_FRESHNESS_MS = 86_400_000;
 
 type ParsedCatalog = NonNullable<ReturnType<typeof parseCatalog>>;
 
@@ -64,6 +79,7 @@ function deepFreeze<T>(value: T): T {
 export function createCatalogClient(transport: MoneyTransport, options: CatalogOptions = {}): CatalogClient {
   const now = options.now ?? (() => Date.now());
   const freshnessMs = options.freshnessMs ?? DEFAULT_FRESHNESS_MS;
+  const generatedFreshnessMs = options.generatedFreshnessMs ?? DEFAULT_GENERATED_FRESHNESS_MS;
   // What was loaded (frozen), when the transport fetched it, and whether the
   // most recent refresh failed. The verdict is recomputed from these on every
   // read, so a view can age into stale and a failed refresh can withdraw it.
@@ -71,6 +87,9 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
 
   function buildView(catalog: ParsedCatalog, fetchedAt: number, refreshFailed: boolean): CatalogView {
     const generatedAt = Date.parse(catalog.generatedAt);
+    // Unreachable from the wire (parseCatalog refuses a non-RFC3339 generatedAt,
+    // and money-catalog.test.ts pins that refusal); kept as a belt for a view
+    // built by hand.
     const generatedBad = Number.isNaN(generatedAt);
     // A fetchedAt that is not a finite number is not a timestamp: it fails
     // closed rather than defaulting to "just now".
@@ -85,7 +104,7 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
     // is not evidence of freshness, so it is stale too.
     const stale = refreshFailed || fetchedBad || generatedBad
       || fetchedAge < 0
-      || fetchedAge > freshnessMs || generatedAge > freshnessMs;
+      || fetchedAge > freshnessMs || generatedAge > generatedFreshnessMs;
     const allAvailable = catalog.plans.every((p) => p.availability === 'available');
     const purchasable = !stale && allAvailable;
     return {
@@ -126,9 +145,10 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
       last = { catalog, fetchedAt, refreshFailed: false };
       const view = buildView(catalog, fetchedAt, false);
       // Every load is remembered, so a screen can still show the plans, the
-      // capabilities and the reason when it cannot sell. But a load that came
-      // back aged is not a success: `ok` means sellable, not fetched.
+      // capabilities and the reason when it cannot sell. But a load that cannot
+      // be sold from is not a success: `ok` means sellable, not fetched.
       if (view.stale) return { ok: false, reason: 'stale', requestId: res.requestId };
+      if (!view.purchasable) return { ok: false, reason: 'not-purchasable', requestId: res.requestId };
       return { ok: true, view };
     },
     lastView() {

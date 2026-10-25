@@ -54,9 +54,10 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_BODY_BYTES = 262_144;
 const JSON_CONTENT_TYPE = 'application/json';
-// CR, LF or any other control character would break (or inject into) the
-// X-Request-Id header line, so such a value is never sent.
-const CONTROL_CHAR = /[\u0000-\u001f\u007f]/;
+// A header value is bytes, and anything outside printable ASCII (a control
+// character, a lone CR/LF, a non-ASCII codepoint) either breaks the header line
+// or is re-encoded by the runtime; such a value is never sent.
+const CONTROL_CHAR = /[^\u0020-\u007e]/;
 
 // Conservative path allowlist: normal route characters and percent escapes
 // only. It excludes '\', whitespace, C0/C1 controls, '?' and '#'.

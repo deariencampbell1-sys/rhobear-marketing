@@ -66,7 +66,16 @@ export function createEntitlementClient(
       const entitlement = res.data;
       // The response must answer the question we asked: another account's
       // entitlement, or another product's, is a session mismatch, not a view.
+      // The response must answer the question we asked, including the
+      // capability when one was asked for: another capability's row is a
+      // session mismatch, not a view.
       if (entitlement.accountUuid !== input.accountUuid || entitlement.product !== input.product) {
+        return {
+          state: 'unknown', presentation: 'reconcile',
+          reason: 'session-mismatch', requestId: res.requestId,
+        };
+      }
+      if (input.capability !== undefined && entitlement.capability !== input.capability) {
         return {
           state: 'unknown', presentation: 'reconcile',
           reason: 'session-mismatch', requestId: res.requestId,
