@@ -1,0 +1,113 @@
+// W0-01: prerender. Renders every canonical route to real HTML in dist/.
+// The route table (src/app/routes.ts) is bundled in and drives both the pages
+// and sitemap.xml — one source of truth, no hand-written list. Exits non-zero
+// if any route is missing from dist, a page has zero or two <h1>, or the
+// rendered HTML contains the literal `undefined` or `NaN`.
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { build } from 'vite';
+
+const root = process.cwd();
+const distDir = path.join(root, 'dist');
+const cacheDir = path.join(root, '.cache', 'prerender');
+
+// Bundle the renderer and the route table so Node can import the TSX app.
+await build({
+  configFile: false,
+  logLevel: 'warn',
+  root,
+  build: {
+    ssr: true,
+    outDir: cacheDir,
+    emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        render: path.join(root, 'src/app/render.tsx'),
+        routes: path.join(root, 'src/app/routes.ts'),
+      },
+      output: {
+        entryFileNames: '[name].js',
+        chunkFileNames: 'chunks/[name]-[hash].js',
+      },
+    },
+  },
+  ssr: { noExternal: true },
+});
+
+const renderMod = await import(pathToFileURL(path.join(cacheDir, 'render.js')).href);
+const routesMod = await import(pathToFileURL(path.join(cacheDir, 'routes.js')).href);
+const { renderRoute, renderNotFound } = renderMod;
+const { routes } = routesMod;
+
+await mkdir(distDir, { recursive: true });
+
+// Client bundle tags exist after `vite build`; injected into dynamic routes
+// only — static routes ship no JavaScript.
+async function assetTags() {
+  const assetsDir = path.join(distDir, 'assets');
+  if (!existsSync(assetsDir)) return '';
+  const files = await readdir(assetsDir);
+  const css = files
+    .filter((f) => f.endsWith('.css'))
+    .map((f) => `<link rel="stylesheet" href="/assets/${f}">`);
+  const js = files
+    .filter((f) => f.endsWith('.js'))
+    .map((f) => `<script type="module" src="/assets/${f}"></script>`);
+  return [...css, ...js].join('');
+}
+
+const tags = await assetTags();
+const written = [];
+
+for (const route of routes) {
+  let html = renderRoute(route.path);
+  if (route.kind === 'dynamic' && tags) html = html.replace('</body>', `${tags}</body>`);
+  const file =
+    route.path === '/'
+      ? path.join(distDir, 'index.html')
+      : path.join(distDir, route.path.slice(1), 'index.html');
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, html);
+  written.push({ file, html });
+}
+
+const notFoundFile = path.join(distDir, '404.html');
+const notFoundHtml = renderNotFound();
+await writeFile(notFoundFile, notFoundHtml);
+written.push({ file: notFoundFile, html: notFoundHtml });
+
+const sitemap =
+  '<?xml version="1.0" encoding="UTF-8"?>\n' +
+  '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
+  routes.map((r) => `  <url><loc>https://rhobear.ai${r.path}</loc></url>`).join('\n') +
+  '\n</urlset>\n';
+await writeFile(path.join(distDir, 'sitemap.xml'), sitemap);
+await writeFile(
+  path.join(distDir, 'robots.txt'),
+  'User-agent: *\nAllow: /\n\nSitemap: https://rhobear.ai/sitemap.xml\n',
+);
+
+// Validate: fail the build loudly rather than ship a broken page.
+const problems = [];
+for (const { file, html } of written) {
+  const rel = path.relative(distDir, file);
+  if (!existsSync(file)) problems.push(`missing page: ${rel}`);
+  const h1Count = (html.match(/<h1[\s>]/g) ?? []).length;
+  if (h1Count !== 1) problems.push(`${rel}: expected exactly one <h1>, found ${h1Count}`);
+  if (!html.includes('lang="en"')) problems.push(`${rel}: missing lang="en"`);
+  if (html.includes('undefined') || html.includes('NaN')) {
+    problems.push(`${rel}: rendered HTML contains undefined or NaN`);
+  }
+}
+for (const extra of ['sitemap.xml', 'robots.txt']) {
+  if (!existsSync(path.join(distDir, extra))) problems.push(`missing file: ${extra}`);
+}
+
+if (problems.length > 0) {
+  console.error('prerender failed:');
+  for (const p of problems) console.error(`  - ${p}`);
+  process.exit(1);
+}
+console.log(`prerender: ${written.length} pages written to dist/`);

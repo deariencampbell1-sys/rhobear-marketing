@@ -1,3 +1,4 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
@@ -9,5 +10,10 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // No index.html entry: HTML is generated per route by scripts/prerender.mjs.
+    // main.tsx is the hydration bundle, injected into dynamic routes only.
+    rollupOptions: {
+      input: { main: resolve(import.meta.dirname, 'src/main.tsx') },
+    },
   },
 });
