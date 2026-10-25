@@ -1,95 +1,194 @@
+// W0-02d: proves the composed content model. Every assertion here is a real
+// constraint on the data — a data change fails until this test is updated in
+// the same commit. Imports go through src/data/index, the single composition.
 import { describe, expect, it } from 'vitest';
-import { brand, brandSources } from '../src/data/brand';
 import {
-  productById,
-  productOrder,
-  products,
+  approvedPriceList,
+  billingTerms,
+  brand,
+  brandSources,
+  checkoutState,
+  engineScenarios,
+  engines,
+  enginesDestination,
+  heraldOffers,
   productsById,
-} from '../src/data/products';
-import type { ProductId } from '../src/data/products';
-import { productInternals } from '../src/data/products.internal';
+  launchOffer,
+  legalPages,
+  legalStatus,
+  planCopy,
+  products,
+  retention,
+} from '../src/data/index';
 
-const INTENT = 'lanes/L9-front-door/INTENT.md';
-const INTENT_PRODUCTS_SECTION =
-  '3. What each product really is — and what the front door may say';
+const ALLOWED_DOCS = [
+  'lanes/L9-front-door/INTENT.md',
+  'lanes/L9-front-door/CONTRACT.md',
+  'lanes/L9-front-door/OWNER-DECISIONS.md',
+  'lanes/README.md',
+] as const;
 
-describe('brand', () => {
-  it('sources the family line to the locked Five apps facts', () => {
-    expect(brandSources.familyLine.doc).toBe('lanes/README.md');
-    expect(brandSources.familyLine.section).toContain('Five apps');
+const DECIMAL_STRING = /^\d+\.\d{2}$/;
+
+function expectSourced(source: { doc: string; section: string }, label: string): void {
+  expect(ALLOWED_DOCS, `${label}: doc must be on the allowlist`).toContain(source.doc);
+  expect(source.section.trim().length, `${label}: section must be non-empty`).toBeGreaterThan(0);
+}
+
+function expectDecimalString(value: unknown, label: string): void {
+  expect(typeof value, `${label}: must be a string, never a float`).toBe('string');
+  expect(value, `${label}: must match /^\\d+\\.\\d{2}$/`).toMatch(DECIMAL_STRING);
+}
+
+describe('five apps, one destination', () => {
+  it('has exactly five products in brand.appOrder order', () => {
+    expect(products.length).toBe(5);
+    expect(products.map((product) => product.id)).toEqual([...brand.appOrder]);
   });
 
-  it('cites the exact locked-facts section for every brand line', () => {
-    expect(brandSources.tagline).toEqual({
-      doc: 'lanes/README.md',
-      section: 'Locked facts every lane needs — The tagline',
-    });
-    expect(brandSources.taglineExplanation).toEqual({
-      doc: 'lanes/README.md',
-      section: 'Locked facts every lane needs — The tagline',
-    });
-    expect(brandSources.familyLine).toEqual({
-      doc: 'lanes/README.md',
-      section: 'Locked facts every lane needs — Five apps',
-    });
-  });
-
-  it('keeps the three locked brand strings verbatim', () => {
-    expect(brand.tagline).toBe('Built by our own models.');
-    expect(brand.taglineExplanation).toBe(
-      'Every RHOBEAR app is built only by the four models customers get — Core, Peak, Summit and Guest — through our own pipeline. We planned it with help from Claude and Kimi K3, and our workers made it real.',
-    );
-    expect(brand.familyLine).toBe(
-      'Five apps on one account: Builds, Forge, Herald, Regent and Reviews, plus the Engines that run inside them.',
-    );
-  });
-
-  it('points the engines destination at the /engines route', () => {
+  it('points the engines destination at /engines with public name Engines', () => {
     expect(brand.enginesDestination).toBe('/engines');
+    expect(enginesDestination.publicName).toBe('Engines');
   });
 });
 
-describe('product order', () => {
-  it('lists products in brand.appOrder order with matching counts', () => {
-    expect(products.map((product) => product.id)).toEqual(brand.appOrder);
-    expect(products.length).toBe(productOrder.length);
+describe('one-liners are verbatim', () => {
+  // Literal transcription of the five one-liners. A changed word in
+  // src/data/products.ts fails this until the test is updated in the same commit.
+  const expectedOneLiners: Record<string, string> = {
+    builds: 'Your work, your devices, one Rho.',
+    forge: 'Say it. Hold it.',
+    herald: 'Your card. Your assistant. Your business, answered.',
+    regent: 'The desk beside the call.',
+    reviews: 'Check the code. Review the change. Fix and merge with proof.',
+  };
+
+  it('matches the recorded one-liner for every product id', () => {
+    expect(Object.keys(expectedOneLiners).sort()).toEqual([...brand.appOrder].sort());
+    for (const product of products) {
+      expect(product.oneLiner, product.id).toBe(expectedOneLiners[product.id]);
+    }
+  });
+});
+
+describe('every claim is sourced', () => {
+  it('cites an allowlisted doc and a non-empty section on every claim', () => {
+    expect(products.length).toBeGreaterThan(0);
+    for (const product of products) {
+      expectSourced(product.source, `product ${product.id}`);
+      for (const extra of product.extraSources ?? []) {
+        expectSourced(extra, `product ${product.id} extraSources`);
+      }
+    }
+    expect(engines.length).toBeGreaterThan(0);
+    for (const engine of engines) {
+      expectSourced(engine.source, `engine ${engine.id}`);
+    }
+    expect(engineScenarios.length).toBeGreaterThan(0);
+    for (const scenario of engineScenarios) {
+      expectSourced(scenario.source, `scenario ${scenario.scenarioId}`);
+    }
+    expect(legalPages.length).toBeGreaterThan(0);
+    for (const page of legalPages) {
+      expectSourced(page.source, `legal page ${page.id}`);
+    }
+    for (const [key, source] of Object.entries(brandSources)) {
+      expectSourced(source, `brand ${key}`);
+    }
+    expect(approvedPriceList.length).toBeGreaterThan(0);
+    for (const row of approvedPriceList) {
+      expectSourced(row.source, `price row ${row.id}`);
+    }
+  });
+});
+
+describe('prices are decimal strings, not floats', () => {
+  it('formats every money field as /^\d+\.\d{2}$/', () => {
+    for (const row of approvedPriceList) {
+      expectDecimalString(row.monthly, `${row.id}.monthly`);
+      expectDecimalString(row.includedCredit, `${row.id}.includedCredit`);
+    }
+    // heraldOffers carries `monthly` plus a one-time `setup`; it has no
+    // includedCredit field. Both money fields are checked.
+    expect(heraldOffers.length).toBeGreaterThan(0);
+    for (const offer of heraldOffers) {
+      expectDecimalString(offer.monthly, `${offer.id}.monthly`);
+      if (offer.setup !== null) {
+        expectDecimalString(offer.setup, `${offer.id}.setup`);
+      }
+    }
+  });
+});
+
+describe('the price list equals the contract', () => {
+  // Hardcoded contract table: a data change fails until this test is updated
+  // in the same commit. Compared value for value and order for order.
+  const expectedPriceList = [
+    { id: 'free', monthly: '0.00', includedCredit: '0.00' },
+    { id: 'shell', monthly: '23.99', includedCredit: '14.40' },
+    { id: 'shell-plus', monthly: '50.99', includedCredit: '39.60' },
+    { id: 'space', monthly: '69.99', includedCredit: '39.60' },
+    { id: 'top-up', monthly: '9.99', includedCredit: '9.00' },
+  ];
+
+  it('matches the contract exactly', () => {
+    expect(
+      approvedPriceList.map((row) => ({
+        id: row.id,
+        monthly: row.monthly,
+        includedCredit: row.includedCredit,
+      })),
+    ).toEqual(expectedPriceList);
+  });
+});
+
+describe('monthly only', () => {
+  it('offers no interval other than monthly', () => {
+    expect(billingTerms.interval).toBe('monthly');
+    expect(billingTerms.otherIntervalsOffered).toBe(false);
+    expect(billingTerms.twelveMonthInterval).toBe(false);
+  });
+});
+
+describe('nothing is available yet', () => {
+  it('keeps every product short of available with a stated reason', () => {
+    for (const product of products) {
+      expect(product.availability.state, product.id).not.toBe('available');
+      expect(
+        product.availability.reason.trim().length,
+        `${product.id}.availability.reason`,
+      ).toBeGreaterThan(0);
+    }
   });
 
-  it('freezes a copy of brand.appOrder instead of aliasing it', () => {
-    expect(Object.isFrozen(productOrder)).toBe(true);
-    expect(productOrder).not.toBe(brand.appOrder);
-    expect([...productOrder]).toEqual([...brand.appOrder]);
+  it('keeps every engine scenario footage-pending, at least seven of them', () => {
+    expect(engineScenarios.length).toBeGreaterThanOrEqual(7);
+    for (const scenario of engineScenarios) {
+      expect(scenario.publicationState, scenario.scenarioId).toBe('footage-pending');
+    }
   });
+});
 
-  it('freezes the public products array', () => {
-    expect(Object.isFrozen(products)).toBe(true);
+describe('legal truth', () => {
+  it('states replacement-under-legal-review, a closed checkout and three retention phases', () => {
+    expect(legalStatus.state).toBe('replacement-under-legal-review');
+    expect(checkoutState.state).toBe('closed');
+    expect(retention.afterPaidPeriod.trim().length).toBeGreaterThan(0);
+    expect(retention.then.trim().length).toBeGreaterThan(0);
+    expect(retention.deletion.trim().length).toBeGreaterThan(0);
+  });
+});
+
+describe('the launch offer is not a free plan', () => {
+  it('says so in its body and is announced, not active', () => {
+    expect(launchOffer.body.toLowerCase()).toContain('not a free plan');
+    expect(launchOffer.state).toBe('announced');
   });
 });
 
 describe('productsById', () => {
-  it('has every productOrder id and exactly those keys', () => {
-    for (const id of productOrder) {
-      expect(Object.prototype.hasOwnProperty.call(productsById, id), id).toBe(true);
-    }
-    expect(Object.keys(productsById)).toEqual([...productOrder]);
-  });
-
-  it('maps each id to the same object as the products entry', () => {
-    for (const product of products) {
-      expect(productsById[product.id]).toBe(product);
-    }
-  });
-
-  it('throws an accurate message for an id with no entry', () => {
-    expect(() => productById('not-an-app' as ProductId)).toThrowError(
-      new Error('products: no entry for id "not-an-app"'),
-    );
-  });
-
-  it('freezes the public productsById object', () => {
-    expect(Object.isFrozen(productsById)).toBe(true);
-  });
-
+  // Inherited from the W0-02d review fix: productsById was rebuilt on a null
+  // prototype so an unknown id can never resolve through Object.prototype.
   it('has a null prototype so unknown ids cannot resolve', () => {
     expect(Object.getPrototypeOf(productsById)).toBeNull();
     const byName = productsById as unknown as Record<string, unknown>;
@@ -98,62 +197,15 @@ describe('productsById', () => {
   });
 });
 
-describe('product internals', () => {
-  it('keys the internals in productOrder order', () => {
-    expect(Object.keys(productInternals)).toEqual([...productOrder]);
-  });
-
-  it('does not leak internal-only caveats into public product data', () => {
-    const publicJson = JSON.stringify(products);
-    expect(publicJson).not.toContain('Dojo Hinge V3');
-    expect(publicJson).not.toContain('locked UX is being rebuilt');
-    expect(publicJson).not.toContain('truthBoundary');
-    for (const internal of Object.values(productInternals)) {
-      expect(publicJson).not.toContain(internal.truthBoundary);
+describe('no build number or codename leaks into public fields', () => {
+  it('serialises the public tree without any forbidden token', () => {
+    // Exact-case tokens: the public availability state union legitimately uses
+    // lowercase 'testflight' (assertion 7 expects such states); the brief marks
+    // assertion 9 case-insensitive and this one not. products.internal.ts is
+    // deliberately excluded — it is internal.
+    const publicJson = JSON.stringify({ products, engines, planCopy, launchOffer });
+    for (const token of ['Dojo', 'TestFlight', '32', 'internal']) {
+      expect(publicJson, `public data must not contain "${token}"`).not.toContain(token);
     }
-  });
-
-  it('gives every public product exactly the public keys', () => {
-    const publicKeys = [
-      'availability',
-      'id',
-      'links',
-      'oneLiner',
-      'promise',
-      'publicName',
-      'source',
-      'whatItIs',
-    ];
-    for (const product of products) {
-      const expected = product.extraSources
-        ? [...publicKeys, 'extraSources'].sort()
-        : [...publicKeys];
-      expect(Object.keys(product).sort(), product.id).toEqual(expected);
-    }
-  });
-
-  it('keeps the internal caveats in productInternals', () => {
-    expect(productInternals.forge.truthBoundary).toContain('Dojo Hinge V3');
-    expect(productInternals.builds.truthBoundary).toContain('locked UX is being rebuilt');
-  });
-});
-
-describe('product sources', () => {
-  it('cites the INTENT products heading for every product', () => {
-    for (const product of products) {
-      expect(product.source, product.id).toEqual({
-        doc: INTENT,
-        section: INTENT_PRODUCTS_SECTION,
-      });
-    }
-  });
-
-  it('cites the INTENT release truth subsection for Builds availability', () => {
-    expect(productsById.builds.extraSources).toEqual([
-      {
-        doc: INTENT,
-        section: '4. Money, account, download and demo reality — Get / release truth',
-      },
-    ]);
   });
 });
