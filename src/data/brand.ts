@@ -1,5 +1,7 @@
-// W0-02a: brand truth for the front door. The tagline sentences are locked
-// facts sourced from lanes/README.md; nothing here invents claims.
+// W0-02a: brand truth for the front door. Every user-visible string this file
+// exports — the tagline, its explanation and the family line — is a locked
+// fact sourced from lanes/README.md (see brandSources); nothing here invents
+// claims. Route-ish strings carry a leading slash (enginesDestination).
 
 export const brand = {
   name: 'RHOBEAR',

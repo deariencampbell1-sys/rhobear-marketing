@@ -1,14 +1,16 @@
 // W0-02a: the five RHOBEAR apps, in brand.appOrder order, with sourced claims
 // only. Every user-visible string is a literal below; no URLs, prices, counts
-// or testimonials are invented here.
+// or testimonials are invented here. Internal-only caveats live in
+// products.internal.ts and are never rendered on any screen.
 
 import { brand } from './brand';
 
-// local until W0-02c composes the model
+// Ids derive from brand, never a hand-written union. The alias stays exported
+// because products.internal.ts keys its caveats by it.
 export type ProductId = (typeof brand.appOrder)[number];
 
 export interface ProductEntry {
-  id: ProductId;
+  id: (typeof brand.appOrder)[number];
   publicName: string;
   oneLiner: string;
   promise: string;
@@ -37,8 +39,8 @@ export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
     ],
     availability: {
       state: 'testflight',
-      label: 'TestFlight 1.0 (32) by invitation',
-      reason: 'App Store and other platform releases are not published yet.',
+      label: 'By invitation',
+      reason: 'Mobile access is invitation-only today; the other platforms are not published.',
     },
     links: {},
     source: {
@@ -138,17 +140,8 @@ export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
   },
 ]);
 
-// The ids in display order, frozen so callers cannot mutate the ordering.
-export const productOrder: readonly ProductId[] = Object.freeze([...brand.appOrder]);
-
-// Module-scope guard: drift between the product table and the display order is a
-// programming error and must fail loudly at import time.
-if (
-  products.length !== productOrder.length ||
-  products.some((product, index) => product.id !== productOrder[index])
-) {
-  throw new Error('products: products and productOrder disagree');
-}
+// The ids in display order: a frozen copy of brand.appOrder, not a live alias.
+export const productOrder = Object.freeze([...brand.appOrder]) as readonly string[];
 
 export function productById(id: ProductId): ProductEntry {
   const found = products.find((product) => product.id === id);
@@ -158,11 +151,15 @@ export function productById(id: ProductId): ProductEntry {
   return found;
 }
 
-export const productsById: Readonly<Record<ProductId, ProductEntry>> =
-  Object.freeze<Record<ProductId, ProductEntry>>({
-    builds: productById('builds'),
-    forge: productById('forge'),
-    herald: productById('herald'),
-    regent: productById('regent'),
-    reviews: productById('reviews'),
-  });
+// Built from the products array — no hand-written key list to drift.
+export const productsById: Readonly<Record<ProductId, ProductEntry>> = Object.freeze(
+  Object.fromEntries(products.map((product) => [product.id, product] as const)) as Record<
+    ProductId,
+    ProductEntry
+  >,
+);
+
+// Module-scope guard: the display order in brand.appOrder must be fully covered
+// by the product table, so adding an app in one place fails loudly here.
+const missing = brand.appOrder.filter((id) => !productsById[id]);
+if (missing.length) throw new Error(`products and productOrder disagree: missing ${missing.join(', ')}`);
