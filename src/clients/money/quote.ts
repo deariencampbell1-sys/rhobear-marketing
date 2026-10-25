@@ -11,7 +11,8 @@ import type { CatalogClient, MoneyTransport } from './catalog';
 export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel' | 'accountUuid';
 
 export type QuoteUnavailableReason =
-  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'no-total';
+  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'no-total'
+  | 'catalog-stale';
 
 export type QuoteState =
   | { kind: 'ready'; quote: Quote; requestId: string }
@@ -41,13 +42,22 @@ export function createQuoteClient(
 ): QuoteClient {
   const now = options.now ?? (() => Date.now());
   const bound = new Map<string, QuoteBindInput & { requestId: string }>(); // operationId -> the input that made it
+  const BOUND_LIMIT = 32;
 
   function judge(quote: Quote, input: QuoteBindInput, requestId: string): QuoteState {
     if (!quote.total || quote.total.length === 0) return { kind: 'unavailable', reason: 'no-total', requestId };
     if (quote.accountUuid !== input.accountUuid) return { kind: 'foreign', quote, requestId };
     const expiresMs = Date.parse(quote.expiresAt);
     if (!Number.isFinite(expiresMs) || now() >= expiresMs) return { kind: 'expired', quote, requestId };
-    const view = catalog.lastView();
+    // lastView() is history by contract: always stale, never purchasable. A live
+    // price has to judge itself against the live view.
+    const view = catalog.currentView ? catalog.currentView() : catalog.lastView();
+    // A ready quote is only ready against a catalog we would actually sell from.
+    // lastView() is always stale and never purchasable, so a live price needs a
+    // fresh load; anything less is refused here rather than trusted by a screen.
+    if (view === null || view.stale || !view.purchasable) {
+      return { kind: 'unavailable', reason: 'catalog-stale', requestId };
+    }
     const differences: QuoteDrift[] = [];
     if (view === null || quote.catalogVersion !== view.catalogVersion) differences.push('catalogVersion');
     if (view === null || quote.sourceSha !== view.sourceSha) differences.push('sourceSha');
@@ -69,6 +79,12 @@ export function createQuoteClient(
     if (!res.ok) return { kind: 'unavailable', reason: res.reason, requestId: res.requestId };
     const state = judge(res.data, input, res.requestId);
     if (state.kind === 'ready' || state.kind === 'stale') {
+      // Bounded: the oldest binding is dropped so a long session cannot grow the
+      // map without limit. A dropped binding only costs one reconfirm refusal.
+      if (bound.size >= BOUND_LIMIT) {
+        const oldest = bound.keys().next();
+        if (!oldest.done) bound.delete(oldest.value);
+      }
       bound.set(res.data.operationId, { ...input, requestId: res.requestId });
     }
     return state;
@@ -80,6 +96,7 @@ export function createQuoteClient(
       if (state.kind === 'expired' || state.kind === 'foreign' || state.kind === 'unavailable') return state;
       const input = bound.get(state.quote.operationId);
       if (!input) return { kind: 'unavailable', reason: 'invalid-shape', requestId: state.requestId };
+      bound.delete(state.quote.operationId); // the re-bind issues a new operationId
       return bind(input);
     },
   };

@@ -141,3 +141,29 @@ describe('money catalog memory', () => {
   });
 });
 
+
+// Appended after Apollo's second review of PR #56: an unparseable generatedAt is
+// stale, never fresh, and the plan-row test no longer leans on the wall clock.
+describe('money catalog unparseable date', () => {
+  // parseCatalog already refuses a generatedAt that is not RFC3339, so this is
+  // the shape the failure actually takes: the whole catalog is refused and
+  // nothing is remembered. (The NaN guard in catalog.ts stays as a belt for a
+  // view built by hand; the wire cannot reach it.)
+  it('refuses a catalog whose generatedAt is not a date', async () => {
+    const catalog = fakeCatalog({ generatedAt: 'not-a-date' });
+    const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
+    const client = createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt });
+    const result = await client.load();
+    expect(result.ok).toBe(false);
+    expect(result.ok ? 'ok' : result.reason).toBe('invalid-shape');
+    expect(client.lastView()).toBeNull();
+  });
+
+  it('stamps fetchedAt from the injected clock, not from the machine clock', async () => {
+    const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
+    const client = createCatalogClient(fakeTransport(fakeCatalog(), nearGeneratedAt), { now: nearGeneratedAt });
+    const view = await loadView(client);
+    expect(view.stale).toBe(false);
+    expect(view.purchasable).toBe(true);
+  });
+});

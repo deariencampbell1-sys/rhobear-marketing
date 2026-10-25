@@ -64,7 +64,9 @@ export function createEntitlementClient(
         return { state: 'unknown', presentation: 'reconcile', reason: res.reason, requestId: res.requestId };
       }
       const entitlement = res.data;
-      if (entitlement.accountUuid !== input.accountUuid) {
+      // The response must answer the question we asked: another account's
+      // entitlement, or another product's, is a session mismatch, not a view.
+      if (entitlement.accountUuid !== input.accountUuid || entitlement.product !== input.product) {
         return {
           state: 'unknown', presentation: 'reconcile',
           reason: 'session-mismatch', requestId: res.requestId,

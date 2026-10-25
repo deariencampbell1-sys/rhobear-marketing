@@ -29,6 +29,10 @@ export type CatalogLoaded =
 export type CatalogClient = {
   load(): Promise<CatalogLoaded>;
   lastView(): CatalogView | null;                       // previous successful view, always stale + not purchasable
+  // The live view: the last load as it judged itself. Optional so a fake in a
+  // test does not have to model it; a caller that needs a price must use this,
+  // never lastView().
+  currentView?(): CatalogView | null;
   capabilitiesFor(product: string): readonly CatalogCapability[];
 };
 
@@ -83,6 +87,11 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
     lastView() {
       if (!last) return null;
       return { ...last.view, stale: true, purchasable: false, reason: 'stale' };
+    },
+    currentView() {
+      // As the load judged itself: `stale` here is the freshness verdict, not
+      // the forced-stale history that lastView() reports.
+      return last ? last.view : null;
     },
     capabilitiesFor(product: string) {
       const view = last?.view;

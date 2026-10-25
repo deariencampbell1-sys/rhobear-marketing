@@ -74,7 +74,9 @@ afterEach(() => {
   restore = null;
 });
 
-const fixedNow = Date.parse('2026-10-25T12:30:00Z');
+// Five minutes after the fixture catalog was generated: the freshness window is
+// open, so a quote can legitimately be ready.
+const fixedNow = Date.parse('2026-10-25T12:05:00Z');
 
 describe('money surface', () => {
   it('serves every client from one transport, with one injected clock', async () => {

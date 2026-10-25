@@ -164,3 +164,46 @@ describe('money quote reconfirm', () => {
   });
 });
 
+
+// Appended after Apollo's second review of PR #56: a quote is only ready against
+// a catalog we would actually sell from, and a binding is evicted on reconfirm.
+describe('money quote live-catalog gate', () => {
+  const catalogWith = (over: Record<string, unknown>): CatalogClient => {
+    const view = {
+      catalogVersion: 'v1', sourceSha: 'a'.repeat(40), purchasable: true,
+      generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [], ...over,
+    };
+    return {
+      async load() { return { ok: true as const, view }; },
+      lastView() { return view; },
+      capabilitiesFor() { return []; },
+    };
+  };
+
+  const at = () => Date.parse('2026-10-25T00:00:00Z');
+
+  it('refuses to make a quote ready off a stale catalog', async () => {
+    const client = createQuoteClient(fakeTransport(fakeQuote()), catalogWith({ stale: true }), { now: at });
+    const state = await client.bind(input);
+    expect(state.kind).toBe('unavailable');
+    expect(state.kind === 'unavailable' ? state.reason : '').toBe('catalog-stale');
+  });
+
+  it('refuses to make a quote ready off a catalog that cannot be sold from', async () => {
+    const client = createQuoteClient(fakeTransport(fakeQuote()), catalogWith({ purchasable: false }), { now: at });
+    const state = await client.bind(input);
+    expect(state.kind).toBe('unavailable');
+    expect(state.kind === 'unavailable' ? state.reason : '').toBe('catalog-stale');
+  });
+
+  it('refuses a quote when no catalog was ever loaded', async () => {
+    const empty: CatalogClient = {
+      async load() { return { ok: false as const, reason: 'network', requestId: 'r0' }; },
+      lastView() { return null; },
+      capabilitiesFor() { return []; },
+    };
+    const client = createQuoteClient(fakeTransport(fakeQuote()), empty, { now: at });
+    expect((await client.bind(input)).kind).toBe('unavailable');
+  });
+});
+

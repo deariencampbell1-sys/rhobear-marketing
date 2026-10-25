@@ -126,3 +126,47 @@ describe('money entitlement client', () => {
     expect(conflictSupport().mustVerifyFirst).toBe(true);
   });
 });
+
+// Appended after Apollo's second review of PR #56: the fail-closed paths it
+// named ??? another account's entitlement, another product's entitlement, and an
+// `active` row whose paidThrough is missing or already past.
+describe('money entitlement fail-closed paths', () => {
+  const at = () => Date.parse('2026-10-25T12:00:00Z');
+
+  const loadOne = async (
+    over: Partial<Entitlement>,
+    input: { accountUuid: string; product: string },
+  ): Promise<EntitlementView> => createEntitlementClient(okTransport(fixture(over)), { now: at }).load(input);
+
+  it('never renders another account\'s entitlement as known', async () => {
+    const view = await loadOne({ accountUuid: 'acct-2' }, { accountUuid: 'acct-1', product: 'builds' });
+    expect(view.state).toBe('unknown');
+    expect(view.presentation).toBe('reconcile');
+    expect(view.state === 'unknown' ? view.reason : '').toBe('session-mismatch');
+    expect('entitlement' in view).toBe(false);
+  });
+
+  it('never renders another product\'s entitlement as known', async () => {
+    const view = await loadOne({ product: 'reviews' }, { accountUuid: 'acct-1', product: 'builds' });
+    expect(view.state).toBe('unknown');
+    expect(view.state === 'unknown' ? view.reason : '').toBe('session-mismatch');
+  });
+
+  it('treats an active row with no usable paidThrough as expired, with no handoff', async () => {
+    const view = await loadOne({ state: 'active', paidThrough: null }, { accountUuid: 'acct-1', product: 'builds' });
+    expect(view.state).toBe('known');
+    expect(view.presentation).toBe('expired');
+    expect(view.state === 'known' ? view.handoff : 'x').toBeUndefined();
+    expect(view.state === 'known' ? view.paidThroughMs : 1).toBeNull();
+  });
+
+  it('treats a paidThrough in the past as expired, with no handoff', async () => {
+    const view = await loadOne(
+      { state: 'canceled-until-paid-through', paidThrough: '2020-01-01T00:00:00Z' },
+      { accountUuid: 'acct-1', product: 'builds' },
+    );
+    expect(view.presentation).toBe('expired');
+    expect(view.state === 'known' ? view.handoff : 'x').toBeUndefined();
+  });
+});
+
