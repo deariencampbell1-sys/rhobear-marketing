@@ -196,6 +196,16 @@ describe('resolveReleases — availability and detection', () => {
     expect(detectPlatform({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7)' })).toBe('android');
   });
 
+  it('uses navigator.platform when the UA is not enough, and refuses an empty UA', () => {
+    // The second input channel: an iPadOS or a spoofed UA can leave only
+    // navigator.platform to go on.
+    expect(detectPlatform({ userAgent: 'Mozilla/5.0 (X11)', platform: 'MacIntel', maxTouchPoints: 0 })).toBe('macos');
+    expect(detectPlatform({ userAgent: 'Mozilla/5.0 (X11)', platform: 'MacIntel', maxTouchPoints: 5 })).toBe('ipados');
+    expect(detectPlatform({ userAgent: null })).toBe(null);
+    expect(detectPlatform({ userAgent: '   ' })).toBe(null);
+    expect(detectPlatform({ userAgent: '' })).toBe(null);
+  });
+
   it('a phone user agent resolves to the phone platform', () => {
     expect(detectPlatform({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)' })).toBe('ios');
     expect(detectPlatform({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7)' })).toBe('android');
@@ -285,12 +295,12 @@ describe('resolveReleases — fail-closed branches', () => {
     expect(result).toEqual({ ok: false, reason: 'no-releases' });
   });
 
-  it('returns platform-mismatch when nothing is offered and the device is unknown', () => {
+  it('returns device-unknown when nothing is offered and the device is unknown', () => {
     const manifest: ReleaseManifest = {
       releases: MANIFEST.releases.map((release) => ({ ...release, availability: 'unavailable' })),
     };
     const result = resolveReleases(PRODUCT, manifest.releases, UNKNOWN_HINTS);
-    expect(result).toEqual({ ok: false, reason: 'platform-mismatch' });
+    expect(result).toEqual({ ok: false, reason: 'device-unknown' });
   });
 
   it('still answers a known device when every row is unavailable', () => {
@@ -412,5 +422,54 @@ describe('resolveReleases — no live link on a refused row', () => {
     expect(insecure.state).toBe('unavailable');
     expect(insecure.reason).toBe('insecure-artifact');
     expect(insecure.storeUrl).toBeNull();
+  });
+});
+
+// Apollo's round-4 review: a store or waitlist row carries no hash, the store
+// path is notarized by the store rather than by us, and the product id is
+// matched canonically.
+describe('resolveReleases — no binary, no hash; store rows need no ticket', () => {
+  it('a store row carries neither a size nor a digest', () => {
+    const ios = rowWhere(rowsOf(MANIFEST), (r) => r.platform === 'ios');
+    expect(ios.state).toBe('store');
+    expect(ios.bytes).toBeNull();
+    expect(ios.sha256).toBeNull();
+  });
+
+  it('a waitlist row carries neither a size nor a digest', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'linux'
+          ? { ...release, availability: 'waitlist', artifactUrl: null, storeUrl: null }
+          : release,
+      ),
+    };
+    const linux = rowWhere(rowsOf(manifest), (r) => r.platform === 'linux');
+    expect(linux.bytes).toBeNull();
+    expect(linux.sha256).toBeNull();
+  });
+
+  it('a macOS store row is a live store link without a notarization ticket', () => {
+    // The store notarizes what it ships; requiring 'passed' here would refuse
+    // every genuine App Store row.
+    const manifest: ReleaseManifest = {
+      releases: [
+        row('macos', {
+          artifactUrl: null, storeUrl: STORE.ios, notarization: 'required', signer: null,
+        }),
+      ],
+    };
+    const macos = rowWhere(rowsOf(manifest), (r) => r.platform === 'macos');
+    expect(macos.state).toBe('store');
+    expect(macos.reason).toBeNull();
+  });
+
+  it('matches the product id case- and whitespace-insensitively', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) => ({ ...release, product: '  RhoBear ' })),
+    };
+    const result = resolveReleases('rhobear', manifest.releases, UNKNOWN_HINTS);
+    expect(result.ok).toBe(true);
+    expect(result.ok ? result.rows.length : 0).toBe(manifest.releases.length);
   });
 });

@@ -29,8 +29,10 @@ export type Release = {
   sourceSha: string;
   artifactUrl: string | null;
   storeUrl: string | null;
-  bytes: number;
-  sha256: string;
+  // A hash and a size describe a binary. A row with no artifact (a store
+  // listing, a waitlist row) has neither, and must not invent them.
+  bytes: number | null;
+  sha256: string | null;
   signer: string | null;
   notarization: Notarization;
   availability: ReleaseAvailability;
@@ -68,6 +70,26 @@ export function isHttpsUrl(value: string): boolean {
   }
 }
 
+/**
+ * The optional host policy. `isHttpsUrl` proves the scheme and that no
+ * credential is smuggled in; it cannot know which hosts we ship from. A caller
+ * that knows (the site, once the release host is fixed) passes the allowlist
+ * here, so a tampered manifest cannot point the button at an attacker's host.
+ * Without it the contract is "any https origin", which is what a first release
+ * with an undecided CDN needs; the test below pins both behaviours.
+ */
+export type ParseOptions = { allowedArtifactHosts?: readonly string[] };
+
+function hostAllowed(value: string, options: ParseOptions): boolean {
+  const hosts = options.allowedArtifactHosts;
+  if (hosts === undefined || hosts.length === 0) return true;
+  try {
+    return hosts.includes(new URL(value).host);
+  } catch {
+    return false;
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -95,7 +117,7 @@ function isNotarization(value: unknown): value is Notarization {
  * not-an-object → wrong-schema → bad-platform → bad-source-sha → bad-sha256 →
  * bad-bytes → bad-url → bad-accepted-at → no-target → notarization-not-passed.
  */
-export function parseRelease(raw: unknown): { release: Release } | { problem: ManifestProblem } {
+export function parseRelease(raw: unknown, options: ParseOptions = {}): { release: Release } | { problem: ManifestProblem } {
   if (!isRecord(raw)) return { problem: 'not-an-object' };
   const schema = raw.schema;
   const product = raw.product;
@@ -125,19 +147,32 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
   if (schema !== RELEASE_SCHEMA) return { problem: 'wrong-schema' };
   if (!isPlatform(platform)) return { problem: 'bad-platform' };
   if (typeof sourceSha !== 'string' || !hex40.test(sourceSha.toLowerCase())) return { problem: 'bad-source-sha' };
-  if (typeof sha256 !== 'string' || !hex64.test(sha256.toLowerCase())) return { problem: 'bad-sha256' };
-  if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes <= 0) {
+  if (bytes !== undefined && bytes !== null && (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes <= 0)) {
     return { problem: 'bad-bytes' };
+  }
+  if (sha256 !== undefined && sha256 !== null
+    && (typeof sha256 !== 'string' || !hex64.test(sha256.toLowerCase()))) {
+    return { problem: 'bad-sha256' };
   }
   let artifact: string | null = null;
   if (artifactUrl !== undefined && artifactUrl !== null) {
-    if (typeof artifactUrl !== 'string' || !isHttpsUrl(artifactUrl)) return { problem: 'bad-url' };
+    if (typeof artifactUrl !== 'string' || !isHttpsUrl(artifactUrl) || !hostAllowed(artifactUrl, options)) {
+      return { problem: 'bad-url' };
+    }
     artifact = artifactUrl;
   }
   let store: string | null = null;
   if (storeUrl !== undefined && storeUrl !== null) {
-    if (typeof storeUrl !== 'string' || !isHttpsUrl(storeUrl)) return { problem: 'bad-url' };
+    if (typeof storeUrl !== 'string' || !isHttpsUrl(storeUrl) || !hostAllowed(storeUrl, options)) {
+      return { problem: 'bad-url' };
+    }
     store = storeUrl;
+  }
+  if (artifact !== null && (bytes === undefined || bytes === null || typeof bytes !== 'number')) {
+    return { problem: 'bad-bytes' };
+  }
+  if (artifact !== null && (sha256 === undefined || sha256 === null || typeof sha256 !== 'string')) {
+    return { problem: 'bad-sha256' };
   }
   if (typeof acceptedAt !== 'string' || !isRfc3339(acceptedAt)) return { problem: 'bad-accepted-at' };
   // A row the owner can act on must point somewhere: no download and no store
@@ -145,12 +180,12 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
   if (availability === 'available' && artifact === null && store === null) {
     return { problem: 'no-target' };
   }
-  // macOS ships notarized or not at all: 'required' means the ticket was
-  // requested but has not come back, so no button may exist yet.
-  // macOS ships notarized or not at all: 'required' means the ticket was
-  // requested but has not come back, and 'not-applicable' on a macOS row is a
-  // data error, so neither may produce a download button.
-  if (platform === 'macos' && notarization !== 'passed') {
+  // macOS ships notarized or not at all — but only for a direct download. A
+  // store row is notarized by the store, and a pulled or waitlist row ships
+  // nothing at all, so neither may be forced to assert a ticket it has not got
+  // (that would be a false attestation, and with an all-or-nothing manifest it
+  // would blank every other platform too).
+  if (platform === 'macos' && artifact !== null && notarization !== 'passed') {
     return { problem: 'notarization-not-passed' };
   }
   const signerValue = typeof signer === 'string' && signer.trim().length > 0 ? signer : null;
@@ -165,8 +200,8 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
       sourceSha: sourceSha.toLowerCase(),
       artifactUrl: artifact,
       storeUrl: store,
-      bytes,
-      sha256: sha256.toLowerCase(),
+      bytes: artifact === null ? null : (bytes as number),
+      sha256: artifact === null ? null : (sha256 as string).toLowerCase(),
       signer: signerValue,
       notarization,
       availability,
@@ -189,7 +224,7 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
  * still carries a per-row `notarization-incomplete` reason; it is a belt for a
  * `Release[]` that did not come through this function, not a second policy.
  */
-export function parseManifest(raw: unknown): ParsedManifest {
+export function parseManifest(raw: unknown, options: ParseOptions = {}): ParsedManifest {
   const problems: ManifestProblem[] = [];
   let rows: unknown[];
   if (Array.isArray(raw)) {
@@ -207,7 +242,7 @@ export function parseManifest(raw: unknown): ParsedManifest {
   if (rows.length === 0) return { ok: false, problems: [...problems, 'empty'] };
   const releases: Release[] = [];
   for (const row of rows) {
-    const parsed = parseRelease(row);
+    const parsed = parseRelease(row, options);
     if ('problem' in parsed) problems.push(parsed.problem);
     else releases.push(parsed.release);
   }
@@ -232,13 +267,13 @@ export function parseManifest(raw: unknown): ParsedManifest {
     // by a Windows version string is an orphan, not a chain — and every chain
     // must reach a live head rather than loop.
     const versions = new Set(group.map((release) => release.version));
+    const byVersion = new Map(group.map((row) => [row.version, row] as const));
     for (const release of group) {
       if (release.supersededBy === null) continue;
       if (!versions.has(release.supersededBy) || release.supersededBy === release.version) {
         problems.push('ambiguous-supersede');
         continue;
       }
-      const byVersion = new Map(group.map((row) => [row.version, row] as const));
       let cursor: Release | undefined = release;
       let steps = 0;
       while (cursor !== undefined && cursor.supersededBy !== null && steps <= group.length) {

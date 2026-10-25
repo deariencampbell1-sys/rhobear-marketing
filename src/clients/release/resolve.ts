@@ -39,8 +39,9 @@ export type ReleaseRow = {
   supersededBy: string | null;
   artifactUrl: string | null;
   storeUrl: string | null;
-  bytes: number;
-  sha256: string;
+  /** Only on a row that offers a binary; null for a store or waitlist row. */
+  bytes: number | null;
+  sha256: string | null;
   /** RFC3339, carried so a screen can order history without re-reading the manifest. */
   acceptedAt: string;
 };
@@ -55,7 +56,9 @@ export type ResolveResult =
       /** The single row to feature, or null when the device's row cannot be downloaded. */
       featured: ReleaseRow | null;
     }
-  | { ok: false; reason: 'no-releases' | 'platform-mismatch' };
+  // 'device-unknown' is the honest name: no platform was matched at all, so the
+  // screen says "we could not identify your device", not "unsupported platform".
+  | { ok: false; reason: 'no-releases' | 'device-unknown' };
 
 /** iPadOS masquerades as macOS in the UA; touch points are the only honest tell. */
 export function detectPlatform(hints: DeviceHints): Platform | null {
@@ -93,7 +96,9 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
   if (release.supersededBy !== null) return { state: 'unavailable', reason: 'superseded' };
   if (release.storeUrl !== null && release.artifactUrl === null) {
     // The store link is a live link too: it gets the same https-and-no-credentials
-    // check as an artifact, so a bypassing Release[] cannot surface it.
+    // check as an artifact, so a bypassing Release[] cannot surface it. It does
+    // not need a notarization ticket: the store notarizes what it ships, and
+    // requiring 'passed' here would refuse every genuine App Store row.
     if (!isHttpsUrl(release.storeUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
     return { state: 'store', reason: null };
   }
@@ -102,7 +107,7 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
   // user:pass@ as well as a non-https scheme.
   if (!isHttpsUrl(release.artifactUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
   // Belt for a Release[] that did not come through parseManifest (which already
-  // refuses a macOS row whose notarization is not 'passed').
+  // refuses a macOS row that offers a download without a passed ticket).
   if (release.platform === 'macos' && release.notarization !== 'passed')
     return { state: 'unavailable', reason: 'notarization-incomplete' };
   if (release.signer === null || release.signer.trim() === '')
@@ -131,14 +136,22 @@ function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
     isCurrentDevice: release.platform === currentPlatform,
     artifactUrl: downloadable ? release.artifactUrl : null,
     storeUrl: store ? release.storeUrl : null,
-    bytes: release.bytes,
-    sha256: release.sha256,
+    bytes: release.artifactUrl === null ? null : release.bytes,
+    sha256: release.artifactUrl === null ? null : release.sha256,
     acceptedAt: release.acceptedAt,
   };
 }
 
+/** The canonical product id: the manifest and the page must agree on case and spacing. */
+function canonicalProduct(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export function resolveReleases(product: string, releases: readonly Release[], hints: DeviceHints): ResolveResult {
-  const matching = releases.filter((release) => release.product === product);
+  // Matched canonically, so a pipeline that emits 'Rhobear' and a page that asks
+  // for 'rhobear' do not silently degrade to "nothing shipped yet".
+  const wanted = canonicalProduct(product);
+  const matching = releases.filter((release) => canonicalProduct(release.product) === wanted);
   if (matching.length === 0) return { ok: false, reason: 'no-releases' };
 
   const currentPlatform = detectPlatform(hints);
@@ -173,7 +186,7 @@ export function resolveReleases(product: string, releases: readonly Release[], h
 
   const nothingToShow = rows.every((row) => row.state === 'unavailable');
   if (nothingToShow && detection === 'unknown') {
-    return { ok: false, reason: 'platform-mismatch' };
+    return { ok: false, reason: 'device-unknown' };
   }
 
   return { ok: true, rows, detection, currentPlatform, featured };

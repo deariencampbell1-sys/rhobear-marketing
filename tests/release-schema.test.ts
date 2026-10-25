@@ -9,6 +9,12 @@ import {
 } from '../src/clients/release/schema';
 
 const SOURCE_SHA = 'a'.repeat(40);
+
+/** The ManifestProblem code a row produces, or 'parsed'. */
+const code = (row: unknown): string => {
+  const parsed = parseRelease(row);
+  return 'problem' in parsed ? parsed.problem : 'parsed';
+};
 const SHA256 = 'b'.repeat(64);
 const ACCEPTED_AT = '2026-10-25T12:00:00Z';
 const ARTIFACT_URL = 'https://downloads.example.com/rhobear-1.0.0.tar.gz';
@@ -336,5 +342,85 @@ describe('parseManifest input shapes', () => {
   it('refuses a non-object, non-array document', () => {
     expect(parseManifest('nope')).toEqual({ ok: false, problems: ['not-an-object'] });
     expect(parseManifest(null)).toEqual({ ok: false, problems: ['not-an-object'] });
+  });
+});
+
+// Apollo's round-4 review: the macOS notarization gate must apply to a download,
+// not to a row that ships nothing; a row without a binary carries no hash; and
+// the caller can pin the hosts a manifest may point at.
+describe('parseRelease — macOS notarization only gates a download', () => {
+  it('accepts a pulled macOS row that never got its ticket', () => {
+    // The emergency pull path: the owner pulls a build whose notarization never
+    // came back. Refusing it would blank every other platform in an
+    // all-or-nothing manifest, and demanding 'passed' would be a false attestation.
+    const pulled = wellFormedRow('macos', {
+      availability: 'unavailable', artifactUrl: null, storeUrl: null, notarization: 'required',
+    });
+    expect(code(pulled)).toBe('parsed');
+  });
+
+  it('accepts a macOS waitlist row and a macOS store row without a ticket', () => {
+    const waitlist = wellFormedRow('macos', {
+      availability: 'waitlist', artifactUrl: null, storeUrl: null, notarization: 'required',
+    });
+    expect(code(waitlist)).toBe('parsed');
+    const store = wellFormedRow('macos', {
+      availability: 'available', artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1',
+      notarization: 'required',
+    });
+    expect(code(store)).toBe('parsed');
+  });
+
+  it('still refuses a macOS download without a passed ticket', () => {
+    expect(code(wellFormedRow('macos', { notarization: 'required' }))).toBe('notarization-not-passed');
+    expect(code(wellFormedRow('macos', { notarization: 'not-applicable' }))).toBe('notarization-not-passed');
+  });
+});
+
+describe('parseRelease — a row without a binary carries no hash', () => {
+  it('nulls the hash and the size on a store row, even when the wire sent them', () => {
+    const parsed = parseRelease(wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    }));
+    if (!('release' in parsed)) throw new Error('a store row parses');
+    expect(parsed.release.bytes).toBeNull();
+    expect(parsed.release.sha256).toBeNull();
+  });
+
+  it('requires both when there is an artifact, and validates them when present', () => {
+    expect(code(wellFormedRow('linux', { bytes: undefined }))).toBe('bad-bytes');
+    expect(code(wellFormedRow('linux', { sha256: null }))).toBe('bad-sha256');
+    expect(code(wellFormedRow('linux', { bytes: 0 }))).toBe('bad-bytes');
+    expect(code(wellFormedRow('linux', { sha256: 'nope' }))).toBe('bad-sha256');
+  });
+});
+
+describe('parseRelease — optional artifact host policy', () => {
+  const allowed = { allowedArtifactHosts: ['downloads.example.com', 'apps.apple.com'] } as const;
+
+  it('accepts a host on the allowlist and refuses any other', () => {
+    expect(parseRelease(wellFormedRow('linux'), allowed)).toHaveProperty('release');
+    expect(parseRelease(wellFormedRow('linux', { artifactUrl: 'https://evil.example/x' }), allowed))
+      .toEqual({ problem: 'bad-url' });
+    expect(parseRelease(wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://play.google.com/store/apps/details?id=x', signer: null,
+    }), allowed)).toEqual({ problem: 'bad-url' });
+  });
+
+  it('without an allowlist any https origin is accepted, which is the documented default', () => {
+    expect(parseRelease(wellFormedRow('linux', { artifactUrl: 'https://cdn.elsewhere.example/x' })))
+      .toHaveProperty('release');
+  });
+});
+
+describe('parseRelease — blank strings normalise at the parser', () => {
+  it('treats a whitespace signer as no signer and a whitespace supersede as none', () => {
+    const signed = parseRelease(wellFormedRow('linux', { signer: '   ' }));
+    if (!('release' in signed)) throw new Error('a blank signer is not a parse failure');
+    expect(signed.release.signer).toBeNull();
+
+    const chained = parseRelease(wellFormedRow('linux', { supersededBy: '   ' }));
+    if (!('release' in chained)) throw new Error('a blank supersede is not a parse failure');
+    expect(chained.release.supersededBy).toBeNull();
   });
 });
