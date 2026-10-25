@@ -19,8 +19,14 @@ describe('engines registry', () => {
     expect(engines.map((engine) => engine.id)).toEqual(ENGINE_IDS);
   });
 
-  it('freezes the engines registry at runtime', () => {
+  it('freezes the engines registry, every entry and nested lists', () => {
     expect(Object.isFrozen(engines)).toBe(true);
+    for (const engine of engines) {
+      expect(Object.isFrozen(engine), engine.id).toBe(true);
+      expect(Object.isFrozen(engine.scenarioIds), engine.id).toBe(true);
+      expect(Object.isFrozen(engine.runsIn), engine.id).toBe(true);
+      expect(Object.isFrozen(engine.source), engine.id).toBe(true);
+    }
   });
 
   it('has unique engine ids', () => {
@@ -115,9 +121,22 @@ describe('engineScenarios', () => {
     const ids = engineScenarios.map((scenario) => scenario.scenarioId);
     expect(new Set(ids).size).toBe(ids.length);
   });
+
+  it('is frozen with frozen rows', () => {
+    expect(Object.isFrozen(engineScenarios)).toBe(true);
+    for (const scenario of engineScenarios) {
+      expect(Object.isFrozen(scenario), scenario.scenarioId).toBe(true);
+      expect(Object.isFrozen(scenario.source), scenario.scenarioId).toBe(true);
+    }
+  });
 });
 
 describe('enginesDestination', () => {
+  it('is frozen, including its source', () => {
+    expect(Object.isFrozen(enginesDestination)).toBe(true);
+    expect(Object.isFrozen(enginesDestination.source)).toBe(true);
+  });
+
   it('keeps the locked destination copy and source', () => {
     expect(enginesDestination).toEqual({
       id: 'engines',

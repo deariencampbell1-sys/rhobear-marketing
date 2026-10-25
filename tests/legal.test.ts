@@ -141,6 +141,22 @@ describe('legal pages', () => {
   });
 });
 
+describe('runtime immutability', () => {
+  it('freezes the legal exports, pages and sources', () => {
+    expect(Object.isFrozen(legalStatus)).toBe(true);
+    expect(Object.isFrozen(legalStatus.source)).toBe(true);
+    expect(Object.isFrozen(checkoutState)).toBe(true);
+    expect(Object.isFrozen(checkoutState.source)).toBe(true);
+    expect(Object.isFrozen(retention)).toBe(true);
+    expect(Object.isFrozen(retention.source)).toBe(true);
+    expect(Object.isFrozen(legalPages)).toBe(true);
+    for (const page of legalPages) {
+      expect(Object.isFrozen(page), page.id).toBe(true);
+      expect(Object.isFrozen(page.source), page.id).toBe(true);
+    }
+  });
+});
+
 describe('published legal copy', () => {
   it('contains no email, phone or URL detail', () => {
     const strings: string[] = [];

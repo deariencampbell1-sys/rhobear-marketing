@@ -24,12 +24,16 @@ export const enginesDestination = {
   source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. What each product really is — and what the front door may say' },
 } as const;
 
+Object.freeze(enginesDestination.source);
+Object.freeze(enginesDestination);
+
 const enginesSource = {
   doc: 'lanes/L9-front-door/INTENT.md',
   section: '3. What each product really is — and what the front door may say',
 } as const;
+Object.freeze(enginesSource);
 
-export const engines = Object.freeze([
+const enginesUnfrozen = [
   {
     id: 'teams',
     publicName: 'Teams',
@@ -93,7 +97,15 @@ export const engines = Object.freeze([
     scenarioIds: ['spaces-01'],
     source: enginesSource,
   },
-] as const satisfies readonly EngineRow[]);
+] as const satisfies readonly EngineRow[];
+
+for (const engine of enginesUnfrozen) {
+  Object.freeze(engine.scenarioIds);
+  Object.freeze(engine.runsIn);
+  Object.freeze(engine);
+}
+
+export const engines = Object.freeze(enginesUnfrozen);
 
 export type EngineId = (typeof engines)[number]['id'];
 
@@ -106,7 +118,7 @@ for (const engine of engines) {
 export const enginesById: Readonly<Record<EngineId, EngineRow>> =
   Object.freeze(enginesByIdUnfrozen);
 
-export const engineScenarios: readonly {
+const engineScenariosUnfrozen: {
   scenarioId: string;
   engineId: EngineId;
   publicationState: 'footage-pending';
@@ -119,3 +131,10 @@ export const engineScenarios: readonly {
     source: enginesSource,
   })),
 );
+
+for (const scenario of engineScenariosUnfrozen) {
+  Object.freeze(scenario);
+}
+
+export const engineScenarios: readonly (typeof engineScenariosUnfrozen)[number][] =
+  Object.freeze(engineScenariosUnfrozen);

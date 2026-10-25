@@ -6,8 +6,8 @@ canonical route to real HTML, hydrates only the screens that need live state, an
 
 - **Route table:** `src/app/routes.ts` — the single source of truth for pages, prerender output and `sitemap.xml`.
 - **Kit adapter:** `src/kit/` — the only place primitives come from; see `src/kit/README.md` for the 1.0.0 swap.
-- **Content:** `src/data/` — typed content model; `loadContent()` returns `null` today and pages fall back to honest
-  placeholder copy until real content exists.
+- **Content:** `src/data/` — typed content model; `loadContent()` returns the composed data (not `null`). Pages still
+  render the W0-01 placeholder until Wave 1 wires them.
 
 The old site source, the `rhobear-design` and `rhobear-hatch` agent skills, the brand icons, stills, previews and the
 deploy workflow were deleted on 2026-10-24 (lane L0). Do not recover them from git history or copy from `gh-pages`.

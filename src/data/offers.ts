@@ -23,8 +23,9 @@ const priceSource = {
   doc: 'lanes/L9-front-door/CONTRACT.md',
   section: '3. Generated catalog, quote and entitlement',
 } as const;
+Object.freeze(priceSource);
 
-export const approvedPriceList: readonly PriceRow[] = [
+const approvedPriceListUnfrozen: PriceRow[] = [
   {
     id: 'free',
     kind: 'plan',
@@ -74,6 +75,15 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
 ];
 
+for (const row of approvedPriceListUnfrozen) {
+  Object.freeze(row.source);
+  Object.freeze(row);
+}
+
+export const approvedPriceList: readonly PriceRow[] = Object.freeze(
+  approvedPriceListUnfrozen,
+);
+
 // Herald is separate from Builds; CONTRACT §3 (priceSource) is also where its
 // Pro and texting offers, including the texting setup charge, are recorded.
 export type HeraldOffer = {
@@ -84,11 +94,18 @@ export type HeraldOffer = {
   source: { doc: string; section: string };
 };
 
-export const heraldOffers: readonly HeraldOffer[] = [
+const heraldOffersUnfrozen: HeraldOffer[] = [
   { id: 'herald', monthly: '49.00', setup: null, source: priceSource },
   { id: 'herald-pro', monthly: '99.00', setup: null, source: priceSource },
   { id: 'herald-texting', monthly: '30.00', setup: '39.00', source: priceSource },
 ];
+
+for (const offer of heraldOffersUnfrozen) {
+  Object.freeze(offer.source);
+  Object.freeze(offer);
+}
+
+export const heraldOffers: readonly HeraldOffer[] = Object.freeze(heraldOffersUnfrozen);
 
 // Monthly is the only billing interval offered, in any form.
 export const billingTerms = {
@@ -97,6 +114,7 @@ export const billingTerms = {
   otherIntervalsOffered: false,
   source: priceSource,
 } as const;
+Object.freeze(billingTerms);
 
 // Locked copy: the body sentence cannot drift. Terms are owner-locked to
 // lanes/README.md; the seven engine names follow INTENT §3 and the seven-engine
@@ -113,12 +131,16 @@ export const launchOffer = {
     section: '3. What each product really is — and what the front door may say',
   },
 } as const;
+Object.freeze(launchOffer.source);
+Object.freeze(launchOffer.engineNameSource);
+Object.freeze(launchOffer);
 
 export const salePolicy = {
   subscribersSeeSale: false,
   reason: 'An existing subscriber is never shown another sale; they get Manage on the original channel.',
   source: priceSource,
 } as const;
+Object.freeze(salePolicy);
 
 // One short truthful sentence per plan, taken only from the notes column of
 // the approved price list: no adjectives, no invented capability. Typed
@@ -130,3 +152,4 @@ export const planCopy: Record<Exclude<PriceRowId, 'top-up'>, string> = {
   'shell-plus': 'Adds Zeus to Shell.',
   space: 'A whole cax21 with 8 GB RAM and 4 CPU.',
 } as const;
+Object.freeze(planCopy);

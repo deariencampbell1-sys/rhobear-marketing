@@ -18,9 +18,14 @@ export const brand = {
 Object.freeze(brand.appOrder);
 Object.freeze(brand);
 
-// local until W0-02c composes the model
+// Composed by src/data/index.ts (W0-02d).
 export const brandSources = {
   tagline: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — The tagline' },
   taglineExplanation: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — The tagline' },
   familyLine: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — Five apps' },
 } as const;
+
+for (const source of Object.values(brandSources)) {
+  Object.freeze(source);
+}
+Object.freeze(brandSources);

@@ -57,13 +57,3 @@ export interface LegalDoc {
   sections: { heading: string; body: string }[];
 }
 
-export interface SiteContent {
-  products: Product[];
-  engines: Engine[];
-  plans: Plan[];
-  availability: Availability[];
-  demo: Demo | null;
-  support: SupportInfo;
-  privacy: LegalDoc;
-  terms: LegalDoc;
-}

@@ -159,7 +159,7 @@ export const products: readonly ProductEntry[] = Object.freeze(productsUnfrozen)
 export const productOrder: readonly ProductId[] = Object.freeze([...brand.appOrder]);
 
 export function productById(id: ProductId): ProductEntry {
-  const found = products.find((product) => product.id === id);
+  const found = productsById[id];
   if (!found) {
     throw new Error(`products: no entry for id "${id}"`);
   }

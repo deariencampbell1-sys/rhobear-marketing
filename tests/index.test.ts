@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { ProductId } from '../src/data/products';
 import {
   approvedPriceList,
   brand,
@@ -24,11 +25,16 @@ import {
 } from '../src/data';
 import * as data from '../src/data';
 
-const sourceFiles = import.meta.glob('../src/**/*.{ts,tsx}', {
-  query: '?raw',
-  import: 'default',
-  eager: true,
-}) as Record<string, string>;
+const sourceFiles = import.meta.glob(
+  [
+    '../**/*.{ts,tsx,js,mjs,cjs}',
+    '!../node_modules/**',
+    '!../dist/**',
+    '!../tests/**',
+    '!../.git/**',
+  ],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
 
 const nonDataSources = Object.entries(sourceFiles).filter(
   ([path]) => !path.startsWith('../src/data/'),
@@ -87,19 +93,30 @@ describe('data entry', () => {
     expect((data as Record<string, unknown>).productInternals).toBeUndefined();
   });
 
-  it('looks a product up by id through the happy path', () => {
+  it('looks a product up by id through both paths', () => {
     expect(productById('builds')).toBe(productsById.builds);
+    expect(() => productById('no-such-app' as ProductId)).toThrowError(
+      'products: no entry for id "no-such-app"',
+    );
   });
 
   it('loadContent returns the same object references without cloning', () => {
     const content = loadContent();
     expect(content.brand).toBe(brand);
+    expect(content.brandSources).toBe(brandSources);
     expect(content.products).toBe(products);
+    expect(content.productsById).toBe(productsById);
+    expect(content.productOrder).toBe(productOrder);
     expect(content.engines).toBe(engines);
+    expect(content.enginesById).toBe(enginesById);
     expect(content.engineScenarios).toBe(engineScenarios);
+    expect(content.enginesDestination).toBe(enginesDestination);
     expect(content.approvedPriceList).toBe(approvedPriceList);
+    expect(content.heraldOffers).toBe(heraldOffers);
+    expect(content.planCopy).toBe(planCopy);
     expect(content.billingTerms).toBe(billingTerms);
     expect(content.launchOffer).toBe(launchOffer);
+    expect(content.salePolicy).toBe(salePolicy);
     expect(content.legalStatus).toBe(legalStatus);
     expect(content.legalPages).toBe(legalPages);
     expect(content.checkoutState).toBe(checkoutState);
@@ -111,14 +128,22 @@ describe('data entry', () => {
       'approvedPriceList',
       'billingTerms',
       'brand',
+      'brandSources',
       'checkoutState',
       'engineScenarios',
       'engines',
+      'enginesById',
+      'enginesDestination',
+      'heraldOffers',
       'launchOffer',
       'legalPages',
       'legalStatus',
+      'planCopy',
+      'productOrder',
       'products',
+      'productsById',
       'retention',
+      'salePolicy',
     ]);
   });
 });

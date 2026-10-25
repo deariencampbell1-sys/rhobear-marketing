@@ -17,6 +17,8 @@ export const legalStatus = {
     'This site replaces the previous one and its legal pages are under legal review before launch. Nothing here is a signed agreement yet.',
   source: { doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q12 Legal' },
 } as const;
+Object.freeze(legalStatus.source);
+Object.freeze(legalStatus);
 
 export const checkoutState = {
   state: 'closed',
@@ -24,6 +26,8 @@ export const checkoutState = {
     'Checkout opens when the plans, receipts and refund terms are signed off. No payment is taken on this site today.',
   source: { doc: 'lanes/L9-front-door/CONTRACT.md', section: '3. Generated catalog, quote and entitlement' },
 } as const;
+Object.freeze(checkoutState.source);
+Object.freeze(checkoutState);
 
 // Q10 Retention explicitly contains the deletion timing clause ("stops billing,
 // offers export, erases primary data and removes backups within 30 days"). Q13
@@ -36,8 +40,10 @@ export const retention = {
     'Deleting your account stops billing first, then deletes your data; backups are gone within 30 days.',
   source: { doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q10 Retention' },
 } as const;
+Object.freeze(retention.source);
+Object.freeze(retention);
 
-export const legalPages: readonly LegalPage[] = [
+const legalPagesUnfrozen: LegalPage[] = [
   {
     id: 'privacy',
     route: '/privacy',
@@ -69,3 +75,10 @@ export const legalPages: readonly LegalPage[] = [
     },
   },
 ];
+
+for (const page of legalPagesUnfrozen) {
+  Object.freeze(page.source);
+  Object.freeze(page);
+}
+
+export const legalPages: readonly LegalPage[] = Object.freeze(legalPagesUnfrozen);

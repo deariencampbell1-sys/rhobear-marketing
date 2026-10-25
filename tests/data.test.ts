@@ -12,15 +12,17 @@ import {
   engines,
   enginesDestination,
   heraldOffers,
+  loadContent,
+  productById,
   productsById,
   launchOffer,
   legalPages,
   legalStatus,
-  planCopy,
   products,
   productOrder,
   retention,
 } from '../src/data/index';
+import type { ProductId } from '../src/data/products';
 import { productInternals } from '../src/data/products.internal';
 
 const ALLOWED_DOCS = [
@@ -74,6 +76,28 @@ describe('one-liners are verbatim', () => {
     expect(Object.keys(expectedOneLiners).sort()).toEqual([...brand.appOrder].sort());
     for (const product of products) {
       expect(product.oneLiner, product.id).toBe(expectedOneLiners[product.id]);
+    }
+  });
+});
+
+describe('brand copy is verbatim', () => {
+  it('pins every public brand string and the product order', () => {
+    expect(brand).toEqual({
+      name: 'RHOBEAR',
+      tagline: 'Built by our own models.',
+      taglineExplanation:
+        'Every RHOBEAR app is built only by the four models customers get — Core, Peak, Summit and Guest — through our own pipeline. We planned it with help from Claude and Kimi K3, and our workers made it real.',
+      familyLine:
+        'Five apps on one account: Builds, Forge, Herald, Regent and Reviews, plus the Engines that run inside them.',
+      appOrder: ['builds', 'forge', 'herald', 'regent', 'reviews'],
+      enginesDestination: '/engines',
+    });
+  });
+
+  it('freezes brandSources and every source object', () => {
+    expect(Object.isFrozen(brandSources)).toBe(true);
+    for (const source of Object.values(brandSources)) {
+      expect(Object.isFrozen(source)).toBe(true);
     }
   });
 });
@@ -158,9 +182,17 @@ describe('monthly only', () => {
 });
 
 describe('nothing is available yet', () => {
-  it('keeps every product short of available with a stated reason', () => {
+  it('pins each product availability state and a stated reason', () => {
+    const expectedStates = {
+      builds: 'testflight',
+      forge: 'waitlist',
+      herald: 'waitlist',
+      regent: 'waitlist',
+      reviews: 'waitlist',
+    } as const;
+
     for (const product of products) {
-      expect(product.availability.state, product.id).not.toBe('available');
+      expect(product.availability.state, product.id).toBe(expectedStates[product.id]);
       expect(
         product.availability.reason.trim().length,
         `${product.id}.availability.reason`,
@@ -214,6 +246,13 @@ describe('productsById', () => {
     for (const product of products) {
       expect(productsById[product.id]).toBe(product);
     }
+  });
+
+  it('looks up a product by id through both paths', () => {
+    expect(productById('builds')).toBe(productsById.builds);
+    expect(() => productById('no-such-app' as ProductId)).toThrowError(
+      'products: no entry for id "no-such-app"',
+    );
   });
 
   it('is frozen', () => {
@@ -287,14 +326,19 @@ describe('public product data safety', () => {
 });
 
 describe('no build number or codename leaks into public fields', () => {
-  it('serialises the public tree without any forbidden token', () => {
-    // Exact-case tokens: the public availability state union legitimately uses
-    // lowercase 'testflight' (assertion 7 expects such states); the brief marks
-    // assertion 9 case-insensitive and this one not. products.internal.ts is
-    // deliberately excluded — it is internal.
-    const publicJson = JSON.stringify({ products, engines, planCopy, launchOffer });
-    for (const token of ['Dojo', 'TestFlight', '32', 'internal']) {
-      expect(publicJson, `public data must not contain "${token}"`).not.toContain(token);
+  it('serialises the whole public tree without a forbidden token', () => {
+    // Scan every composed public export. The public availability state union
+    // legitimately uses lowercase 'testflight', so the build-number check is
+    // structural rather than a bare '32' substring.
+    const publicTree = JSON.stringify(loadContent());
+    const forbidden = [
+      { label: 'Dojo', pattern: /Dojo/ },
+      { label: 'TestFlight', pattern: /TestFlight/ },
+      { label: 'internal', pattern: /\binternal\b/i },
+      { label: 'build number', pattern: /\bbuild\s*\d+\b/i },
+    ];
+    for (const { label, pattern } of forbidden) {
+      expect(publicTree, `public data must not contain ${label}`).not.toMatch(pattern);
     }
   });
 });

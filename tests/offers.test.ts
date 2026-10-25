@@ -133,6 +133,29 @@ describe('plan copy', () => {
   });
 });
 
+describe('runtime immutability', () => {
+  it('freezes every exported price, offer and policy object', () => {
+    expect(Object.isFrozen(approvedPriceList)).toBe(true);
+    for (const row of approvedPriceList) {
+      expect(Object.isFrozen(row), row.id).toBe(true);
+      expect(Object.isFrozen(row.source), row.id).toBe(true);
+    }
+    expect(Object.isFrozen(heraldOffers)).toBe(true);
+    for (const offer of heraldOffers) {
+      expect(Object.isFrozen(offer), offer.id).toBe(true);
+      expect(Object.isFrozen(offer.source), offer.id).toBe(true);
+    }
+    expect(Object.isFrozen(planCopy)).toBe(true);
+    expect(Object.isFrozen(billingTerms)).toBe(true);
+    expect(Object.isFrozen(billingTerms.source)).toBe(true);
+    expect(Object.isFrozen(salePolicy)).toBe(true);
+    expect(Object.isFrozen(salePolicy.source)).toBe(true);
+    expect(Object.isFrozen(launchOffer)).toBe(true);
+    expect(Object.isFrozen(launchOffer.source)).toBe(true);
+    expect(Object.isFrozen(launchOffer.engineNameSource)).toBe(true);
+  });
+});
+
 describe('launch offer', () => {
   it('is announced, not active', () => {
     expect(launchOffer.state).toBe('announced');
