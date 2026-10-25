@@ -74,9 +74,11 @@ export function createEntitlementClient(
       }
       const parsedPaidThrough = Date.parse(entitlement.paidThrough ?? '');
       const paidThroughMs = Number.isNaN(parsedPaidThrough) ? null : parsedPaidThrough;
-      const unpurchased = entitlement.state === 'active' || entitlement.state === 'canceled-until-paid-through';
+      // The subscriber states: a subscriber whose paid-through date has passed is
+      // expired, not upgraded. (Named for what it holds, not for what it means.)
+      const subscriberState = entitlement.state === 'active' || entitlement.state === 'canceled-until-paid-through';
       const pastPaidThrough = paidThroughMs === null || paidThroughMs <= now();
-      const presentation = unpurchased && pastPaidThrough ? 'expired' : presentationByState[entitlement.state];
+      const presentation = subscriberState && pastPaidThrough ? 'expired' : presentationByState[entitlement.state];
       const handoff = presentation === 'manage' ? channelHandoff[entitlement.channel] : undefined;
       return { state: 'known', presentation, entitlement, paidThroughMs, handoff, showsPrice: false };
     },

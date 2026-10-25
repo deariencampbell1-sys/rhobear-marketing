@@ -57,7 +57,7 @@ describe('money catalog client', () => {
     // The clock sits five minutes after the catalog was generated, so the
     // freshness window is genuinely open and this test is about plan rows.
     const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
-    const view = await loadView(createCatalogClient(fakeTransport(catalog), { now: nearGeneratedAt }));
+    const view = await loadView(createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt }));
     expect(view.purchasable).toBe(false);
     expect(view.reason).toBeUndefined();
     expect(view.plans.find((p) => p.sku === 'space')?.reason).toBe('renewal review');
@@ -102,9 +102,8 @@ describe('money catalog client', () => {
   });
 });
 
-// Appended after Apollo's review of PR #56: a successful load is remembered even
-// when it cannot be sold from, because the screen still has to show the plans,
-// the capabilities and the reason.
+// A successful load is remembered even when it cannot be sold from, because the
+// screen still has to show the plans, the capabilities and the reason.
 describe('money catalog memory', () => {
   it('remembers a successful view that is not purchasable, and marks it stale for reuse', async () => {
     const catalog = fakeCatalog({ plans: [
@@ -142,8 +141,8 @@ describe('money catalog memory', () => {
 });
 
 
-// Appended after Apollo's second review of PR #56: an unparseable generatedAt is
-// stale, never fresh, and the plan-row test no longer leans on the wall clock.
+// An unparseable generatedAt is stale, never fresh, and no test leans on the
+// wall clock: every clock here is injected.
 describe('money catalog unparseable date', () => {
   // parseCatalog already refuses a generatedAt that is not RFC3339, so this is
   // the shape the failure actually takes: the whole catalog is refused and
@@ -165,5 +164,107 @@ describe('money catalog unparseable date', () => {
     const view = await loadView(client);
     expect(view.stale).toBe(false);
     expect(view.purchasable).toBe(true);
+  });
+});
+
+// The sell gate must survive a failed refresh, must re-judge age on every read,
+// must fail closed on a bad timestamp, and the remembered view must not be
+// mutable by whoever reads it.
+describe('money catalog sell gate', () => {
+  // A transport whose next response can be made to fail on demand.
+  const controllableTransport = (payload: unknown, clock: () => number) => {
+    let failing = false;
+    const transport: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        if (failing) return { ok: false, reason: 'network', requestId: 'r1' };
+        const data = parse(payload);
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: clock() };
+      },
+    };
+    return { transport, fail: (value: boolean) => { failing = value; } };
+  };
+
+  it('withdraws the live view when a refresh fails after a good load', async () => {
+    const clock = () => 1_000_000_000;
+    const wire = controllableTransport(fakeCatalog(), clock);
+    const client = createCatalogClient(wire.transport, { now: clock });
+
+    expect((await loadView(client)).purchasable).toBe(true);
+    expect(client.currentView()?.purchasable).toBe(true);
+
+    wire.fail(true);
+    expect(await client.load()).toEqual({ ok: false, reason: 'network', requestId: 'r1' });
+
+    // Not sellable, but still readable for display.
+    expect(client.currentView()?.stale).toBe(true);
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.reason).toBe('stale');
+    expect(client.lastView()?.purchasable).toBe(false);
+    expect(client.capabilitiesFor('builds')).toHaveLength(2);
+  });
+
+  it('re-judges age on every read, so a view ages into stale without a reload', async () => {
+    let clock = 1_000_000_000;
+    const client = createCatalogClient(fakeTransport(fakeCatalog(), () => clock), { now: () => clock, freshnessMs: 900_000 });
+
+    expect((await loadView(client)).purchasable).toBe(true);
+    expect(client.currentView()?.stale).toBe(false);
+
+    clock += 900_001;
+    expect(client.currentView()?.stale).toBe(true);
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.reason).toBe('stale');
+  });
+
+  it('fails closed when fetchedAt is not a timestamp', async () => {
+    const now = () => 1_000_000_000;
+    const badFetchedAt: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        const data = parse(fakeCatalog());
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: Number.NaN };
+      },
+    };
+    const client = createCatalogClient(badFetchedAt, { now });
+    const view = await loadView(client);
+    expect(view.stale).toBe(true);
+    expect(view.purchasable).toBe(false);
+    expect(client.currentView()?.purchasable).toBe(false);
+  });
+
+  it('fails closed when the clock moves backwards past the fetch', async () => {
+    let clock = 1_000_000_000;
+    const client = createCatalogClient(fakeTransport(fakeCatalog(), () => clock), { now: () => clock });
+    expect((await loadView(client)).purchasable).toBe(true);
+
+    clock -= 1_000_000;
+    expect(client.currentView()?.stale).toBe(true);
+    expect(client.currentView()?.purchasable).toBe(false);
+  });
+
+  it('hands out copies, so a caller cannot mutate the remembered sell gate', async () => {
+    const now = () => 1_000_000_000;
+    const client = createCatalogClient(fakeTransport(fakeCatalog(), now), { now });
+    const view = await loadView(client);
+    expect(view.purchasable).toBe(true);
+
+    const live = client.currentView();
+    expect(live).not.toBeNull();
+    if (live === null) throw new Error('a loaded catalog must have a live view');
+    // The rows are frozen, so the stored catalog cannot be edited into a
+    // sellable state through a view a screen is holding...
+    expect(Object.isFrozen(live.plans)).toBe(true);
+    expect(Object.isFrozen(live.plans[0])).toBe(true);
+    // ...and the view itself is a copy: writing to it changes nothing.
+    live.purchasable = false;
+    // A frozen row cannot be written at all (strict mode throws), so the stored
+    // catalog keeps the availability it was parsed with.
+    expect(() => {
+      (live.plans[0] as unknown as { availability: string }).availability = 'unavailable';
+    }).toThrow();
+    expect(client.currentView()?.purchasable).toBe(true);
+    expect(client.currentView()?.plans[0].availability).toBe('available');
+    expect(client.currentView()).not.toBe(client.currentView());
   });
 });

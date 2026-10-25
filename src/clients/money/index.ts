@@ -5,23 +5,11 @@
 export * from './transport';
 export * from './schema';
 export * from './catalog';
-
-// quote.ts and entitlement.ts both export `channelHandoff` (same shape, two
-// owners). Their own files keep the name; these two lines are explicit lists
-// so the collision is aliased here instead of renamed there.
-export type {
-  QuoteDrift, QuoteUnavailableReason, QuoteState, QuoteBindInput, QuoteClient,
-} from './quote';
-export { channelHandoff as quoteChannelHandoff, createQuoteClient } from './quote';
-export type {
-  Presentation, ChannelHandoff, EntitlementUnavailableReason, EntitlementView,
-  EntitlementLoadInput,
-} from './entitlement';
-export {
-  channelHandoff as entitlementChannelHandoff,
-  presentationByState, conflictSupport, createEntitlementClient,
-} from './entitlement';
-
+// quote.ts no longer carries its own channel table: entitlement.ts owns the
+// single channelHandoff, and quote.ts imports it, so the two barrels below can
+// be plain re-exports with no aliasing.
+export * from './quote';
+export * from './entitlement';
 export * from './bank';
 
 import type { MoneyTransportConfig } from './transport';
@@ -31,16 +19,24 @@ import { createQuoteClient } from './quote';
 import { createEntitlementClient } from './entitlement';
 import { createBankClient } from './bank';
 
-/** One call a screen makes; every client shares the same transport. */
+/**
+ * One call a screen makes; every client shares the same transport.
+ *
+ * There is literally one clock: options.now, when given, is the transport's
+ * clock too, so fetchedAt (stamped by the transport) and every freshness or
+ * expiry verdict are judged on the same epoch.
+ */
 export function createMoneySurface(config: MoneyTransportConfig, options: { now?: () => number } = {}) {
-  const transport = createMoneyTransport(config);
-  const catalog: CatalogClient = createCatalogClient(transport, options);
+  const clock = options.now ?? config.now;
+  const transport = createMoneyTransport({ ...config, now: clock });
+  const clientOptions = { now: clock };
+  const catalog: CatalogClient = createCatalogClient(transport, clientOptions);
   return {
     transport,
     catalog,
-    quote: createQuoteClient(transport, catalog, options),
-    entitlement: createEntitlementClient(transport, options),
-    bank: createBankClient(transport, options),
+    quote: createQuoteClient(transport, catalog, clientOptions),
+    entitlement: createEntitlementClient(transport, clientOptions),
+    bank: createBankClient(transport, clientOptions),
   };
 }
 

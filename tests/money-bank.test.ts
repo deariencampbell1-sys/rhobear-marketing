@@ -111,3 +111,26 @@ describe('money bank client', () => {
     expect(formatMoney('1.2')).toBe('1.2');
   });
 });
+
+// A fetchedAt that is not a timestamp never
+// becomes a live balance, and a placeholder snapshot carries no balance claim.
+describe('money bank fetchedAt guard', () => {
+  it('fails closed when the transport stamps a non-finite fetchedAt', async () => {
+    const badStamp: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        const data = parse(fixture());
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
+        return { ok: true, data, requestId: 'req-1', fetchedAt: Number.NaN };
+      },
+    };
+    const client = createBankClient(badStamp, { now: () => 1_000 });
+    const res = await client.load();
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('a NaN fetchedAt must not report a live balance');
+    expect(res.reason).toBe('invalid-shape');
+    expect(res.snapshot.stale).toBe(true);
+    expect(res.snapshot.canStartPaidWork).toBe(false);
+    expect(res.snapshot.creditAvailable).toBe('');
+    expect(client.lastSnapshot()).toBeNull();
+  });
+});

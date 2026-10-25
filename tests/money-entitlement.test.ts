@@ -127,9 +127,8 @@ describe('money entitlement client', () => {
   });
 });
 
-// Appended after Apollo's second review of PR #56: the fail-closed paths it
-// named ??? another account's entitlement, another product's entitlement, and an
-// `active` row whose paidThrough is missing or already past.
+// The fail-closed paths: another account's entitlement, another product's
+// entitlement, and an `active` row whose paidThrough is missing or already past.
 describe('money entitlement fail-closed paths', () => {
   const at = () => Date.parse('2026-10-25T12:00:00Z');
 

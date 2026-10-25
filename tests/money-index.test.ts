@@ -1,11 +1,10 @@
 import { describe, expect, it, afterEach } from 'vitest';
 import {
+  channelHandoff,
   createBankClient,
   createMoneySurface,
   createQuoteClient,
-  entitlementChannelHandoff,
   presentationByState,
-  quoteChannelHandoff,
 } from '../src/clients/money';
 
 // No network: fetch is stubbed, and the stub records the request id header, so
@@ -130,9 +129,11 @@ describe('money surface', () => {
     expect(surface.catalog.lastView()?.stale).toBe(true);
   });
 
-  it('exposes the aliased channel handoffs and the presentation table from the barrel', () => {
-    expect(quoteChannelHandoff.web).toBe('stripe-portal');
-    expect(entitlementChannelHandoff.apple).toBe('native-manage');
+  it('exposes one channel handoff table and the presentation table from the barrel', () => {
+    // One table, owned by entitlement.ts and imported by quote.ts: no second
+    // copy that can drift to a different store.
+    expect(channelHandoff.web).toBe('stripe-portal');
+    expect(channelHandoff.apple).toBe('native-manage');
     expect(presentationByState.active).toBe('manage');
     expect(presentationByState['free-local']).toBe('upgrade');
     expect(typeof createQuoteClient).toBe('function');
@@ -140,3 +141,18 @@ describe('money surface', () => {
   });
 });
 
+// The clients are given options.now, and the
+// transport was not, so fetchedAt came from a second clock. There is now one
+// clock, and the transport's timestamp proves it.
+describe('money surface clock', () => {
+  it('stamps fetchedAt from options.now even when the config carries no clock', async () => {
+    stubFetch();
+    const epoch = 1_700_000_000_000;
+    const surface = createMoneySurface({ baseUrl: 'https://api.test' }, { now: () => epoch });
+
+    const loaded = await surface.catalog.load();
+
+    expect(loaded.ok).toBe(true);
+    expect(loaded.ok ? loaded.view.fetchedAt : -1).toBe(epoch);
+  });
+});

@@ -59,7 +59,7 @@ export function createBankClient(
 
   // Unreachable: 'reconciling' + stale mark the placeholders as not a balance.
   // revision -1 and canStartPaidWork: false keep the renderer from trusting them.
-  function unreachable(_reason: BankUnavailableReason, fetchedAt: number): BankSnapshot {
+  function unreachable(fetchedAt: number): BankSnapshot {
     return {
       state: 'reconciling',
       revision: -1,
@@ -81,8 +81,13 @@ export function createBankClient(
     async load(): Promise<BankResult> {
       const res = await transport.get<Bank>({ path: '/v1/bank', method: 'GET' }, parseBank);
       if (!res.ok) {
-        const snapshot = unreachable(res.reason, now());
+        const snapshot = unreachable(now());
         return { ok: false, snapshot, reason: res.reason };
+      }
+      // A fetchedAt that is not a finite number is not a timestamp: the balance
+      // cannot be aged, so it is never remembered as a live balance.
+      if (!Number.isFinite(res.fetchedAt)) {
+        return { ok: false, snapshot: unreachable(now()), reason: 'invalid-shape' };
       }
       const snapshot = toSnapshot(res.data, res.fetchedAt, false);
       previous = snapshot;

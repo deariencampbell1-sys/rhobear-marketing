@@ -1,6 +1,6 @@
 // W0-03c: the quote client. A quote binds one account, one catalog revision and
 // one SKU. judge() only compares what the wire sent against the bind input and
-// the last catalog view: it never prices, never recomputes a total, and there
+// the live catalog view: it never prices, never recomputes a total, and there
 // is no argument anywhere that can turn a stale quote into a ready one.
 
 import { parseQuote, type Quote } from './schema';
@@ -8,7 +8,7 @@ import { parseQuote, type Quote } from './schema';
 // createMoneyTransport returns (transport.ts exports the factory, not the type).
 import type { CatalogClient, MoneyTransport } from './catalog';
 
-export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel' | 'accountUuid';
+export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel';
 
 export type QuoteUnavailableReason =
   | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'no-total'
@@ -28,13 +28,6 @@ export type QuoteClient = {
   reconfirm(state: QuoteState): Promise<QuoteState>;
 };
 
-// Channel -> the screen that reaches checkout; a UI can render this directly.
-export const channelHandoff: Readonly<Record<'web' | 'apple' | 'google', string>> = {
-  web: 'stripe-portal',
-  apple: 'native-manage',
-  google: 'play-manage',
-};
-
 export function createQuoteClient(
   transport: MoneyTransport,
   catalog: CatalogClient,
@@ -49,18 +42,18 @@ export function createQuoteClient(
     if (quote.accountUuid !== input.accountUuid) return { kind: 'foreign', quote, requestId };
     const expiresMs = Date.parse(quote.expiresAt);
     if (!Number.isFinite(expiresMs) || now() >= expiresMs) return { kind: 'expired', quote, requestId };
-    // lastView() is history by contract: always stale, never purchasable. A live
-    // price has to judge itself against the live view.
-    const view = catalog.currentView ? catalog.currentView() : catalog.lastView();
-    // A ready quote is only ready against a catalog we would actually sell from.
-    // lastView() is always stale and never purchasable, so a live price needs a
-    // fresh load; anything less is refused here rather than trusted by a screen.
+    // currentView() is the live view, re-judged on every read; lastView() is
+    // history by contract (always stale, never purchasable) and is never used
+    // as a sell gate.
+    const view = catalog.currentView();
+    // A ready quote is only ready against a catalog we would actually sell from:
+    // fresh, and with every plan row available.
     if (view === null || view.stale || !view.purchasable) {
       return { kind: 'unavailable', reason: 'catalog-stale', requestId };
     }
     const differences: QuoteDrift[] = [];
-    if (view === null || quote.catalogVersion !== view.catalogVersion) differences.push('catalogVersion');
-    if (view === null || quote.sourceSha !== view.sourceSha) differences.push('sourceSha');
+    if (quote.catalogVersion !== view.catalogVersion) differences.push('catalogVersion');
+    if (quote.sourceSha !== view.sourceSha) differences.push('sourceSha');
     if (quote.sku !== input.sku) differences.push('sku');
     if (quote.channel !== input.channel) differences.push('channel');
     if (differences.length > 0) return { kind: 'stale', quote, differences, requestId };

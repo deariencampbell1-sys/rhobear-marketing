@@ -14,12 +14,16 @@ const fakeTransport = (payload: unknown): MoneyTransport => ({
   },
 });
 
-// judge() reads lastView() only; load/capabilitiesFor exist to satisfy CatalogClient.
+// judge() reads currentView() only. These fakes honour the CatalogClient
+// contract the way the real client does: currentView() is the live view and
+// lastView() is history (always stale, never purchasable). load() and
+// capabilitiesFor() exist to satisfy the interface.
 const fakeCatalog = (catalogVersion = 'v1', sourceSha = 'a'.repeat(40)): CatalogClient => {
   const view = { catalogVersion, sourceSha, purchasable: true, generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [] };
   return {
     async load() { return { ok: true as const, view }; },
-    lastView() { return view; },
+    lastView() { return { ...view, stale: true, purchasable: false, reason: 'stale' as const }; },
+    currentView() { return { ...view }; },
     capabilitiesFor() { return []; },
   };
 };
@@ -98,8 +102,8 @@ describe('money quote client', () => {
   });
 });
 
-// Appended after Apollo's review of PR #56: reconfirm() must re-fetch and
-// re-judge a live quote, and must refuse a state it never issued.
+// reconfirm() must re-fetch and re-judge a live quote, and must refuse a state
+// it never issued.
 describe('money quote reconfirm', () => {
   const liveCatalog = (catalogVersion = 'v1'): CatalogClient => {
     const view = {
@@ -108,7 +112,8 @@ describe('money quote reconfirm', () => {
     };
     return {
       async load() { return { ok: true as const, view }; },
-      lastView() { return view; },
+      lastView() { return { ...view, stale: true, purchasable: false, reason: 'stale' as const }; },
+      currentView() { return { ...view }; },
       capabilitiesFor() { return []; },
     };
   };
@@ -165,8 +170,8 @@ describe('money quote reconfirm', () => {
 });
 
 
-// Appended after Apollo's second review of PR #56: a quote is only ready against
-// a catalog we would actually sell from, and a binding is evicted on reconfirm.
+// A quote is only ready against a catalog we would actually sell from, and a
+// binding is evicted on reconfirm.
 describe('money quote live-catalog gate', () => {
   const catalogWith = (over: Record<string, unknown>): CatalogClient => {
     const view = {
@@ -175,7 +180,8 @@ describe('money quote live-catalog gate', () => {
     };
     return {
       async load() { return { ok: true as const, view }; },
-      lastView() { return view; },
+      lastView() { return { ...view, stale: true, purchasable: false, reason: 'stale' as const }; },
+      currentView() { return { ...view }; },
       capabilitiesFor() { return []; },
     };
   };
@@ -200,6 +206,7 @@ describe('money quote live-catalog gate', () => {
     const empty: CatalogClient = {
       async load() { return { ok: false as const, reason: 'network', requestId: 'r0' }; },
       lastView() { return null; },
+      currentView() { return null; },
       capabilitiesFor() { return []; },
     };
     const client = createQuoteClient(fakeTransport(fakeQuote()), empty, { now: at });
@@ -207,3 +214,50 @@ describe('money quote live-catalog gate', () => {
   });
 });
 
+
+// lastView() is never the sell gate, and the
+// bounded binding map evicts the oldest operation instead of growing forever.
+describe('money quote sell gate and binding limit', () => {
+  const liveShape = {
+    catalogVersion: 'v1', sourceSha: 'a'.repeat(40), purchasable: true,
+    generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [],
+  };
+
+  it('never reads lastView() as the sell gate', async () => {
+    const catalog: CatalogClient = {
+      async load() { return { ok: true as const, view: liveShape }; },
+      // A live-looking history view must not authorise a sale...
+      lastView() { return { ...liveShape }; },
+      // ...because the live view says the catalog is stale.
+      currentView() { return { ...liveShape, stale: true, purchasable: false, reason: 'stale' as const }; },
+      capabilitiesFor() { return []; },
+    };
+    const state = await createQuoteClient(fakeTransport(fakeQuote()), catalog, { now: () => 0 }).bind(input);
+    expect(state.kind === 'unavailable' ? state.reason : state.kind).toBe('catalog-stale');
+  });
+
+  it('drops the oldest binding once 32 are open, and keeps the newest', async () => {
+    let issued = 0;
+    const transport: MoneyTransport = {
+      async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        issued += 1;
+        return { ok: true, data: fakeQuote({ operationId: `op-${issued}` }) as T, requestId: `req-${issued}`, fetchedAt: 1 };
+      },
+    };
+    const client = createQuoteClient(transport, fakeCatalog(), { now: () => 0 });
+    const states = [];
+    for (let i = 0; i < 33; i += 1) states.push(await client.bind(input));
+    const first = states[0];
+    const last = states[states.length - 1];
+    expect(first.kind).toBe('ready');
+    expect(last.kind).toBe('ready');
+    // The oldest binding was evicted: its reconfirm refuses without a refetch.
+    const evicted = await client.reconfirm(first);
+    expect(evicted.kind === 'unavailable' ? evicted.reason : evicted.kind).toBe('invalid-shape');
+    expect(issued).toBe(33);
+    // The newest binding is still live and reconfirms with a refetch.
+    const kept = await client.reconfirm(last);
+    expect(kept.kind).toBe('ready');
+    expect(issued).toBe(34);
+  });
+});
