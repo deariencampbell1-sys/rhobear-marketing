@@ -1,1 +1,0 @@
-{ "name": "rhobear-icon-factory", "private": true, "type": "module", "description": "RHOBEAR Constellation Bear icon factory (sharp + png-to-ico). cd here, npm install, then: node factory.mjs --master ../bears/<master>.png --hue <hex> --name <name>", "dependencies": { "sharp": "^0.33.5", "png-to-ico": "^2.1.8" } }
