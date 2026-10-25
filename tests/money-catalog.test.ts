@@ -350,3 +350,48 @@ describe('money catalog clock and reason', () => {
     expect(client.currentView()?.reason).toBe('not-purchasable');
   });
 });
+
+// An empty plan list is not "everything is available", and a failed refresh must
+// not wedge the sell gate shut forever.
+describe('money catalog empty and recovery', () => {
+  it('refuses to sell from a catalog with no plan rows', async () => {
+    const clock = () => Date.parse('2026-10-25T12:05:00Z');
+    // On the wire the schema refuses an empty plan list outright...
+    expect(await createCatalogClient(fakeTransport(fakeCatalog({ plans: [] }), clock), { now: clock }).load())
+      .toEqual({ ok: false, reason: 'invalid-shape', requestId: 'r1' });
+
+    // ...and the client keeps its own guard for a parse that was bypassed: an
+    // empty list is not "every plan is available".
+    const passthrough: MoneyTransportGet = {
+      async get<T>(_req: MoneyRequest, _parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        return { ok: true, data: fakeCatalog({ plans: [] }) as unknown as T, requestId: 'r1', fetchedAt: clock() };
+      },
+    };
+    const client = createCatalogClient(passthrough, { now: clock });
+    expect(await client.load()).toEqual({ ok: false, reason: 'not-purchasable', requestId: 'r1' });
+    expect(client.currentView()?.purchasable).toBe(false);
+  });
+
+  it('recovers the sell gate after a failed refresh and a good one', async () => {
+    const clock = () => Date.parse('2026-10-25T12:05:00Z');
+    let failing = false;
+    const transport: MoneyTransportGet = {
+      async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+        if (failing) return { ok: false, reason: 'network', requestId: 'r1' };
+        const data = parse(fakeCatalog());
+        if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'r1' };
+        return { ok: true, data, requestId: 'r1', fetchedAt: clock() };
+      },
+    };
+    const client = createCatalogClient(transport, { now: clock });
+    expect((await client.load()).ok).toBe(true);
+    failing = true;
+    expect((await client.load()).ok).toBe(false);
+    expect(client.currentView()?.purchasable).toBe(false);
+    failing = false;
+    expect((await client.load()).ok).toBe(true);
+    // The gate is back: refreshFailed does not stick.
+    expect(client.currentView()?.purchasable).toBe(true);
+    expect(client.currentView()?.stale).toBe(false);
+  });
+});

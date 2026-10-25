@@ -94,7 +94,10 @@ function safeRequestId(newRequestId: () => string): string {
   if (typeof candidate !== 'string' || candidate.length === 0) {
     return fallbackRequestId();
   }
-  if (CONTROL_CHAR.test(candidate)) return defaultRequestId();
+  // Bounded in length as well as in character set: an oversized id is rejected
+  // by fetch() as a TypeError, which would look like a network failure and cost
+  // a pointless retry on every call.
+  if (candidate.length > MAX_REQUEST_ID_CHARS || CONTROL_CHAR.test(candidate)) return defaultRequestId();
   return candidate;
 }
 
@@ -156,6 +159,10 @@ function buildUrl(base: URL, req: MoneyRequest): string | null {
 // Thrown by readCappedBody once the running byte count passes the cap; the
 // caller maps it to a failure before any of the body is parsed.
 const BODY_TOO_LARGE = Symbol('money.body-too-large');
+
+// Long enough for a uuid or a trace id, short enough that no header validator
+// rejects it.
+const MAX_REQUEST_ID_CHARS = 200;
 
 // The cap is enforced on the bytes actually received, so a chunked or
 // header-less response cannot stream past it the way a content-length-only
@@ -235,18 +242,24 @@ async function attempt<T>(
         return { outcome: 'fail', reason: 'parse' };
       }
     }
-    let raw: unknown;
+    // The body is read through the stream with a running byte count and parsed
+    // by hand; response.json() would ignore the cap. Reading and parsing are
+    // separated on purpose: a connection that drops mid-body is a network
+    // failure (and is retried), not a malformed payload.
+    let body: string;
     try {
-      // The body is read through the stream with a running byte count and
-      // parsed by hand; response.json() would ignore the cap.
-      raw = JSON.parse(await readCappedBody(response));
+      body = await readCappedBody(response);
     } catch (error) {
-      if (controller.signal.aborted) {
-        return { outcome: 'fail', reason: 'timeout' };
-      }
+      if (controller.signal.aborted) return { outcome: 'fail', reason: 'timeout' };
       if (error === BODY_TOO_LARGE) {
         return { outcome: 'fail', reason: 'http', detail: 'body-too-large' };
       }
+      return { outcome: 'fail', reason: 'network' };
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(body);
+    } catch {
       return { outcome: 'fail', reason: 'parse' };
     }
     let data: T | null;

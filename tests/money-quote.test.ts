@@ -19,8 +19,14 @@ const fakeTransport = (payload: unknown): MoneyTransportGet => ({
 // contract the way the real client does: currentView() is the live view and
 // lastView() is history (always stale, never purchasable). load() and
 // capabilitiesFor() exist to satisfy the interface.
-const fakeCatalog = (catalogVersion = 'v1', sourceSha = 'a'.repeat(40)): CatalogClient => {
-  const view = { catalogVersion, sourceSha, purchasable: true, generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [] };
+const fakeCatalog = (
+  catalogVersion = 'v1',
+  sourceSha = 'a'.repeat(40),
+  plans: CatalogClient extends { currentView(): infer V }
+    ? V extends { plans: infer P } ? P : never
+    : never = [{ sku: 'shell', name: 'Shell', monthlyPrice: '19.99', creditIncluded: '0.00', availability: 'available' }] as never,
+): CatalogClient => {
+  const view = { catalogVersion, sourceSha, purchasable: true, generatedAt: 0, fetchedAt: 0, stale: false, plans, capabilities: [] };
   return {
     async load() { return { ok: true as const, view }; },
     lastView() { return { ...view, stale: true, purchasable: false, reason: 'stale' as const }; },
@@ -74,7 +80,13 @@ describe('money quote client', () => {
   it('refuses a quote for another account', async () => {
     const quote = fakeQuote({ accountUuid: 'acct-2' });
     const client = createQuoteClient(fakeTransport(quote), fakeCatalog(), { now: () => 0 });
-    expect(await client.bind(input)).toEqual({ kind: 'foreign', quote, requestId: 'req-1' });
+    // Another account's quote keeps its identity but carries no amounts: it can
+    // never be rendered as an offer.
+    expect(await client.bind(input)).toEqual({
+      kind: 'foreign',
+      quote: { ...quote, price: null, credit: null, tax: null, total: null },
+      requestId: 'req-1',
+    });
   });
 
   it('lists every drift field when the catalog moved', async () => {
@@ -109,7 +121,8 @@ describe('money quote reconfirm', () => {
   const liveCatalog = (catalogVersion = 'v1'): CatalogClient => {
     const view = {
       catalogVersion, sourceSha: 'a'.repeat(40), purchasable: true,
-      generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [],
+      generatedAt: 0, fetchedAt: 0, stale: false, capabilities: [],
+      plans: [{ sku: 'shell', name: 'Shell', monthlyPrice: '19.99', creditIncluded: '0.00', availability: 'available' as const }],
     };
     return {
       async load() { return { ok: true as const, view }; },
@@ -285,5 +298,24 @@ describe('money quote production parser path', () => {
   it('still judges a well-formed wire quote through the real parser', async () => {
     const client = createQuoteClient(parsingTransport(fakeQuote()), fakeCatalog(), { now: () => 0 });
     expect((await client.bind(input)).kind).toBe('ready');
+  });
+});
+
+// The quote must be for a SKU the live catalog sells, at the catalog's price.
+describe('money quote catalog cross-check', () => {
+  it('refuses a quote for a SKU the catalog no longer carries', async () => {
+    const state = await createQuoteClient(
+      fakeTransport(fakeQuote({ sku: 'ghost' })), fakeCatalog(), { now: () => 0 },
+    ).bind({ accountUuid: 'acct-1', sku: 'ghost', channel: 'web' });
+    expect(state).toEqual({ kind: 'unavailable', reason: 'sku-not-in-catalog', requestId: 'req-1' });
+  });
+
+  it('reports price drift when the quote does not match the catalog price', async () => {
+    const state = await createQuoteClient(
+      fakeTransport(fakeQuote({ price: '0.01' })), fakeCatalog(), { now: () => 0 },
+    ).bind(input);
+    expect(state).toMatchObject({ kind: 'stale', differences: ['price'] });
+    // No amounts leave the client on a stale state.
+    expect(JSON.stringify(state)).not.toMatch(/\d+\.\d{2}/);
   });
 });
