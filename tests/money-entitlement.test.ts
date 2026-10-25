@@ -93,7 +93,8 @@ describe('money entitlement client', () => {
       state: 'canceled-until-paid-through', paidThrough: '2020-01-01T00:00:00Z',
     }));
     expect(ended.presentation).toBe('expired');
-    expect(ended.handoff).toBeUndefined();
+    // Expired still has a route: renew where a live subscriber manages.
+    expect(ended.handoff).toBe('stripe-portal');
     for (const channel of ['web', 'apple', 'google'] as const) {
       const live = await asKnown(await viewOf({
         state: 'canceled-until-paid-through',
@@ -151,21 +152,37 @@ describe('money entitlement fail-closed paths', () => {
     expect(view.state === 'unknown' ? view.reason : '').toBe('session-mismatch');
   });
 
-  it('treats an active row with no usable paidThrough as expired, with no handoff', async () => {
+  it('treats an active row with no usable paidThrough as expired, with a renewal route', async () => {
     const view = await loadOne({ state: 'active', paidThrough: null }, { accountUuid: 'acct-1', product: 'builds' });
     expect(view.state).toBe('known');
     expect(view.presentation).toBe('expired');
-    expect(view.state === 'known' ? view.handoff : 'x').toBeUndefined();
+    // An expired subscriber renews where a live one manages: not a dead end.
+    expect(view.state === 'known' ? view.handoff : 'x').toBe('stripe-portal');
     expect(view.state === 'known' ? view.paidThroughMs : 1).toBeNull();
   });
 
-  it('treats a paidThrough in the past as expired, with no handoff', async () => {
+  it('treats a paidThrough in the past as expired, with a renewal route', async () => {
     const view = await loadOne(
       { state: 'canceled-until-paid-through', paidThrough: '2020-01-01T00:00:00Z' },
       { accountUuid: 'acct-1', product: 'builds' },
     );
     expect(view.presentation).toBe('expired');
-    expect(view.state === 'known' ? view.handoff : 'x').toBeUndefined();
+    expect(view.state === 'known' ? view.handoff : 'x').toBe('stripe-portal');
+  });
+
+  it('a held view stops saying manage once the paid-through date passes', async () => {
+    let clock = Date.parse('2026-10-25T00:00:00Z');
+    const client = createEntitlementClient(
+      okTransport(fixture({ paidThrough: '2026-10-25T00:30:00Z' })),
+      { now: () => clock },
+    );
+    const view = await client.load({ accountUuid: 'acct-1', product: 'builds' });
+    expect(view.state).toBe('known');
+    if (view.state !== 'known') throw new Error('the fixture entitlement loads');
+    expect(view.presentation).toBe('manage');
+    clock += 31 * 60_000; // the screen did not reload
+    expect(view.presentation).toBe('expired');
+    expect(view.handoff).toBe('stripe-portal');
   });
 });
 

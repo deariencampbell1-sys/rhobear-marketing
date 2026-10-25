@@ -62,16 +62,20 @@ describe('money bank client', () => {
   it('passes state through without computing it', async () => {
     // The transport stamps fetchedAt 42, so the client's clock sits on it: a
     // fresh snapshot, and the wire state is the only input to canStartPaidWork.
+    // `ok` means "safe to start paid work from", so an empty or reconciling
+    // balance is a real balance that does not authorise anything: ok:false,
+    // reason 'not-sellable', snapshot still readable.
     for (const [state, canStart] of wireStates) {
       const res = await createBankClient(okTransport(fixture({ state })), { now: () => 42 }).load();
-      expect(res.ok).toBe(true);
+      expect(res.ok).toBe(canStart);
       expect(res.snapshot.state).toBe(state);
       expect(res.snapshot.canStartPaidWork).toBe(canStart);
+      if (!res.ok) expect(res.reason).toBe('not-sellable');
     }
   });
 
   it('keeps money as decimal strings', async () => {
-    const res = await createBankClient(okTransport(fixture())).load();
+    const res = await createBankClient(okTransport(fixture()), { now: () => 42 }).load();
     expect(res.ok).toBe(true);
     for (const field of MONEY_FIELDS) {
       const value: string = res.snapshot[field];
@@ -87,12 +91,13 @@ describe('money bank client', () => {
         return transport.get<T>(req, parse);
       },
     };
-    const client = createBankClient(gate);
+    // The transport stamps fetchedAt 42, so the clock sits on it for the good load.
+    const client = createBankClient(gate, { now: () => 42 });
     expect(client.lastSnapshot()).toBeNull(); // before any load: nothing at all
 
     transport = okTransport(fixture());
     const good = await client.load();
-    expect(good.ok).toBe(true);
+    expect(good.ok).toBe(true); // available and fresh: it authorises
     const remembered: BankSnapshot | null = client.lastSnapshot();
     expect(remembered).toEqual({ ...good.snapshot, stale: true, canStartPaidWork: false });
     expect(remembered?.stale).toBe(true);
@@ -238,8 +243,27 @@ describe('money bank live verdicts', () => {
   it('fails closed on a clock that is not a number', async () => {
     const client = createBankClient(okTransport(fixture()), { now: () => Number.NaN });
     const res = await client.load();
-    if (!res.ok) throw new Error('the fixture bank loads');
+    // A non-finite clock cannot age anything, so nothing is authorised: the
+    // snapshot is still returned, marked stale, under a not-sellable refusal.
+    expect(res.ok).toBe(false);
+    if (res.ok) throw new Error('a NaN clock must not authorise paid work');
+    expect(res.reason).toBe('not-sellable');
     expect(res.snapshot.canStartPaidWork).toBe(false);
     expect(res.snapshot.stale).toBe(true);
+  });
+});
+
+// The one bank field derived rather than copied: resetsAtMs, including the
+// branch that hands a renderer null instead of NaN.
+describe('money bank resetsAtMs', () => {
+  it('parses the wire timestamp', async () => {
+    const res = await createBankClient(okTransport(fixture()), { now: () => 42 }).load();
+    expect(res.snapshot.resetsAtMs).toBe(Date.parse('2026-11-01T00:00:00Z'));
+  });
+
+  it('is null, never NaN, for an unparseable timestamp', async () => {
+    const res = await createBankClient(okTransport(fixture({ resetsAt: 'not-a-date' })), { now: () => 42 }).load();
+    expect(res.snapshot.resetsAtMs).toBeNull();
+    expect(Number.isNaN(res.snapshot.resetsAtMs as unknown as number)).toBe(false);
   });
 });

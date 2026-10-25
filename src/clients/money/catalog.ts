@@ -107,7 +107,12 @@ export function createCatalogClient(transport: MoneyTransportGet, options: Catal
     const stale = refreshFailed || fetchedBad || generatedBad || nowBad
       || fetchedAge < 0
       || fetchedAge > freshnessMs || generatedAge > generatedFreshnessMs;
-    const allAvailable = catalog.plans.every((p) => p.availability === 'available');
+    // An empty plan list is not "everything is available": [].every() is true,
+    // which would make a schema-valid but empty catalog report sellable and let a
+    // quote be judged ready against a catalog with no prices in it. (parseCatalog
+    // refuses an empty list on the wire; this is the belt for a bypassed parse.)
+    const allAvailable = catalog.plans.length > 0
+      && catalog.plans.every((plan) => plan.availability === 'available');
     const purchasable = !stale && allAvailable;
     return {
       purchasable,

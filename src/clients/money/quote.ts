@@ -9,18 +9,33 @@ import { parseQuote, type Quote } from './schema';
 import type { CatalogClient } from './catalog';
 import type { MoneyTransportGet } from './transport';
 
-export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel';
+export type QuoteDrift = 'catalogVersion' | 'sourceSha' | 'sku' | 'channel' | 'price';
 
 export type QuoteUnavailableReason =
   | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape' | 'no-total'
-  | 'catalog-stale';
+  | 'catalog-stale' | 'sku-not-in-catalog';
 
+/**
+ * A quote that is not `ready` carries **no price at all**. A renderer that reads
+ * `state.quote.total` and branches on presence rather than on `kind` must not be
+ * able to show an expired total or another account's offer as the current one;
+ * `price`, `credit`, `tax` and `total` are null on every non-ready variant.
+ */
 export type QuoteState =
   | { kind: 'ready'; quote: Quote; requestId: string }
-  | { kind: 'stale'; quote: Quote; differences: readonly QuoteDrift[]; requestId: string }
-  | { kind: 'expired'; quote: Quote; requestId: string }
-  | { kind: 'foreign'; quote: Quote; requestId: string }
+  | { kind: 'stale'; quote: PricedlessQuote; differences: readonly QuoteDrift[]; requestId: string }
+  | { kind: 'expired'; quote: PricedlessQuote; requestId: string }
+  | { kind: 'foreign'; quote: PricedlessQuote; requestId: string }
   | { kind: 'unavailable'; reason: QuoteUnavailableReason; requestId: string };
+
+export type PricedlessQuote = Omit<Quote, 'price' | 'credit' | 'tax' | 'total'> & {
+  price: null; credit: null; tax: null; total: null;
+};
+
+/** Strip every amount from a quote that is not being offered. */
+function pricedless(quote: Quote): PricedlessQuote {
+  return { ...quote, price: null, credit: null, tax: null, total: null };
+}
 
 export type QuoteBindInput = { accountUuid: string; sku: string; channel: 'web' | 'apple' | 'google' };
 
@@ -40,9 +55,11 @@ export function createQuoteClient(
 
   function judge(quote: Quote, input: QuoteBindInput, requestId: string): QuoteState {
     if (!quote.total || quote.total.length === 0) return { kind: 'unavailable', reason: 'no-total', requestId };
-    if (quote.accountUuid !== input.accountUuid) return { kind: 'foreign', quote, requestId };
+    if (quote.accountUuid !== input.accountUuid) return { kind: 'foreign', quote: pricedless(quote), requestId };
     const expiresMs = Date.parse(quote.expiresAt);
-    if (!Number.isFinite(expiresMs) || now() >= expiresMs) return { kind: 'expired', quote, requestId };
+    if (!Number.isFinite(expiresMs) || now() >= expiresMs) {
+      return { kind: 'expired', quote: pricedless(quote), requestId };
+    }
     // currentView() is the live view, re-judged on every read; lastView() is
     // history by contract (always stale, never purchasable) and is never used
     // as a sell gate.
@@ -52,12 +69,20 @@ export function createQuoteClient(
     if (view === null || view.stale || !view.purchasable) {
       return { kind: 'unavailable', reason: 'catalog-stale', requestId };
     }
+    // The quote must be for a SKU the live catalog actually sells, at the price
+    // the catalog publishes: a quote for a vanished SKU, or one priced 0.01 for a
+    // 69.99 plan, is not something to call ready.
+    const plan = view.plans.find((row) => row.sku === quote.sku);
+    if (plan === undefined) return { kind: 'unavailable', reason: 'sku-not-in-catalog', requestId };
     const differences: QuoteDrift[] = [];
     if (quote.catalogVersion !== view.catalogVersion) differences.push('catalogVersion');
     if (quote.sourceSha !== view.sourceSha) differences.push('sourceSha');
     if (quote.sku !== input.sku) differences.push('sku');
     if (quote.channel !== input.channel) differences.push('channel');
-    if (differences.length > 0) return { kind: 'stale', quote, differences, requestId };
+    if (quote.price !== plan.monthlyPrice) differences.push('price');
+    if (differences.length > 0) {
+      return { kind: 'stale', quote: pricedless(quote), differences, requestId };
+    }
     return { kind: 'ready', quote, requestId };
   }
 

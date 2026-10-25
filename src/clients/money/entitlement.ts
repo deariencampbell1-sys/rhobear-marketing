@@ -45,6 +45,26 @@ export function conflictSupport(): { route: '/support'; mustVerifyFirst: true } 
   return { route: '/support', mustVerifyFirst: true };
 }
 
+/**
+ * The presentation a subscriber state earns at a given moment. Judged by the
+ * caller on every read, never cached: a view held across the paid-through
+ * boundary must stop saying 'manage'.
+ */
+function presentationOf(state: Entitlement['state'], paidThroughMs: number | null, at: number): Presentation {
+  const subscriberState = state === 'active' || state === 'canceled-until-paid-through';
+  const pastPaidThrough = paidThroughMs === null || paidThroughMs <= at;
+  return subscriberState && pastPaidThrough ? 'expired' : presentationByState[state];
+}
+
+/**
+ * Where a subscriber manages or renews. An **expired** subscriber renews in the
+ * same place a live one manages — the Stripe portal for web, the native store
+ * for apple and google — so 'expired' is not a dead end with no route at all.
+ */
+function handoffOf(presentation: Presentation, channel: Entitlement['channel']): ChannelHandoff | undefined {
+  return presentation === 'manage' || presentation === 'expired' ? channelHandoff[channel] : undefined;
+}
+
 export function createEntitlementClient(
   transport: MoneyTransportGet,
   options: { now?: () => number } = {},
@@ -52,6 +72,26 @@ export function createEntitlementClient(
   load(input: EntitlementLoadInput): Promise<EntitlementView>;
 } {
   const now = options.now ?? (() => Date.now());
+  // The two verdict fields are getters re-judged against the clock on every
+  // read, on a frozen object: a screen holding the view across the paid-through
+  // boundary cannot keep showing 'manage'.
+  function liveView(base: Extract<EntitlementView, { state: 'known' }>): EntitlementView {
+    const view = { ...base };
+    Object.defineProperty(view, 'presentation', {
+      enumerable: true,
+      get() {
+        return presentationOf(base.entitlement.state, base.paidThroughMs, now());
+      },
+    });
+    Object.defineProperty(view, 'handoff', {
+      enumerable: true,
+      get() {
+        return handoffOf(presentationOf(base.entitlement.state, base.paidThroughMs, now()), base.entitlement.channel);
+      },
+    });
+    return Object.freeze(view);
+  }
+
   return {
     async load(input) {
       const query: Record<string, string> = { accountUuid: input.accountUuid, product: input.product };
@@ -64,11 +104,9 @@ export function createEntitlementClient(
         return { state: 'unknown', presentation: 'reconcile', reason: res.reason, requestId: res.requestId };
       }
       const entitlement = res.data;
-      // The response must answer the question we asked: another account's
-      // entitlement, or another product's, is a session mismatch, not a view.
-      // The response must answer the question we asked, including the
-      // capability when one was asked for: another capability's row is a
-      // session mismatch, not a view.
+      // The response must answer the question we asked — the same account, the
+      // same product, and the same capability when one was requested. Anything
+      // else is a session mismatch, not a view.
       if (entitlement.accountUuid !== input.accountUuid || entitlement.product !== input.product) {
         return {
           state: 'unknown', presentation: 'reconcile',
@@ -83,13 +121,14 @@ export function createEntitlementClient(
       }
       const parsedPaidThrough = Date.parse(entitlement.paidThrough ?? '');
       const paidThroughMs = Number.isNaN(parsedPaidThrough) ? null : parsedPaidThrough;
-      // The subscriber states: a subscriber whose paid-through date has passed is
-      // expired, not upgraded. (Named for what it holds, not for what it means.)
-      const subscriberState = entitlement.state === 'active' || entitlement.state === 'canceled-until-paid-through';
-      const pastPaidThrough = paidThroughMs === null || paidThroughMs <= now();
-      const presentation = subscriberState && pastPaidThrough ? 'expired' : presentationByState[entitlement.state];
-      const handoff = presentation === 'manage' ? channelHandoff[entitlement.channel] : undefined;
-      return { state: 'known', presentation, entitlement, paidThroughMs, handoff, showsPrice: false };
+      return liveView({
+        state: 'known',
+        presentation: presentationOf(entitlement.state, paidThroughMs, now()),
+        entitlement,
+        paidThroughMs,
+        handoff: handoffOf(presentationOf(entitlement.state, paidThroughMs, now()), entitlement.channel),
+        showsPrice: false,
+      });
     },
   };
 }

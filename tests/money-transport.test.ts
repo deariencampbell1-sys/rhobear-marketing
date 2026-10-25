@@ -665,3 +665,37 @@ describe('body cap and body-less responses', () => {
     expect(result).toEqual({ ok: false, reason: 'parse', requestId: 'req-null' });
   });
 });
+
+// A body that dies mid-stream is a network failure (and is retried), not a
+// malformed payload; an oversized injected request id falls back instead of
+// making fetch() throw.
+describe('mid-stream failure and request-id bounds', () => {
+  it('classifies a read() rejection as network and retries once', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"ok":'));
+        controller.error(new Error('connection reset'));
+      },
+    });
+    fetchMock.mockResolvedValue(new Response(stream, { status: 200 }));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-mid' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result).toEqual({ ok: false, reason: 'network', requestId: 'req-mid' });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one retry, as for any network failure
+  });
+
+  it('falls back to a default request id when the injected one is oversized', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ value: 42 }));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'x'.repeat(5_000) });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result.ok).toBe(true);
+    const sent = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const header = new Headers(sent.headers).get('x-request-id') ?? '';
+    expect(header.length).toBeGreaterThan(0);
+    expect(header.length).toBeLessThanOrEqual(200);
+  });
+});

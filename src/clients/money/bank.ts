@@ -28,7 +28,14 @@ export type BankResult =
   | { ok: false; snapshot: BankSnapshot; reason: BankUnavailableReason };
 
 export type BankUnavailableReason =
-  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape';
+  | 'not-configured' | 'network' | 'timeout' | 'http' | 'parse' | 'invalid-shape'
+  /**
+   * The balance arrived, but it does not authorise paid work (empty,
+   * reconciling, or aged). `snapshot` is still there for the screen that shows
+   * why — the same contract as the catalog, where `ok` means "sellable", not
+   * merely "the fetch worked".
+   */
+  | 'not-sellable';
 
 export type BankOptions = {
   now?: () => number;
@@ -138,7 +145,12 @@ export function createBankClient(
       // this object cannot keep authorising paid work with an old balance.
       const stored = liveSnapshot(toSnapshot(res.data, res.fetchedAt, false));
       previous = stored;
-      return { ok: true, snapshot: liveSnapshot(toSnapshot(res.data, res.fetchedAt, false)) };
+      // `ok` means "safe to start paid work from", not "the fetch worked": an
+      // empty or reconciling balance is a real balance and not an authorisation.
+      if (!stored.canStartPaidWork) {
+        return { ok: false, snapshot: liveSnapshot(stored), reason: 'not-sellable' };
+      }
+      return { ok: true, snapshot: liveSnapshot(stored) };
     },
     lastSnapshot() {
       // A remembered snapshot is history: it never authorises new paid work,
