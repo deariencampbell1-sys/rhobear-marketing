@@ -172,8 +172,14 @@ async function readCappedBody(response: Response): Promise<string> {
     if (value === undefined) continue;
     received += value.byteLength;
     if (received > MAX_BODY_BYTES) {
-      // Stop the stream immediately: an over-cap body is never fully read.
-      await reader.cancel();
+      // Stop the stream immediately: an over-cap body is never fully read. A
+      // rejecting cancel() must not turn this into a 'parse' failure, so it is
+      // swallowed here and the over-cap classification is preserved.
+      try {
+        await reader.cancel();
+      } catch {
+        // The stream is already unusable; the reason below is the one that matters.
+      }
       throw BODY_TOO_LARGE;
     }
     text += decoder.decode(value, { stream: true });

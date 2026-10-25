@@ -22,6 +22,13 @@ export type CatalogView = {
   reason?: CatalogUnavailableReason;
 };
 
+/**
+ * `ok: true` means "fresh enough to sell from", not merely "the fetch worked":
+ * a load that comes back aged (or from a generatedAt past the window) is
+ * `ok: false, reason: 'stale'`, and the rows stay readable through
+ * `currentView()` / `lastView()` / `capabilitiesFor()`. A caller that gates on
+ * `ok` alone therefore cannot render an aged price.
+ */
 export type CatalogLoaded =
   | { ok: true; view: CatalogView }
   | { ok: false; reason: CatalogUnavailableReason; requestId: string };
@@ -117,9 +124,12 @@ export function createCatalogClient(transport: MoneyTransport, options: CatalogO
       const fetchedAt = res.fetchedAt;
       const catalog = deepFreeze(res.data);
       last = { catalog, fetchedAt, refreshFailed: false };
-      // Every successful load is remembered: a screen must still be able to
-      // show the plans, the capabilities and the reason when it cannot sell.
-      return { ok: true, view: buildView(catalog, fetchedAt, false) };
+      const view = buildView(catalog, fetchedAt, false);
+      // Every load is remembered, so a screen can still show the plans, the
+      // capabilities and the reason when it cannot sell. But a load that came
+      // back aged is not a success: `ok` means sellable, not fetched.
+      if (view.stale) return { ok: false, reason: 'stale', requestId: res.requestId };
+      return { ok: true, view };
     },
     lastView() {
       const view = liveView();

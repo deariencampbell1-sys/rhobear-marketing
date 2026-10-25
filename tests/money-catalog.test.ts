@@ -70,10 +70,14 @@ describe('money catalog client', () => {
     expect(fresh.stale).toBe(false);
     expect(fresh.purchasable).toBe(true);
     clock += 900_001;
-    const aged = await loadView(client);
-    expect(aged.stale).toBe(true);
-    expect(aged.purchasable).toBe(false);
-    expect(aged.reason).toBe('stale');
+    // `ok` means sellable, not fetched: an aged load is a stale failure, and the
+    // rows stay readable for display.
+    const aged = await client.load();
+    expect(aged).toEqual({ ok: false, reason: 'stale', requestId: 'r1' });
+    expect(client.currentView()?.stale).toBe(true);
+    expect(client.currentView()?.purchasable).toBe(false);
+    expect(client.currentView()?.reason).toBe('stale');
+    expect(client.lastView()?.catalogVersion).toBe('2026-10-25.1');
   });
 
   it('returns capabilities for one product and keeps unknown rows unknown', async () => {
@@ -110,7 +114,10 @@ describe('money catalog memory', () => {
       { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'available' },
       { sku: 'space', name: 'Space', monthlyPrice: '69.99', creditIncluded: '39.60', availability: 'unavailable', reason: 'renewal review' },
     ] });
-    const client = createCatalogClient(fakeTransport(catalog));
+    // Five minutes after generatedAt: the freshness window is open, so this is
+    // about plan rows rather than the clock.
+    const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
+    const client = createCatalogClient(fakeTransport(catalog, nearGeneratedAt), { now: nearGeneratedAt });
     const view = await loadView(client);
     expect(view.purchasable).toBe(false);
 
@@ -123,9 +130,10 @@ describe('money catalog memory', () => {
   });
 
   it('answers capabilitiesFor from the remembered view, per product', async () => {
+    const nearGeneratedAt = () => Date.parse('2026-10-25T12:05:00Z');
     const client = createCatalogClient(fakeTransport(fakeCatalog({ plans: [
       { sku: 'shell', name: 'Shell', monthlyPrice: '23.99', creditIncluded: '14.40', availability: 'unavailable' },
-    ] })));
+    ] }), nearGeneratedAt), { now: nearGeneratedAt });
     await loadView(client);
 
     expect(client.capabilitiesFor('builds')).toHaveLength(2);
@@ -227,9 +235,9 @@ describe('money catalog sell gate', () => {
       },
     };
     const client = createCatalogClient(badFetchedAt, { now });
-    const view = await loadView(client);
-    expect(view.stale).toBe(true);
-    expect(view.purchasable).toBe(false);
+    // A non-finite stamp is stale, so the load is not a success.
+    expect(await client.load()).toEqual({ ok: false, reason: 'stale', requestId: 'r1' });
+    expect(client.currentView()?.stale).toBe(true);
     expect(client.currentView()?.purchasable).toBe(false);
   });
 

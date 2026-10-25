@@ -143,7 +143,25 @@ describe('origin guard', () => {
 });
 
 describe('redirects', () => {
-  it('surfaces a redirected response as http with a redirect detail, never a parsed body', async () => {
+  it('a real fetch rejection on a redirect is a network failure and retries once', async () => {
+    // With redirect: 'error' the platform fetch rejects on a 3xx instead of
+    // returning it, so this is the production shape of a redirect: one network
+    // failure, one retry, and no body ever parsed.
+    fetchMock
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-redirect' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result).toEqual({ ok: false, reason: 'network', requestId: 'req-redirect' });
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one retry, like any network failure
+    expect(fetchMock.mock.calls[0][1]?.redirect).toBe('error');
+  });
+
+  it('surfaces a 3xx response as http with a redirect detail, never a parsed body', async () => {
+    // Defense in depth for a fetch implementation that returns a 3xx instead of
+    // rejecting: the response is classified, never followed, never parsed.
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ value: 42 }), {
         status: 302,
@@ -583,4 +601,30 @@ describe('request id generation never rejects get()', () => {
       expect(init?.headers).toEqual({ 'X-Request-Id': result.requestId });
     },
   );
+});
+
+// Apollo's round-4 review: the fallback request-id path (crypto.randomUUID
+// unavailable or throwing) was the only new branch without a test.
+describe('request id fallback', () => {
+  it('still issues a request when crypto.randomUUID throws', async () => {
+    const original = globalThis.crypto.randomUUID;
+    const spy = vi.spyOn(globalThis.crypto, 'randomUUID').mockImplementation(() => {
+      throw new Error('insecure context');
+    });
+    try {
+      fetchMock.mockResolvedValue(jsonResponseWithoutType({ value: 1 }));
+      const transport = createMoneyTransport({ baseUrl: BASE }); // no injected generator
+
+      const result = await transport.get(quoteRequest(), parseValue);
+
+      expect(result.ok).toBe(true);
+      const [, init] = fetchMock.mock.calls[0];
+      const sent = (init?.headers ?? {}) as Record<string, string>;
+      expect(sent['X-Request-Id']).toMatch(/^[0-9a-z-]+$/i);
+      expect(sent['X-Request-Id'].length).toBeGreaterThan(0);
+    } finally {
+      spy.mockRestore();
+      expect(globalThis.crypto.randomUUID).toBe(original);
+    }
+  });
 });

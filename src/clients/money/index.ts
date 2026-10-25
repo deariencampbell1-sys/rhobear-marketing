@@ -5,9 +5,10 @@
 export * from './transport';
 export * from './schema';
 export * from './catalog';
-// quote.ts no longer carries its own channel table: entitlement.ts owns the
-// single channelHandoff, and quote.ts imports it, so the two barrels below can
-// be plain re-exports with no aliasing.
+// quote.ts no longer carries a channel->handoff table at all (it only compares
+// `quote.channel` with the bind input), so entitlement.ts is the single owner of
+// channelHandoff and the two barrels below can be plain re-exports with no
+// aliasing.
 export * from './quote';
 export * from './entitlement';
 export * from './bank';

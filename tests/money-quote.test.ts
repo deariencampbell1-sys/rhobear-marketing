@@ -261,3 +261,28 @@ describe('money quote sell gate and binding limit', () => {
     expect(issued).toBe(34);
   });
 });
+
+// The production path for "no total": parseQuote refuses it before judge() ever
+// sees it, so the state a screen receives is invalid-shape. judge()'s own
+// no-total guard is a belt for a fake or a hand-built quote.
+describe('money quote production parser path', () => {
+  const parsingTransport = (payload: unknown): MoneyTransport => ({
+    async get<T>(_req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>> {
+      const data = parse(payload);
+      if (data === null) return { ok: false, reason: 'invalid-shape', requestId: 'req-1' };
+      return { ok: true, data, requestId: 'req-1', fetchedAt: 1 };
+    },
+  });
+
+  it('reports invalid-shape, not no-total, when the wire quote has no total', async () => {
+    const client = createQuoteClient(parsingTransport(fakeQuote({ total: '' })), fakeCatalog(), { now: () => 0 });
+    expect(await client.bind(input)).toEqual({
+      kind: 'unavailable', reason: 'invalid-shape', requestId: 'req-1',
+    });
+  });
+
+  it('still judges a well-formed wire quote through the real parser', async () => {
+    const client = createQuoteClient(parsingTransport(fakeQuote()), fakeCatalog(), { now: () => 0 });
+    expect((await client.bind(input)).kind).toBe('ready');
+  });
+});
