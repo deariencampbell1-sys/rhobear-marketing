@@ -5,6 +5,63 @@
 // per change.
 import * as React from 'react';
 
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
+export interface FocusableLike {
+  focus(): void;
+}
+export interface SheetDialogLike {
+  querySelectorAll(selector: string): ArrayLike<FocusableLike>;
+  focus(): void;
+}
+export interface SheetDocumentLike {
+  activeElement: FocusableLike | null;
+}
+export interface SheetKeyEvent {
+  key: string;
+  shiftKey: boolean;
+  preventDefault(): void;
+}
+
+// Focus behaviour lives in plain functions so it is testable without a DOM.
+export function openSheetEffect(
+  dialog: SheetDialogLike | null,
+  doc: SheetDocumentLike,
+): () => void {
+  const invoker = doc.activeElement;
+  const focusables = dialog?.querySelectorAll(FOCUSABLE) ?? [];
+  (focusables[0] ?? dialog)?.focus();
+  return () => {
+    invoker?.focus();
+  };
+}
+
+export function handleSheetKeyDown(
+  ev: SheetKeyEvent,
+  dialog: SheetDialogLike | null,
+  current: FocusableLike | null,
+  onClose: () => void,
+): void {
+  if (ev.key === 'Escape') {
+    ev.preventDefault();
+    onClose();
+    return;
+  }
+  if (ev.key !== 'Tab') return;
+  const focusables = Array.from(dialog?.querySelectorAll(FOCUSABLE) ?? []);
+  if (focusables.length === 0) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (ev.shiftKey && current === first) {
+    ev.preventDefault();
+    last.focus();
+  } else if (!ev.shiftKey && current === last) {
+    ev.preventDefault();
+    first.focus();
+  }
+}
+
 export function Sheet({
   open,
   label,
@@ -17,46 +74,24 @@ export function Sheet({
   children: React.ReactNode;
 }) {
   const ref = React.useRef<HTMLDivElement>(null);
-  const invoker = React.useRef<Element | null>(null);
 
   React.useEffect(() => {
     if (!open) return;
-    invoker.current = document.activeElement;
-    const node = ref.current;
-    const focusables = node?.querySelectorAll<HTMLElement>(
-      'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
+    return openSheetEffect(
+      ref.current as unknown as SheetDialogLike | null,
+      document as unknown as SheetDocumentLike,
     );
-    (focusables?.[0] ?? node)?.focus();
-    return () => {
-      (invoker.current as HTMLElement | null)?.focus?.();
-    };
   }, [open]);
 
   if (!open) return null;
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-      return;
-    }
-    if (e.key !== 'Tab') return;
-    const node = ref.current;
-    const focusables = Array.from(
-      node?.querySelectorAll<HTMLElement>(
-        'a[href], button:not([disabled]), input, select, textarea, [tabindex]:not([tabindex="-1"])',
-      ) ?? [],
+    handleSheetKeyDown(
+      e,
+      ref.current as unknown as SheetDialogLike | null,
+      document.activeElement as unknown as FocusableLike | null,
+      onClose,
     );
-    if (focusables.length === 0) return;
-    const first = focusables[0];
-    const last = focusables[focusables.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
   };
 
   return (
