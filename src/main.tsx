@@ -1,7 +1,6 @@
 // W0-01: client entry. Static routes ship no JavaScript at all; only routes
 // marked 'dynamic' load this bundle and hydrate their shell to read live
 // account/money state in the browser.
-import * as React from 'react';
 import { hydrateRoot } from 'react-dom/client';
 import { App } from './app/App';
 import { findRoute } from './app/routes';

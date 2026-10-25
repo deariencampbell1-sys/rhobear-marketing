@@ -1,7 +1,6 @@
 // W0-01: one PlaceholderPage used by every canonical route. Wave 1 replaces
 // it with real screens. Copy is honest and generic: no invented claims,
 // prices, availability, testimonials, counts or screenshots.
-import * as React from 'react';
 import type { Route } from '../app/routes';
 
 export function PlaceholderPage({ route }: { route: Route }) {

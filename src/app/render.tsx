@@ -2,7 +2,6 @@
 // document (lang, head, canonical, real body content) that is readable with
 // JavaScript disabled; scripts are injected later by scripts/prerender.mjs
 // and only on dynamic routes.
-import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { App } from './App';
 import { findRoute, notFoundRoute } from './routes';
