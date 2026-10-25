@@ -21,6 +21,7 @@ export type UnavailableReason =
   | 'notarization-incomplete'
   | 'signer-missing'
   | 'marked-unavailable'
+  | 'superseded'
   | 'platform-unavailable';
 
 export type ReleaseRow = {
@@ -33,6 +34,8 @@ export type ReleaseRow = {
   isCurrentDevice: boolean;
   /** Present only when state needs it; never a guess. */
   reason: UnavailableReason | null;
+  /** The version that replaced this one, when the manifest says so. */
+  supersededBy: string | null;
   artifactUrl: string | null;
   storeUrl: string | null;
   bytes: number;
@@ -79,10 +82,14 @@ function isHttps(url: string | null): boolean {
 /** Every field a row must satisfy before a control may exist. */
 function classify(release: Release): { state: ReleaseRow['state']; reason: UnavailableReason | null } {
   if (release.availability === 'waitlist') return { state: 'waitlist', reason: null };
-  if (release.storeUrl !== null && release.artifactUrl === null)
-    return { state: 'store', reason: null };
+  // An owner pulling a build must win over anything the row still carries: an
+  // emergency 'unavailable' with a store URL left in place is not a live link.
   if (release.availability !== 'available')
     return { state: 'unavailable', reason: 'marked-unavailable' };
+  // A superseded build is history: it is shown, named, and not downloadable.
+  if (release.supersededBy !== null) return { state: 'unavailable', reason: 'superseded' };
+  if (release.storeUrl !== null && release.artifactUrl === null)
+    return { state: 'store', reason: null };
   if (release.artifactUrl === null) return { state: 'unavailable', reason: 'no-artifact' };
   if (!isHttps(release.artifactUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
   if (release.platform === 'macos' && release.notarization === 'required')
@@ -101,6 +108,7 @@ function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
     availability: release.availability,
     state,
     reason,
+    supersededBy: release.supersededBy,
     isCurrentDevice: release.platform === currentPlatform,
     artifactUrl: release.artifactUrl,
     storeUrl: release.storeUrl,
@@ -123,8 +131,13 @@ export function resolveReleases(product: string, releases: readonly Release[], h
       return platforms.indexOf(a.platform) - platforms.indexOf(b.platform);
     });
 
+  // Featured is the device's live row: a superseded row can never be it, because
+  // classify() already refuses to mark one downloadable or store.
   const candidate = rows.find(
-    (row) => row.platform === currentPlatform && (row.state === 'downloadable' || row.state === 'store'),
+    (row) =>
+      row.platform === currentPlatform &&
+      row.supersededBy === null &&
+      (row.state === 'downloadable' || row.state === 'store'),
   );
   const featured = candidate === undefined ? null : candidate;
 

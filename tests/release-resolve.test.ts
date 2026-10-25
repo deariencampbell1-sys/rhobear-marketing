@@ -191,3 +191,71 @@ describe('resolveReleases — availability and detection', () => {
     expect(detectPlatform({ userAgent: 'SomeUnknownAgent/1.0' })).toBe(null);
   });
 });
+
+// Appended after Apollo's review of PR #57: the two fail-closed rules it named ???
+// an owner-pulled build wins over a leftover store link, and a superseded build
+// is shown, named, and never offered or featured.
+describe('resolveReleases fail-closed rules', () => {
+  const MAC_HINTS: DeviceHints = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' };
+
+  const resolveOne = (manifest: ReleaseManifest, hints: DeviceHints) => {
+    const result = resolveReleases(PRODUCT, manifest.releases, hints);
+    if (!result.ok) throw new Error(`resolveReleases failed: ${result.reason}`);
+    return result;
+  };
+
+  // Index 1 is the 1.4.0 macOS row; index 2 is the newer 1.4.1 row.
+  const supersedeFirstMacos = (): ReleaseManifest => ({
+    releases: MANIFEST.releases.map((release, index) =>
+      index === 1 ? { ...release, supersededBy: EXTRA_VERSION } : release,
+    ),
+  });
+
+  it('an unavailable row is unavailable even when it still carries a store link', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'ios'
+          ? { ...release, availability: 'unavailable', storeUrl: STORE.ios, artifactUrl: null }
+          : release,
+      ),
+    };
+    const result = resolveOne(manifest, { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' });
+    const ios = rowWhere(result.rows, (r) => r.platform === 'ios');
+
+    expect(ios.state).toBe('unavailable');
+    expect(ios.reason).toBe('marked-unavailable');
+    expect(result.featured?.platform).not.toBe('ios');
+  });
+
+  it('a superseded build is shown, named, and never downloadable', () => {
+    const rows = rowsOf(supersedeFirstMacos());
+    const superseded = rowWhere(rows, (r) => r.platform === 'macos' && r.version === '1.4.0');
+
+    expect(superseded.state).toBe('unavailable');
+    expect(superseded.reason).toBe('superseded');
+    expect(superseded.supersededBy).toBe(EXTRA_VERSION);
+  });
+
+  it('features the newer build when the first macOS row is the superseded one', () => {
+    const result = resolveOne(supersedeFirstMacos(), MAC_HINTS);
+    const older = rowWhere(result.rows, (r) => r.platform === 'macos' && r.version === '1.4.0');
+    const newer = rowWhere(result.rows, (r) => r.platform === 'macos' && r.version === EXTRA_VERSION);
+
+    expect(older.reason).toBe('superseded');
+    expect(newer.state).toBe('downloadable');
+    expect(result.featured?.version).toBe(EXTRA_VERSION);
+  });
+
+  it('a manifest whose every row is superseded features nothing', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) => ({ ...release, supersededBy: '9.9.9' })),
+    };
+    const result = resolveOne(manifest, MAC_HINTS);
+
+    expect(result.featured).toBeNull();
+    // The cli row is pulled outright ('marked-unavailable'), which outranks
+    // 'superseded'; what matters is that nothing here is offered.
+    expect(result.rows.every((row) => row.state === 'unavailable' || row.state === 'waitlist')).toBe(true);
+  });
+});
+
