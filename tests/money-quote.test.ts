@@ -54,7 +54,7 @@ describe('money quote client', () => {
     const json = JSON.stringify(state);
     expect(json).not.toContain('25.99');    // the quote's total was never copied back out
     expect(json).not.toMatch(/\d+\.\d{2}/);  // no numeric price anywhere on the state
-    expect(json).not.toMatch(/"price"]/);    // no price field on the state
+    expect(json).not.toMatch(/"price"/);    // no price field on the state
   });
 
   it('treats the expiry instant as expired', async () => {
