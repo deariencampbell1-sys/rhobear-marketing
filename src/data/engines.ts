@@ -29,7 +29,7 @@ const enginesSource = {
   section: '3. Products — Engines',
 } as const;
 
-export const engines = [
+export const engines = Object.freeze([
   {
     id: 'teams',
     publicName: 'Teams',
@@ -93,7 +93,7 @@ export const engines = [
     scenarioIds: ['spaces-01'],
     source: enginesSource,
   },
-] as const satisfies readonly EngineRow[];
+] as const satisfies readonly EngineRow[]);
 
 export type EngineId = (typeof engines)[number]['id'];
 

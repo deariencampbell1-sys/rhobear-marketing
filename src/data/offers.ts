@@ -5,8 +5,13 @@
 
 export type Money = string; // decimal string, e.g. '23.99' — never a number
 
+/** The fixed ids of the approved price list. */
+export type PriceRowId = 'free' | 'shell' | 'shell-plus' | 'space' | 'top-up';
+
 export type PriceRow = {
-  id: string;
+  id: PriceRowId;
+  /** Renderers must branch on this: a top-up adds credit, it is not a plan. */
+  kind: 'plan' | 'add-on';
   label: string;
   monthly: Money;
   includedCredit: Money;
@@ -22,6 +27,7 @@ const priceSource = {
 export const approvedPriceList: readonly PriceRow[] = [
   {
     id: 'free',
+    kind: 'plan',
     label: 'Free',
     monthly: '0.00',
     includedCredit: '0.00',
@@ -30,6 +36,7 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
   {
     id: 'shell',
+    kind: 'plan',
     label: 'Shell',
     monthly: '23.99',
     includedCredit: '14.40',
@@ -38,6 +45,7 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
   {
     id: 'shell-plus',
+    kind: 'plan',
     label: 'Shell Plus',
     monthly: '50.99',
     includedCredit: '39.60',
@@ -46,6 +54,7 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
   {
     id: 'space',
+    kind: 'plan',
     label: 'Space',
     monthly: '69.99',
     includedCredit: '39.60',
@@ -53,7 +62,10 @@ export const approvedPriceList: readonly PriceRow[] = [
     source: priceSource,
   },
   {
+    // The W0-02b brief mandates `monthly` on every row. For this add-on it is
+    // a brief-level shape, not a subscription; renderers must branch on `kind`.
     id: 'top-up',
+    kind: 'add-on',
     label: 'Top-up',
     monthly: '9.99',
     includedCredit: '9.00',
@@ -86,13 +98,16 @@ export const billingTerms = {
   source: priceSource,
 } as const;
 
-// Locked copy: this text cannot drift.
+// Locked copy: this text cannot drift. The engine names follow the newest
+// registry in engines.ts / INTENT §3; the older locked-facts line in
+// lanes/README.md still carried the pre-public Imagine alias.
 export const launchOffer = {
   headline: 'The first 100 accounts get 90 days of no metered engine usage.',
   body:
     'Engine and MCP calls — Spaces, Forge renders, Designs, Captur\'d, Vision, Search and Teams — are not metered for the first 100 accounts for 90 days from the day each account starts. It is not a free plan: your subscription and your model tokens bill as usual, and the usual abuse and rate limits still apply.',
   state: 'announced', // not 'active': the counter is L2's entitlement flag, not built yet
   source: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — Launch offer' },
+  nameSource: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products — Engines' },
 } as const;
 
 export const salePolicy = {
@@ -102,8 +117,10 @@ export const salePolicy = {
 } as const;
 
 // One short truthful sentence per plan, taken only from the notes column of
-// the approved price list: no adjectives, no invented capability.
-export const planCopy = {
+// the approved price list: no adjectives, no invented capability. Typed
+// against PriceRowId so a new plan cannot ship without copy (and a top-up
+// cannot silently gain plan copy).
+export const planCopy: Record<Exclude<PriceRowId, 'top-up'>, string> = {
   free: 'Local only: pocket models, the harness and Verifier, with no customer OpenRouter key.',
   shell: 'Includes Verifier, Apollo and the Forge MCP, with a customer OpenRouter key allowed.',
   'shell-plus': 'Adds Zeus to Shell.',

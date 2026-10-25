@@ -61,6 +61,12 @@ describe('approvedPriceList', () => {
       expect(row.source, row.id).toEqual(PRICE_SOURCE);
     }
   });
+
+  it('models plans as plans and the top-up as an add-on', () => {
+    for (const row of approvedPriceList) {
+      expect(row.kind, row.id).toBe(row.id === 'top-up' ? 'add-on' : 'plan');
+    }
+  });
 });
 
 describe('heraldOffers', () => {
@@ -110,6 +116,21 @@ describe('plan copy', () => {
       space: 'A whole cax21 with 8 GB RAM and 4 CPU.',
     });
   });
+
+  it('covers exactly the non-top-up price ids', () => {
+    const planIds = approvedPriceList
+      .map((row) => row.id)
+      .filter((id) => id !== 'top-up');
+    expect(Object.keys(planCopy).sort()).toEqual([...planIds].sort());
+  });
+
+  it('covers exactly the rows marked kind: plan', () => {
+    const planRowIds = approvedPriceList
+      .filter((row) => row.kind === 'plan')
+      .map((row) => row.id)
+      .sort();
+    expect(Object.keys(planCopy).sort()).toEqual(planRowIds);
+  });
 });
 
 describe('launch offer', () => {
@@ -117,22 +138,26 @@ describe('launch offer', () => {
     expect(launchOffer.state).toBe('announced');
   });
 
-  it('cites the locked launch offer section', () => {
+  it('pins the exact launch offer body', () => {
+    expect(launchOffer.body).toBe(
+      'Engine and MCP calls — Spaces, Forge renders, Designs, Captur\'d, Vision, Search and Teams — are not metered for the first 100 accounts for 90 days from the day each account starts. It is not a free plan: your subscription and your model tokens bill as usual, and the usual abuse and rate limits still apply.',
+    );
+  });
+
+  it('cites the locked offer terms and the newest engine-name source', () => {
     expect(launchOffer.source).toEqual({
       doc: 'lanes/README.md',
       section: 'Locked facts every lane needs — Launch offer',
     });
+    expect(launchOffer.nameSource).toEqual({
+      doc: 'lanes/L9-front-door/INTENT.md',
+      section: '3. Products — Engines',
+    });
   });
 
-  it('names exactly the seven public engine names', () => {
-    const engineList = launchOffer.body.split(' — ')[1];
-    expect(engineList).toBeDefined();
-    const names = engineList.split(/,\s*|\s+and\s+/);
-    expect(names).toHaveLength(7);
-    expect(new Set(names)).toEqual(new Set(engines.map((engine) => engine.publicName)));
-  });
-
-  it('does not use the pre-public Imagine alias', () => {
-    expect(launchOffer.body).not.toContain('Imagine');
+  it('names every public engine from the engines registry', () => {
+    for (const engine of engines) {
+      expect(launchOffer.body, engine.publicName).toContain(engine.publicName);
+    }
   });
 });

@@ -25,7 +25,7 @@ export interface ProductEntry {
   extraSources?: { doc: string; section: string }[];
 }
 
-export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
+const productsUnfrozen: ProductEntry[] = [
   {
     id: 'builds',
     publicName: 'Builds',
@@ -86,10 +86,12 @@ export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
       'A business phone and an assistant for your business.',
       'Your card, your assistant, your business, answered.',
     ],
+    // Herald is quoted in its own lane (see offers.heraldOffers), and checkout
+    // is closed on this site (see legal.checkoutState).
     availability: {
       state: 'waitlist',
       label: 'Talk to us',
-      reason: 'Herald is quoted and set up with you, not bought from a price card here.',
+      reason: 'Herald is quoted and set up with you; checkout is not open on this site.',
     },
     links: {},
     source: {
@@ -138,7 +140,20 @@ export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
       section: '3. What each product really is — and what the front door may say',
     },
   },
-]);
+];
+
+// Deep-freeze each entry and its nested lists: `as const` is compile-time only,
+// so this is what actually stops one module mutating another's product data.
+for (const product of productsUnfrozen) {
+  Object.freeze(product.whatItIs);
+  Object.freeze(product.availability);
+  if (product.extraSources) {
+    Object.freeze(product.extraSources);
+  }
+  Object.freeze(product);
+}
+
+export const products: readonly ProductEntry[] = Object.freeze(productsUnfrozen);
 
 // The ids in display order: a frozen copy of brand.appOrder, not a live alias.
 export const productOrder: readonly ProductId[] = Object.freeze([...brand.appOrder]);
@@ -151,15 +166,16 @@ export function productById(id: ProductId): ProductEntry {
   return found;
 }
 
-// Built from the products array — no hand-written key list to drift.
-// Null prototype: an unknown id must never resolve through Object.prototype.
+// Built from the products array — no hand-written key list to drift. Null
+// prototype like enginesById: an unknown id must never resolve through
+// Object.prototype (`productsById['constructor']` must be undefined).
 const productsByIdUnfrozen = Object.create(null) as Record<ProductId, ProductEntry>;
 for (const product of products) {
   productsByIdUnfrozen[product.id] = product;
 }
-export const productsById: Readonly<Record<ProductId, ProductEntry>> = Object.freeze(
-  productsByIdUnfrozen,
-);
+
+export const productsById: Readonly<Record<ProductId, ProductEntry>> =
+  Object.freeze(productsByIdUnfrozen);
 
 // Module-scope guard: the display order in brand.appOrder must be fully covered
 // by the product table, so adding an app in one place fails loudly here.

@@ -18,8 +18,10 @@ import {
   legalStatus,
   planCopy,
   products,
+  productOrder,
   retention,
 } from '../src/data/index';
+import { productInternals } from '../src/data/products.internal';
 
 const ALLOWED_DOCS = [
   'lanes/L9-front-door/INTENT.md',
@@ -194,6 +196,77 @@ describe('productsById', () => {
     const byName = productsById as unknown as Record<string, unknown>;
     expect(byName.constructor).toBeUndefined();
     expect(byName.toString).toBeUndefined();
+  });
+
+  it('has every productOrder id and exactly those keys', () => {
+    for (const id of productOrder) {
+      expect(Object.prototype.hasOwnProperty.call(productsById, id), id).toBe(true);
+    }
+    expect(Object.keys(productsById)).toEqual([...productOrder]);
+  });
+
+  it('maps each id to the same object as the products entry', () => {
+    for (const product of products) {
+      expect(productsById[product.id]).toBe(product);
+    }
+  });
+
+  it('is frozen', () => {
+    expect(Object.isFrozen(productsById)).toBe(true);
+  });
+});
+
+describe('public data is frozen at runtime', () => {
+  it('freezes the products array, every entry and the nested lists', () => {
+    expect(Object.isFrozen(products)).toBe(true);
+    for (const product of products) {
+      expect(Object.isFrozen(product), product.id).toBe(true);
+      expect(Object.isFrozen(product.whatItIs), product.id).toBe(true);
+      expect(Object.isFrozen(product.availability), product.id).toBe(true);
+      if (product.extraSources) {
+        expect(Object.isFrozen(product.extraSources), product.id).toBe(true);
+      }
+    }
+  });
+
+  it('freezes the internals object and each internal value', () => {
+    expect(Object.isFrozen(productInternals)).toBe(true);
+    for (const internals of Object.values(productInternals)) {
+      expect(Object.isFrozen(internals)).toBe(true);
+    }
+  });
+});
+
+describe('public product keys', () => {
+  it('gives every public product exactly the public keys', () => {
+    const publicKeys = [
+      'availability',
+      'id',
+      'links',
+      'oneLiner',
+      'promise',
+      'publicName',
+      'source',
+      'whatItIs',
+    ];
+    for (const product of products) {
+      const expected = [
+        ...publicKeys,
+        ...(product.extraSources ? ['extraSources'] : []),
+      ].sort();
+      expect(Object.keys(product).sort(), product.id).toEqual(expected);
+    }
+  });
+});
+
+describe('public product data safety', () => {
+  it('publishes no links, URLs or dollar prices', () => {
+    for (const product of products) {
+      expect(product.links, product.id).toEqual({});
+    }
+    const json = JSON.stringify(products);
+    expect(json).not.toMatch(/https?:/);
+    expect(json).not.toMatch(/\$\d/);
   });
 });
 

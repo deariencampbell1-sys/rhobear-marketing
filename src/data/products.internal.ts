@@ -6,7 +6,7 @@ export interface ProductInternals {
 }
 
 // Internal-only caveats kept out of the public product objects, keyed by id.
-export const productInternals: Readonly<Record<ProductId, ProductInternals>> = {
+const productInternalsUnfrozen: Record<ProductId, ProductInternals> = {
   builds: {
     truthBoundary:
       'Cloud and native substance are real, the locked UX is being rebuilt, and TestFlight 1.0 (build 32) is owner-confirmed as the only accepted mobile release; other release targets are not proved available.',
@@ -28,3 +28,10 @@ export const productInternals: Readonly<Record<ProductId, ProductInternals>> = {
       'Apollo and Zeus work today as reviewer and builder agents; standalone paid Reviews plans are not published.',
   },
 };
+
+for (const internals of Object.values(productInternalsUnfrozen)) {
+  Object.freeze(internals);
+}
+
+export const productInternals: Readonly<Record<ProductId, ProductInternals>> =
+  Object.freeze(productInternalsUnfrozen);

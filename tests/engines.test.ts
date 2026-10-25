@@ -19,6 +19,10 @@ describe('engines registry', () => {
     expect(engines.map((engine) => engine.id)).toEqual(ENGINE_IDS);
   });
 
+  it('freezes the engines registry at runtime', () => {
+    expect(Object.isFrozen(engines)).toBe(true);
+  });
+
   it('has unique engine ids', () => {
     const ids = engines.map((engine) => engine.id);
     expect(new Set(ids).size).toBe(ids.length);
