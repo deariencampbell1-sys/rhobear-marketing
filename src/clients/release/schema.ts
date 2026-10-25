@@ -44,7 +44,8 @@ export type ReleaseManifest = { schema?: typeof RELEASE_MANIFEST_SCHEMA; release
 
 export type ManifestProblem =
   | 'not-an-object' | 'wrong-schema' | 'bad-platform' | 'bad-sha256' | 'bad-source-sha' | 'bad-bytes'
-  | 'bad-url' | 'bad-accepted-at' | 'no-target' | 'notarization-not-passed' | 'duplicate-platform'
+  | 'bad-url' | 'bad-accepted-at' | 'no-target' | 'notarization-not-passed' | 'signer-missing'
+  | 'duplicate-platform'
   | 'ambiguous-supersede' | 'empty';
 
 export type ParsedManifest =
@@ -78,10 +79,19 @@ export function isHttpsUrl(value: string): boolean {
  * Without it the contract is "any https origin", which is what a first release
  * with an undecided CDN needs; the test below pins both behaviours.
  */
-export type ParseOptions = { allowedArtifactHosts?: readonly string[] };
+export type ParseOptions = {
+  /** Hosts a download may come from. Omitted or empty means any https origin. */
+  allowedArtifactHosts?: readonly string[];
+  /**
+   * Hosts a store link may point at. Separate from the artifact list on purpose:
+   * a caller that pins only its own download CDN must not thereby reject every
+   * App Store and Play row (and, with an all-or-nothing manifest, blank the
+   * whole page).
+   */
+  allowedStoreHosts?: readonly string[];
+};
 
-function hostAllowed(value: string, options: ParseOptions): boolean {
-  const hosts = options.allowedArtifactHosts;
+function hostAllowed(value: string, hosts: readonly string[] | undefined): boolean {
   if (hosts === undefined || hosts.length === 0) return true;
   try {
     return hosts.includes(new URL(value).host);
@@ -94,9 +104,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** The unit both manifest rules are judged in: one (product, platform) group. */
+/**
+ * The unit both manifest rules are judged in: one (product, platform) group.
+ * The product id is canonicalised exactly as `resolve.ts` matches it, so a
+ * mixed-case or padded id cannot slip two live rows past the rule.
+ */
 function groupKey(product: string, platform: Platform): string {
-  return product + '\u0000' + platform;
+  return product.trim().toLowerCase() + '\u0000' + platform;
 }
 
 function isPlatform(value: unknown): value is Platform {
@@ -156,14 +170,16 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   }
   let artifact: string | null = null;
   if (artifactUrl !== undefined && artifactUrl !== null) {
-    if (typeof artifactUrl !== 'string' || !isHttpsUrl(artifactUrl) || !hostAllowed(artifactUrl, options)) {
+    if (typeof artifactUrl !== 'string' || !isHttpsUrl(artifactUrl)
+      || !hostAllowed(artifactUrl, options.allowedArtifactHosts)) {
       return { problem: 'bad-url' };
     }
     artifact = artifactUrl;
   }
   let store: string | null = null;
   if (storeUrl !== undefined && storeUrl !== null) {
-    if (typeof storeUrl !== 'string' || !isHttpsUrl(storeUrl) || !hostAllowed(storeUrl, options)) {
+    if (typeof storeUrl !== 'string' || !isHttpsUrl(storeUrl)
+      || !hostAllowed(storeUrl, options.allowedStoreHosts)) {
       return { problem: 'bad-url' };
     }
     store = storeUrl;
@@ -180,6 +196,13 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   if (availability === 'available' && artifact === null && store === null) {
     return { problem: 'no-target' };
   }
+  // Every direct download is signed: the manifest refuses an artifact without a
+  // signer, so the all-or-nothing rationale covers the field the button depends
+  // on, not just notarization. (A store row is signed by the store.)
+  if (artifact !== null) {
+    const signerValue = typeof signer === 'string' ? signer.trim() : '';
+    if (signerValue.length === 0) return { problem: 'signer-missing' };
+  }
   // macOS ships notarized or not at all — but only for a direct download. A
   // store row is notarized by the store, and a pulled or waitlist row ships
   // nothing at all, so neither may be forced to assert a ticket it has not got
@@ -188,15 +211,17 @@ export function parseRelease(raw: unknown, options: ParseOptions = {}): { releas
   if (platform === 'macos' && artifact !== null && notarization !== 'passed') {
     return { problem: 'notarization-not-passed' };
   }
-  const signerValue = typeof signer === 'string' && signer.trim().length > 0 ? signer : null;
+  // Trimmed and stored trimmed: the chain rules compare these strings, so a
+  // padded value must not survive into the manifest and then fail its own lookup.
+  const signerValue = typeof signer === 'string' && signer.trim().length > 0 ? signer.trim() : null;
   const supersededValue =
-    typeof supersededBy === 'string' && supersededBy.trim().length > 0 ? supersededBy : null;
+    typeof supersededBy === 'string' && supersededBy.trim().length > 0 ? supersededBy.trim() : null;
   return {
     release: {
       schema: RELEASE_SCHEMA,
       product,
       platform,
-      version,
+      version: version.trim(),
       sourceSha: sourceSha.toLowerCase(),
       artifactUrl: artifact,
       storeUrl: store,

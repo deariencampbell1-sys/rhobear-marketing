@@ -30,7 +30,8 @@ function wellFormedRow(platform: string, overrides: Record<string, unknown> = {}
     storeUrl: null,
     bytes: 1048576,
     sha256: SHA256,
-    signer: null,
+    // A direct download is signed; a store row is signed by the store.
+    signer: 'release-signing-key',
     // macOS ships notarized or not at all, so the macOS fixture is notarized.
     notarization: platform === 'macos' ? 'passed' : 'not-applicable',
     availability: 'available',
@@ -402,9 +403,6 @@ describe('parseRelease — optional artifact host policy', () => {
     expect(parseRelease(wellFormedRow('linux'), allowed)).toHaveProperty('release');
     expect(parseRelease(wellFormedRow('linux', { artifactUrl: 'https://evil.example/x' }), allowed))
       .toEqual({ problem: 'bad-url' });
-    expect(parseRelease(wellFormedRow('ios', {
-      artifactUrl: null, storeUrl: 'https://play.google.com/store/apps/details?id=x', signer: null,
-    }), allowed)).toEqual({ problem: 'bad-url' });
   });
 
   it('without an allowlist any https origin is accepted, which is the documented default', () => {
@@ -415,12 +413,78 @@ describe('parseRelease — optional artifact host policy', () => {
 
 describe('parseRelease — blank strings normalise at the parser', () => {
   it('treats a whitespace signer as no signer and a whitespace supersede as none', () => {
-    const signed = parseRelease(wellFormedRow('linux', { signer: '   ' }));
-    if (!('release' in signed)) throw new Error('a blank signer is not a parse failure');
-    expect(signed.release.signer).toBeNull();
+    // On a store row a blank signer is simply "no signer"; on a download it is
+    // the signer-missing refusal (a download is always signed).
+    const store = parseRelease(wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: '   ',
+    }));
+    if (!('release' in store)) throw new Error('a blank signer on a store row is not a failure');
+    expect(store.release.signer).toBeNull();
+    expect(code(wellFormedRow('linux', { signer: '   ' }))).toBe('signer-missing');
 
     const chained = parseRelease(wellFormedRow('linux', { supersededBy: '   ' }));
     if (!('release' in chained)) throw new Error('a blank supersede is not a parse failure');
     expect(chained.release.supersededBy).toBeNull();
+  });
+});
+
+// Apollo's round-5 review: the host policy is per-link, the chain rules compare
+// canonical ids, a padded value cannot defeat them, and a direct download needs
+// a signer at the manifest layer.
+describe('parseRelease — host policy per link', () => {
+  const artifactOnly = { allowedArtifactHosts: ['downloads.example.com'] } as const;
+
+  it('a download-CDN allowlist does not reject a store row', () => {
+    const store = wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    });
+    // The App Store host is not the download CDN, and that is not a problem.
+    expect(parseRelease(store, artifactOnly)).toHaveProperty('release');
+  });
+
+  it('a store allowlist is its own list', () => {
+    const store = wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    });
+    expect(parseRelease(store, { allowedStoreHosts: ['play.google.com'] })).toEqual({ problem: 'bad-url' });
+    expect(parseRelease(store, { allowedStoreHosts: ['apps.apple.com'] })).toHaveProperty('release');
+  });
+
+  it('an off-list download host is refused', () => {
+    expect(parseRelease(wellFormedRow('linux', { artifactUrl: 'https://evil.example/x' }), artifactOnly))
+      .toEqual({ problem: 'bad-url' });
+  });
+});
+
+describe('parseRelease — signer and padded ids', () => {
+  it('refuses a direct download with no signer', () => {
+    expect(code(wellFormedRow('linux', { signer: null }))).toBe('signer-missing');
+    expect(code(wellFormedRow('linux', { signer: '   ' }))).toBe('signer-missing');
+    // A store row needs none.
+    expect(code(wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    }))).toBe('parsed');
+  });
+
+  it('stores version and supersededBy trimmed, so a padded chain still resolves', () => {
+    const rows = [
+      wellFormedRow('linux', { version: ' 1.0.0 ', supersededBy: ' 1.1.0 ' }),
+      wellFormedRow('linux', { version: '1.1.0' }),
+    ];
+    const result = parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: rows });
+    if (!result.ok) throw new Error('a padded chain must parse: ' + result.problems.join(','));
+    expect(result.releases[0].version).toBe('1.0.0');
+    expect(result.releases[0].supersededBy).toBe('1.1.0');
+  });
+
+  it('groups by canonical product, so mixed case cannot hide two live rows', () => {
+    const rows = [
+      wellFormedRow('linux', { product: 'Rhobear', version: '1.0.0' }),
+      wellFormedRow('linux', { product: ' rhobear ', version: '1.1.0' }),
+    ];
+    expect(parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: rows })).toEqual({
+      ok: false,
+      problems: ['duplicate-platform'],
+    });
   });
 });

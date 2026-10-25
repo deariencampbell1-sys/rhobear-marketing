@@ -473,3 +473,57 @@ describe('resolveReleases — no binary, no hash; store rows need no ticket', ()
     expect(result.ok ? result.rows.length : 0).toBe(manifest.releases.length);
   });
 });
+
+// Apollo's round-5 review: the store half of the featured selection, the reason
+// a screen renders when nothing is featured, and a digest only on a download.
+describe('resolveReleases — featured reasons and digests', () => {
+  const IPHONE: DeviceHints = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)' };
+
+  it('features a store row on the device it belongs to', () => {
+    const result = resolveReleases(PRODUCT, MANIFEST.releases, IPHONE);
+    if (!result.ok) throw new Error('the iPhone resolves');
+    expect(result.featured?.platform).toBe('ios');
+    expect(result.featured?.state).toBe('store');
+    expect(result.featuredReason).toBeNull();
+  });
+
+  it('says device-unknown when the device cannot be identified', () => {
+    const result = resolveReleases(PRODUCT, MANIFEST.releases, UNKNOWN_HINTS);
+    if (!result.ok) throw new Error('an unknown device still gets the rows');
+    expect(result.detection).toBe('unknown');
+    expect(result.featured).toBeNull();
+    expect(result.featuredReason).toBe('device-unknown');
+  });
+
+  it('says platform-unavailable when the device is known but has no row', () => {
+    // An iPad in desktop mode is identified (touch points), and the fixture
+    // manifest carries no ipados row: that is a different message from "we do
+    // not know your device" and from "your row cannot be downloaded".
+    const result = resolveReleases(PRODUCT, MANIFEST.releases, {
+      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+      maxTouchPoints: 5,
+    });
+    if (!result.ok) throw new Error('a known device gets rows');
+    expect(result.currentPlatform).toBe('ipados');
+    expect(result.featured).toBeNull();
+    expect(result.featuredReason).toBe('platform-unavailable');
+  });
+
+  it('carries a digest only on a downloadable row', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'macos' && release.version === '1.4.0'
+          ? { ...release, supersededBy: EXTRA_VERSION }
+          : release,
+      ),
+    };
+    const rows = rowsOf(manifest);
+    const superseded = rowWhere(rows, (r) => r.platform === 'macos' && r.version === '1.4.0');
+    expect(superseded.state).toBe('unavailable');
+    expect(superseded.bytes).toBeNull();
+    expect(superseded.sha256).toBeNull();
+    const live = rowWhere(rows, (r) => r.platform === 'macos' && r.version === EXTRA_VERSION);
+    expect(live.bytes).not.toBeNull();
+    expect(live.sha256).not.toBeNull();
+  });
+});

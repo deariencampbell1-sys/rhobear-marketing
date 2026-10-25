@@ -55,6 +55,12 @@ export type ResolveResult =
       currentPlatform: Platform | null;
       /** The single row to feature, or null when the device's row cannot be downloaded. */
       featured: ReleaseRow | null;
+      /**
+       * Why nothing is featured, in words a screen can render: the device is
+       * unknown, the manifest carries no row for it, or its row cannot be
+       * downloaded (a named per-row reason, already on `featured`'s absence).
+       */
+      featuredReason: 'device-unknown' | 'platform-unavailable' | UnavailableReason | null;
     }
   // 'device-unknown' is the honest name: no platform was matched at all, so the
   // screen says "we could not identify your device", not "unsupported platform".
@@ -136,8 +142,8 @@ function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
     isCurrentDevice: release.platform === currentPlatform,
     artifactUrl: downloadable ? release.artifactUrl : null,
     storeUrl: store ? release.storeUrl : null,
-    bytes: release.artifactUrl === null ? null : release.bytes,
-    sha256: release.artifactUrl === null ? null : release.sha256,
+    bytes: downloadable ? release.bytes : null,
+    sha256: downloadable ? release.sha256 : null,
     acceptedAt: release.acceptedAt,
   };
 }
@@ -189,5 +195,21 @@ export function resolveReleases(product: string, releases: readonly Release[], h
     return { ok: false, reason: 'device-unknown' };
   }
 
-  return { ok: true, rows, detection, currentPlatform, featured };
+  // What a screen says when there is nothing to feature. 'platform-unavailable'
+  // is the honest signal for "we know the device and the manifest has no row for
+  // it", which is otherwise indistinguishable from "the row exists but is not
+  // downloadable".
+  const deviceRow = currentPlatform === null
+    ? undefined
+    : rows.find((row) => row.platform === currentPlatform);
+  const featuredReason: 'device-unknown' | 'platform-unavailable' | UnavailableReason | null =
+    featured !== null
+      ? null
+      : currentPlatform === null
+        ? 'device-unknown'
+        : deviceRow === undefined
+          ? 'platform-unavailable'
+          : deviceRow.reason;
+
+  return { ok: true, rows, detection, currentPlatform, featured, featuredReason };
 }
