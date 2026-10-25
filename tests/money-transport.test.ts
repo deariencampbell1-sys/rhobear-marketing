@@ -110,19 +110,146 @@ describe('not configured', () => {
 
 describe('origin guard', () => {
   // new URL('/\evil.com', 'https://api.example.com') resolves to evil.com, so
-  // these paths must be refused before URL parsing.
-  it.each([String.raw`/\evil.com`, String.raw`\\evil.com`])(
-    'path %o never reaches fetch',
-    async (path) => {
-      const transport = createMoneyTransport({
-        baseUrl: BASE,
-        requestId: () => 'req-fixed',
-      });
-      const result = await transport.get({ path, method: 'GET' }, parseValue);
-      expect(result).toEqual({ ok: false, reason: 'not-configured', requestId: 'req-fixed' });
-      expect(fetchMock).not.toHaveBeenCalled();
+  // these paths must be refused before URL parsing. The protocol-relative and
+  // absolute entries are the same escape with a plainer spelling.
+  const unsafePaths = [
+    String.raw`/\evil.com`,
+    String.raw`\\evil.com`,
+    '//evil.example/x',
+    'https://evil.example/x',
+  ];
+
+  it.each(unsafePaths)('path %o never reaches fetch', async (path) => {
+    const transport = createMoneyTransport({
+      baseUrl: BASE,
+      requestId: () => 'req-fixed',
+    });
+    const result = await transport.get({ path, method: 'GET' }, parseValue);
+    expect(result).toEqual({ ok: false, reason: 'not-configured', requestId: 'req-fixed' });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('the control path /ok calls fetch exactly once', async () => {
+    fetchMock.mockResolvedValue(jsonResponseWithoutType({ value: 1 }));
+    const transport = createMoneyTransport({
+      baseUrl: BASE,
+      requestId: () => 'req-ok',
+    });
+    const result = await transport.get({ path: '/ok', method: 'GET' }, parseValue);
+    expect(result).toMatchObject({ ok: true, data: { value: 1 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/ok`);
+  });
+});
+
+describe('redirects', () => {
+  it('surfaces a redirected response as http with a redirect detail, never a parsed body', async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ value: 42 }), {
+        status: 302,
+        headers: { 'content-type': 'application/json', location: 'https://evil.example/x' },
+      }),
+    );
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-redirect' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      ok: false,
+      reason: 'http',
+      requestId: 'req-redirect',
+      detail: 'redirect',
+    });
+    expect(result).not.toHaveProperty('data'); // the body was never parsed
+    const serialised = JSON.stringify(result);
+    expect(serialised).not.toContain('evil.example'); // no Location target leaks
+    expect(serialised).not.toContain('42'); // no body content leaks
+  });
+
+  it('asks fetch for redirect: error so no redirect is ever followed', async () => {
+    fetchMock.mockResolvedValue(jsonResponseWithoutType({ value: 1 }));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-redirect' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result.ok).toBe(true);
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init?.redirect).toBe('error');
+  });
+});
+
+describe('body cap', () => {
+  const streamed = (text: string): Response => {
+    const bytes = new TextEncoder().encode(text);
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += 64 * 1024) {
+          controller.enqueue(bytes.subarray(i, Math.min(i + 64 * 1024, bytes.length)));
+        }
+        controller.close();
+      },
+    });
+    // No content-length: the cap can only be enforced on what actually arrives.
+    return new Response(stream, { headers: { 'content-type': 'application/json' } });
+  };
+
+  it('aborts a streamed body over 262144 bytes with http/body-too-large', async () => {
+    const overCap = `{"value":1,"pad":"${'a'.repeat(300_000)}"}`;
+    fetchMock.mockResolvedValue(streamed(overCap));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-cap' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no retry on an http failure
+    expect(result).toEqual({
+      ok: false,
+      reason: 'http',
+      requestId: 'req-cap',
+      detail: 'body-too-large',
+    });
+  });
+
+  it('accepts a streamed body of exactly 262144 bytes', async () => {
+    const atCap = `{"value":1,"pad":"${'a'.repeat(262_144 - 20)}"}`;
+    expect(new TextEncoder().encode(atCap).byteLength).toBe(262_144);
+    fetchMock.mockResolvedValue(streamed(atCap));
+    const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => 'req-cap' });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result).toMatchObject({ ok: true, data: { value: 1 } });
+  });
+});
+
+describe('config validation', () => {
+  it.each([0, -5, Number.NaN, 120_000])(
+    'timeoutMs %s falls back to the 10_000 default',
+    (timeoutMs) => {
+      const transport = createMoneyTransport({ baseUrl: BASE, timeoutMs });
+      expect(transport.timeoutMs).toBe(10_000);
     },
   );
+
+  it('a finite timeout inside (0, 60_000] is used as given', () => {
+    expect(createMoneyTransport({ baseUrl: BASE, timeoutMs: 4_000 }).timeoutMs).toBe(4_000);
+    expect(createMoneyTransport({ baseUrl: BASE, timeoutMs: 60_000 }).timeoutMs).toBe(60_000);
+    expect(createMoneyTransport({ baseUrl: BASE }).timeoutMs).toBe(10_000);
+  });
+
+  it('trims surrounding whitespace from baseUrl before judging it', async () => {
+    fetchMock.mockResolvedValue(jsonResponseWithoutType({ value: 1 }));
+    const transport = createMoneyTransport({
+      baseUrl: `  ${BASE}\n`, // a CRLF checkout must not read as not-configured
+      requestId: () => 'req-trim',
+    });
+
+    const result = await transport.get(quoteRequest(), parseValue);
+
+    expect(result).toMatchObject({ ok: true, data: { value: 1 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe(`${BASE}/money/quote`);
+  });
 });
 
 describe('happy path', () => {
@@ -438,4 +565,22 @@ describe('request id generation never rejects get()', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init?.headers).toEqual({ 'X-Request-Id': result.requestId });
   });
+
+  it.each(['bad\r\nid', 'line\nbreak', 'nul\u0000byte', 'bell\u0007here'])(
+    'replaces the control-carrying requestId %j with a generated UUID',
+    async (unsafe) => {
+      fetchMock.mockResolvedValue(jsonResponseWithoutType({ value: 1 }));
+      const transport = createMoneyTransport({ baseUrl: BASE, requestId: () => unsafe });
+
+      const result = await transport.get(quoteRequest(), parseValue);
+
+      expect(result.ok).toBe(true);
+      expect(result.requestId).toMatch(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      );
+      expect(result.requestId).not.toBe(unsafe);
+      const [, init] = fetchMock.mock.calls[0];
+      expect(init?.headers).toEqual({ 'X-Request-Id': result.requestId });
+    },
+  );
 });
