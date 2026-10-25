@@ -12,10 +12,11 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 (pinned commit dated 2026-07-16)
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4 (pinned commit dated 2025-04-02)
         with:
           node-version: 20
           cache: npm
@@ -35,7 +36,7 @@ jobs:
       # Preview artifact only. No Pages deployment here: cutover to gh-pages
       # is a later wave and only after the owner has seen the site.
       - name: Upload site preview
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4 (pinned commit dated 2025-03-19)
         with:
           name: site-preview
           path: dist
