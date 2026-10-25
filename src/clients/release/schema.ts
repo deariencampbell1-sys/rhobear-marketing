@@ -13,6 +13,8 @@ export const RELEASE_MANIFEST_SCHEMA = 'rhobear.release-manifest.v1';
 export const platforms = ['windows', 'macos', 'linux', 'ios', 'ipados', 'android', 'web', 'cli'] as const;
 export type Platform = (typeof platforms)[number];
 
+// Hashes are compared case-insensitively and stored lowercase: a CI tool that
+// emits uppercase SHA-256 is a valid digest, not a broken release.
 const hex64 = /^[0-9a-f]{64}$/;
 const hex40 = /^[0-9a-f]{40}$/;
 
@@ -69,6 +71,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/** The unit both manifest rules are judged in: one (product, platform) group. */
+function groupKey(product: string, platform: Platform): string {
+  return product + '\u0000' + platform;
+}
+
 function isPlatform(value: unknown): value is Platform {
   return typeof value === 'string' && (platforms as readonly string[]).includes(value);
 }
@@ -116,8 +123,8 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
   }
   if (schema !== RELEASE_SCHEMA) return { problem: 'wrong-schema' };
   if (!isPlatform(platform)) return { problem: 'bad-platform' };
-  if (typeof sourceSha !== 'string' || !hex40.test(sourceSha)) return { problem: 'bad-source-sha' };
-  if (typeof sha256 !== 'string' || !hex64.test(sha256)) return { problem: 'bad-sha256' };
+  if (typeof sourceSha !== 'string' || !hex40.test(sourceSha.toLowerCase())) return { problem: 'bad-source-sha' };
+  if (typeof sha256 !== 'string' || !hex64.test(sha256.toLowerCase())) return { problem: 'bad-sha256' };
   if (typeof bytes !== 'number' || !Number.isInteger(bytes) || bytes <= 0) {
     return { problem: 'bad-bytes' };
   }
@@ -139,7 +146,10 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
   }
   // macOS ships notarized or not at all: 'required' means the ticket was
   // requested but has not come back, so no button may exist yet.
-  if (platform === 'macos' && notarization === 'required') {
+  // macOS ships notarized or not at all: 'required' means the ticket was
+  // requested but has not come back, and 'not-applicable' on a macOS row is a
+  // data error, so neither may produce a download button.
+  if (platform === 'macos' && notarization !== 'passed') {
     return { problem: 'notarization-not-passed' };
   }
   const signerValue = typeof signer === 'string' && signer.trim().length > 0 ? signer : null;
@@ -151,11 +161,11 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
       product,
       platform,
       version,
-      sourceSha,
+      sourceSha: sourceSha.toLowerCase(),
       artifactUrl: artifact,
       storeUrl: store,
       bytes,
-      sha256,
+      sha256: sha256.toLowerCase(),
       signer: signerValue,
       notarization,
       availability,
@@ -169,6 +179,14 @@ export function parseRelease(raw: unknown): { release: Release } | { problem: Ma
  * Accepts a bare array of rows or `{ schema, releases }`. Collects every
  * problem rather than stopping at the first — and any problem means ok:false,
  * never a partial list a screen could render a button from.
+ *
+ * Granularity, decided here and stated once: the manifest is all-or-nothing. A
+ * manifest is produced by our own publish pipeline, so a row that is not
+ * notarized (or has no target, or a bad hash) is a publishing error and must
+ * fail the whole manifest before it ships — a release page that quietly drops
+ * one platform is worse than one that says "no releases yet". `resolve.ts`
+ * still carries a per-row `notarization-incomplete` reason; it is a belt for a
+ * `Release[]` that did not come through this function, not a second policy.
  */
 export function parseManifest(raw: unknown): ParsedManifest {
   const problems: ManifestProblem[] = [];
@@ -191,26 +209,41 @@ export function parseManifest(raw: unknown): ParsedManifest {
     if ('problem' in parsed) problems.push(parsed.problem);
     else releases.push(parsed.release);
   }
-  // Two live rows for one (product, platform) is ambiguous unless one names
-  // the other as its replacement: the owner launches platform by platform.
-  const flagged = new Set<string>();
-  for (let i = 0; i < releases.length; i++) {
-    for (let j = i + 1; j < releases.length; j++) {
-      const a = releases[i];
-      const b = releases[j];
-      if (a.product !== b.product || a.platform !== b.platform) continue;
-      if (a.supersededBy === b.version || b.supersededBy === a.version) continue;
-      const key = a.product + '\u0000' + a.platform;
-      if (flagged.has(key)) continue;
-      flagged.add(key);
-      problems.push('duplicate-platform');
-    }
-  }
-  const versions = new Set<string>();
-  for (const release of releases) versions.add(release.version);
+  // Group by (product, platform): the owner launches platform by platform, so
+  // that pair is the unit both manifest rules are judged in.
+  const groups = new Map<string, Release[]>();
   for (const release of releases) {
-    if (release.supersededBy !== null && !versions.has(release.supersededBy)) {
-      problems.push('ambiguous-supersede');
+    const key = groupKey(release.product, release.platform);
+    const group = groups.get(key);
+    if (group === undefined) groups.set(key, [release]);
+    else group.push(release);
+  }
+  for (const group of groups.values()) {
+    // Exactly one live row per group. A supersede chain (v1 -> v2 -> v3, only
+    // v3 live) is the normal history of two cut releases and is not a
+    // duplicate; two rows that both claim to be current are.
+    const live = group.filter((release) => release.supersededBy === null);
+    if (live.length > 1) problems.push('duplicate-platform');
+  }
+  for (const group of groups.values()) {
+    // A supersede target must exist in the same group — a macos row superseded
+    // by a Windows version string is an orphan, not a chain — and every chain
+    // must reach a live head rather than loop.
+    const versions = new Set(group.map((release) => release.version));
+    for (const release of group) {
+      if (release.supersededBy === null) continue;
+      if (!versions.has(release.supersededBy) || release.supersededBy === release.version) {
+        problems.push('ambiguous-supersede');
+        continue;
+      }
+      const byVersion = new Map(group.map((row) => [row.version, row] as const));
+      let cursor: Release | undefined = release;
+      let steps = 0;
+      while (cursor !== undefined && cursor.supersededBy !== null && steps <= group.length) {
+        cursor = byVersion.get(cursor.supersededBy);
+        steps += 1;
+      }
+      if (cursor === undefined || cursor.supersededBy !== null) problems.push('ambiguous-supersede');
     }
   }
   if (problems.length > 0) return { ok: false, problems };

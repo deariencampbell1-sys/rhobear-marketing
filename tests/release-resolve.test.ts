@@ -182,6 +182,10 @@ describe('resolveReleases — availability and detection', () => {
     const ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)';
     expect(detectPlatform({ userAgent: ua, maxTouchPoints: 5 })).toBe('ipados');
     expect(detectPlatform({ userAgent: ua, maxTouchPoints: 0 })).toBe('macos');
+    // No touch hint at all: a Mac and an iPad in desktop mode are the same UA,
+    // so the device is unknown rather than guessed as macOS.
+    expect(detectPlatform({ userAgent: ua })).toBe(null);
+    expect(detectPlatform({ userAgent: ua, maxTouchPoints: null })).toBe(null);
   });
 
   it('a phone user agent resolves to the phone platform', () => {
@@ -192,11 +196,16 @@ describe('resolveReleases — availability and detection', () => {
   });
 });
 
-// Appended after Apollo's review of PR #57: the two fail-closed rules it named ???
-// an owner-pulled build wins over a leftover store link, and a superseded build
-// is shown, named, and never offered or featured.
+// The two fail-closed rules: an owner-pulled build wins over a leftover store
+// link, and a superseded build is shown, named, and never offered or featured.
 describe('resolveReleases fail-closed rules', () => {
-  const MAC_HINTS: DeviceHints = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)' };
+  // A real Mac sends a Macintosh UA *and* maxTouchPoints 0; without the touch
+  // hint the device is ambiguous with an iPad in desktop mode and detection
+  // returns null (see the iPad test above).
+  const MAC_HINTS: DeviceHints = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)',
+    maxTouchPoints: 0,
+  };
 
   const resolveOne = (manifest: ReleaseManifest, hints: DeviceHints) => {
     const result = resolveReleases(PRODUCT, manifest.releases, hints);
@@ -259,3 +268,83 @@ describe('resolveReleases fail-closed rules', () => {
   });
 });
 
+// The states and fail-closed branches the resolver had no test for: the two
+// ok:false reasons, the waitlist row, and the ordering that keeps a superseded
+// build from rendering above the one that replaced it.
+describe('resolveReleases — fail-closed branches', () => {
+  it('returns no-releases for a product the manifest does not carry', () => {
+    const result = resolveReleases('herald', MANIFEST.releases, UNKNOWN_HINTS);
+    expect(result).toEqual({ ok: false, reason: 'no-releases' });
+  });
+
+  it('returns platform-mismatch when nothing is offered and the device is unknown', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) => ({ ...release, availability: 'unavailable' })),
+    };
+    const result = resolveReleases(PRODUCT, manifest.releases, UNKNOWN_HINTS);
+    expect(result).toEqual({ ok: false, reason: 'platform-mismatch' });
+  });
+
+  it('still answers a known device when every row is unavailable', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) => ({ ...release, availability: 'unavailable' })),
+    };
+    const result = resolveReleases(PRODUCT, manifest.releases, {
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+    });
+    if (!result.ok) throw new Error('a known device gets the honest unavailable rows');
+    expect(result.detection).toBe('known');
+    expect(result.featured).toBeNull();
+    expect(result.rows.every((row) => row.state === 'unavailable')).toBe(true);
+  });
+
+  it('offers a waitlist row as waitlist, never as a download or a store link', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'linux'
+          ? { ...release, availability: 'waitlist', artifactUrl: null, storeUrl: null }
+          : release,
+      ),
+    };
+    const rows = rowsOf(manifest);
+    const linux = rowWhere(rows, (r) => r.platform === 'linux');
+    expect(linux.state).toBe('waitlist');
+    expect(linux.reason).toBeNull();
+  });
+
+  it('never offers an artifact URL that carries credentials', () => {
+    const rows = rowsOf(manifestWith({ artifactUrl: 'https://user:pass@releases.example.com/rhobear.dmg' }));
+    const extra = rowWhere(rows, (r) => r.version === EXTRA_VERSION);
+    expect(extra.state).toBe('unavailable');
+    expect(extra.reason).toBe('insecure-artifact');
+  });
+
+  it('never marks a macOS build downloadable unless its ticket passed', () => {
+    // Belt for a Release[] that bypassed parseManifest, which refuses this row.
+    const rows = rowsOf(manifestWith({ notarization: 'not-applicable' }));
+    const extra = rowWhere(rows, (r) => r.version === EXTRA_VERSION);
+    expect(extra.state).toBe('unavailable');
+    expect(extra.reason).toBe('notarization-incomplete');
+  });
+
+  it('orders a live build above the superseded one on the same platform', () => {
+    // The manifest lists 1.4.1 before 1.4.0 and supersedes 1.4.0 with it.
+    const manifest: ReleaseManifest = {
+      releases: [
+        row('macos', { artifactUrl: ARTIFACT.macos, notarization: 'passed', version: '1.4.1' }),
+        row('macos', {
+          artifactUrl: ARTIFACT.macos, notarization: 'passed',
+          version: '1.4.0', supersededBy: '1.4.1', acceptedAt: '2024-05-01T12:00:00Z',
+        }),
+      ],
+    };
+    const rows = rowsOf(manifest);
+    expect(rows.map((r) => r.version)).toEqual(['1.4.1', '1.4.0']);
+    expect(rows[1].reason).toBe('superseded');
+  });
+
+  it('carries acceptedAt so history can be ordered without the manifest', () => {
+    const rows = rowsOf(MANIFEST);
+    expect(rows.every((row) => row.acceptedAt === ACCEPTED_AT)).toBe(true);
+  });
+});

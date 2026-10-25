@@ -1,4 +1,5 @@
 import {
+  isHttpsUrl,
   platforms,
   type Platform,
   type Release,
@@ -40,6 +41,8 @@ export type ReleaseRow = {
   storeUrl: string | null;
   bytes: number;
   sha256: string;
+  /** RFC3339, carried so a screen can order history without re-reading the manifest. */
+  acceptedAt: string;
 };
 
 export type ResolveResult =
@@ -63,20 +66,20 @@ export function detectPlatform(hints: DeviceHints): Platform | null {
   if (ua.includes('Android')) return 'android';
   if (ua.includes('iPhone') || ua.includes('iPod')) return 'ios';
   if (ua.includes('iPad')) return 'ipados';
-  const touch =
-    hints.maxTouchPoints !== null &&
-    hints.maxTouchPoints !== undefined &&
-    hints.maxTouchPoints > 1;
+  const touchKnown = hints.maxTouchPoints !== null && hints.maxTouchPoints !== undefined;
+  const touch = touchKnown && (hints.maxTouchPoints as number) > 1;
   const macLike =
     ua.includes('Macintosh') || ua.includes('Mac OS X') || hints.platform === 'MacIntel';
-  if (macLike) return touch ? 'ipados' : 'macos';
+  if (macLike) {
+    // An iPad in desktop mode sends a Macintosh UA and no literal 'iPad'; the
+    // touch count is the only tell. Without it we do not guess: a Mac is
+    // ambiguous with an iPad, and guessing 'macos' would hand an iPad a .dmg.
+    if (!touchKnown) return null;
+    return touch ? 'ipados' : 'macos';
+  }
   if (ua.includes('CrOS')) return 'linux';
   if (ua.includes('Linux')) return 'linux';
   return null;
-}
-
-function isHttps(url: string | null): boolean {
-  return url !== null && url.startsWith('https://');
 }
 
 /** Every field a row must satisfy before a control may exist. */
@@ -91,8 +94,12 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
   if (release.storeUrl !== null && release.artifactUrl === null)
     return { state: 'store', reason: null };
   if (release.artifactUrl === null) return { state: 'unavailable', reason: 'no-artifact' };
-  if (!isHttps(release.artifactUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
-  if (release.platform === 'macos' && release.notarization === 'required')
+  // The schema's own check, not a second weaker one: it refuses a URL carrying
+  // user:pass@ as well as a non-https scheme.
+  if (!isHttpsUrl(release.artifactUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
+  // Belt for a Release[] that did not come through parseManifest (which already
+  // refuses a macOS row whose notarization is not 'passed').
+  if (release.platform === 'macos' && release.notarization !== 'passed')
     return { state: 'unavailable', reason: 'notarization-incomplete' };
   if (release.signer === null || release.signer === '')
     return { state: 'unavailable', reason: 'signer-missing' };
@@ -114,6 +121,7 @@ function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
     storeUrl: release.storeUrl,
     bytes: release.bytes,
     sha256: release.sha256,
+    acceptedAt: release.acceptedAt,
   };
 }
 
@@ -128,7 +136,17 @@ export function resolveReleases(product: string, releases: readonly Release[], h
     .map((release) => toRow(release, currentPlatform))
     .sort((a, b) => {
       if (a.isCurrentDevice !== b.isCurrentDevice) return a.isCurrentDevice ? -1 : 1;
-      return platforms.indexOf(a.platform) - platforms.indexOf(b.platform);
+      const byPlatform = platforms.indexOf(a.platform) - platforms.indexOf(b.platform);
+      if (byPlatform !== 0) return byPlatform;
+      // Within one platform the live build comes before the history, then the
+      // newest accepted first: a superseded build never renders above the one
+      // that replaced it.
+      const aSuperseded = a.supersededBy === null ? 0 : 1;
+      const bSuperseded = b.supersededBy === null ? 0 : 1;
+      if (aSuperseded !== bSuperseded) return aSuperseded - bSuperseded;
+      const byAccepted = Date.parse(b.acceptedAt) - Date.parse(a.acceptedAt);
+      if (Number.isFinite(byAccepted) && byAccepted !== 0) return byAccepted;
+      return b.version.localeCompare(a.version, undefined, { numeric: true });
     });
 
   // Featured is the device's live row: a superseded row can never be it, because
