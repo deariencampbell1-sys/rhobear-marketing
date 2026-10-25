@@ -29,7 +29,7 @@ export interface MotionSpec {
   easing: string;
 }
 
-function specs(reduced: boolean): Record<MotionName, MotionSpec> {
+export function motionSpecs(reduced: boolean): Record<MotionName, MotionSpec> {
   const d = (duration: string, easing: string): MotionSpec =>
     reduced ? { reduced: true, duration: '0s', easing: 'linear' } : { reduced: false, duration, easing };
   return {
@@ -57,5 +57,5 @@ export function useMotion(): Record<MotionName, MotionSpec> {
     mq.addEventListener('change', onChange);
     return () => mq.removeEventListener('change', onChange);
   }, []);
-  return specs(reduced);
+  return motionSpecs(reduced);
 }

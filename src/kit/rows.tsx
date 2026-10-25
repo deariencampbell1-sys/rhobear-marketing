@@ -11,11 +11,7 @@ const rowStyle: React.CSSProperties = {
   alignItems: 'baseline',
   padding: '0.5rem 0',
   margin: 0,
-};
-const dividerStyle: React.CSSProperties = {
   borderBottom: '1px solid currentColor',
-  margin: 0,
-  padding: 0,
 };
 
 export function InfoList({ children }: { children: React.ReactNode }) {
@@ -24,12 +20,9 @@ export function InfoList({ children }: { children: React.ReactNode }) {
 
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div>
-      <div style={rowStyle}>
-        <dt>{label}</dt>
-        <dd style={{ margin: 0 }}>&middot; {value}</dd>
-      </div>
-      <div aria-hidden="true" style={dividerStyle} />
+    <div style={rowStyle}>
+      <dt>{label}</dt>
+      <dd style={{ margin: 0 }}>&middot; {value}</dd>
     </div>
   );
 }

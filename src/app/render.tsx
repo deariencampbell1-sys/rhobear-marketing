@@ -4,7 +4,7 @@
 // and only on dynamic routes.
 import { renderToStaticMarkup } from 'react-dom/server';
 import { App } from './App';
-import { findRoute, notFoundRoute } from './routes';
+import { findRoute, notFoundRoute, ORIGIN } from './routes';
 
 export function renderRoute(path: string): string {
   const route = findRoute(path);
@@ -18,7 +18,7 @@ export function renderRoute(path: string): string {
           <meta charSet="utf-8" />
           <meta name="viewport" content="width=device-width, initial-scale=1" />
           <title>{docTitle}</title>
-          {route ? <link rel="canonical" href={`https://rhobear.ai${route.path}`} /> : null}
+          {route ? <link rel="canonical" href={`${ORIGIN}${route.path}`} /> : null}
         </head>
         <body>
           <div id="root">

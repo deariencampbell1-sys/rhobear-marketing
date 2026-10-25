@@ -3,6 +3,9 @@
 
 export type RouteKind = 'static' | 'dynamic';
 
+/** Canonical public origin used by canonical links, sitemap.xml and robots.txt. */
+export const ORIGIN = 'https://rhobear.ai';
+
 export interface Route {
   /** Canonical path, always starting with '/'. */
   path: string;
@@ -11,7 +14,7 @@ export interface Route {
   /** 'dynamic' screens hydrate to read live account/money state. */
   kind: RouteKind;
   /** Grouping for navigation and the 404 page's link list. */
-  group: 'product' | 'commerce' | 'about' | 'account' | 'home';
+  group: 'product' | 'platform' | 'commerce' | 'about' | 'account' | 'home';
 }
 
 export const routes: readonly Route[] = [
@@ -21,7 +24,7 @@ export const routes: readonly Route[] = [
   { path: '/herald', title: 'Herald', kind: 'static', group: 'product' },
   { path: '/regent', title: 'Regent', kind: 'static', group: 'product' },
   { path: '/reviews', title: 'Reviews', kind: 'static', group: 'product' },
-  { path: '/engines', title: 'Engines', kind: 'static', group: 'product' },
+  { path: '/engines', title: 'Engines', kind: 'static', group: 'platform' },
   { path: '/plans', title: 'Plans and prices', kind: 'static', group: 'commerce' },
   { path: '/get', title: 'Download', kind: 'static', group: 'commerce' },
   { path: '/account', title: 'Account', kind: 'dynamic', group: 'account' },
@@ -38,7 +41,8 @@ export const notFoundRoute: Route = {
   group: 'about',
 };
 
-export const productPaths = ['/builds', '/forge', '/herald', '/regent', '/reviews'] as const;
+/** The five product links shown on the 404 page. */
+export const productPaths = routes.filter((r) => r.group === 'product').map((r) => r.path);
 
 export function findRoute(path: string): Route | undefined {
   return routes.find((r) => r.path === path);

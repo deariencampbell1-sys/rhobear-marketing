@@ -1,5 +1,5 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { routes, notFoundRoute, productPaths } from '../src/app/routes';
+import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
 
 // The dependency list for this wave is frozen and includes no @types/node, so
@@ -58,7 +58,9 @@ describe('route table', () => {
   it('marks only /account dynamic and keeps kinds and groups valid', () => {
     for (const route of routes) {
       expect(['static', 'dynamic']).toContain(route.kind);
-      expect(['product', 'commerce', 'about', 'account', 'home']).toContain(route.group);
+      expect(['product', 'platform', 'commerce', 'about', 'account', 'home']).toContain(
+        route.group,
+      );
     }
     expect(routes.find((r) => r.path === '/account')?.kind).toBe('dynamic');
     expect(routes.filter((r) => r.kind === 'dynamic').map((r) => r.path)).toEqual(['/account']);
@@ -67,7 +69,10 @@ describe('route table', () => {
 
 describe('prerender output', () => {
   beforeAll(() => {
-    cp.execSync('node scripts/prerender.mjs', { encoding: 'utf8', timeout: 240_000 });
+    cp.execSync(fs.existsSync('dist/assets') ? 'node scripts/prerender.mjs' : 'npm run build', {
+      encoding: 'utf8',
+      timeout: 240_000,
+    });
   }, 240_000);
 
   it('writes an index.html for every route, 404.html, sitemap.xml and robots.txt', () => {
@@ -94,17 +99,25 @@ describe('prerender output', () => {
     }
   });
 
+  it('injects the client bundle into /account and leaves static pages script-free', () => {
+    const account = fs.readFileSync('dist/account/index.html', 'utf8');
+    expect(account).toMatch(/<script type="module" src="\/assets\/[^"]+\.js"><\/script>/);
+    for (const file of ['dist/index.html', 'dist/plans/index.html', 'dist/404.html']) {
+      expect(fs.readFileSync(file, 'utf8'), file).not.toContain('<script');
+    }
+  });
+
   it('lists exactly the canonical routes in sitemap.xml', () => {
     const sitemap = fs.readFileSync('dist/sitemap.xml', 'utf8');
     const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-    expect(locs).toEqual(CANONICAL_PATHS.map((p) => `https://rhobear.ai${p}`));
+    expect(locs).toEqual(CANONICAL_PATHS.map((p) => `${ORIGIN}${p}`));
   });
 
   it('allows all in robots.txt and points at the sitemap', () => {
     const robots = fs.readFileSync('dist/robots.txt', 'utf8');
     expect(robots).toContain('User-agent: *');
     expect(robots).toContain('Allow: /');
-    expect(robots).toContain('Sitemap: https://rhobear.ai/sitemap.xml');
+    expect(robots).toContain(`Sitemap: ${ORIGIN}/sitemap.xml`);
   });
 });
 

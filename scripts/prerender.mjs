@@ -39,31 +39,37 @@ await build({
 const renderMod = await import(pathToFileURL(path.join(cacheDir, 'render.js')).href);
 const routesMod = await import(pathToFileURL(path.join(cacheDir, 'routes.js')).href);
 const { renderRoute, renderNotFound } = renderMod;
-const { routes } = routesMod;
+const { routes, ORIGIN } = routesMod;
 
 await mkdir(distDir, { recursive: true });
 
-// Client bundle tags exist after `vite build`; injected into dynamic routes
-// only — static routes ship no JavaScript.
+// Client assets exist after `vite build`. Stylesheets are injected into every
+// page (including 404); only dynamic routes get the hydration script.
 async function assetTags() {
   const assetsDir = path.join(distDir, 'assets');
-  if (!existsSync(assetsDir)) return '';
+  if (!existsSync(assetsDir)) return { styles: '', scripts: '' };
   const files = await readdir(assetsDir);
-  const css = files
+  const styles = files
     .filter((f) => f.endsWith('.css'))
-    .map((f) => `<link rel="stylesheet" href="/assets/${f}">`);
-  const js = files
+    .map((f) => `<link rel="stylesheet" href="/assets/${f}">`)
+    .join('');
+  const scripts = files
     .filter((f) => f.endsWith('.js'))
-    .map((f) => `<script type="module" src="/assets/${f}"></script>`);
-  return [...css, ...js].join('');
+    .map((f) => `<script type="module" src="/assets/${f}"></script>`)
+    .join('');
+  return { styles, scripts };
 }
 
-const tags = await assetTags();
+function injectAssets(html, tags) {
+  return tags ? html.replace('</body>', `${tags}</body>`) : html;
+}
+
+const { styles, scripts } = await assetTags();
 const written = [];
 
 for (const route of routes) {
-  let html = renderRoute(route.path);
-  if (route.kind === 'dynamic' && tags) html = html.replace('</body>', `${tags}</body>`);
+  const tags = styles + (route.kind === 'dynamic' ? scripts : '');
+  const html = injectAssets(renderRoute(route.path), tags);
   const file =
     route.path === '/'
       ? path.join(distDir, 'index.html')
@@ -74,19 +80,19 @@ for (const route of routes) {
 }
 
 const notFoundFile = path.join(distDir, '404.html');
-const notFoundHtml = renderNotFound();
+const notFoundHtml = injectAssets(renderNotFound(), styles);
 await writeFile(notFoundFile, notFoundHtml);
 written.push({ file: notFoundFile, html: notFoundHtml });
 
 const sitemap =
   '<?xml version="1.0" encoding="UTF-8"?>\n' +
   '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +
-  routes.map((r) => `  <url><loc>https://rhobear.ai${r.path}</loc></url>`).join('\n') +
+  routes.map((r) => `  <url><loc>${ORIGIN}${r.path}</loc></url>`).join('\n') +
   '\n</urlset>\n';
 await writeFile(path.join(distDir, 'sitemap.xml'), sitemap);
 await writeFile(
   path.join(distDir, 'robots.txt'),
-  'User-agent: *\nAllow: /\n\nSitemap: https://rhobear.ai/sitemap.xml\n',
+  `User-agent: *\nAllow: /\n\nSitemap: ${ORIGIN}/sitemap.xml\n`,
 );
 
 // Validate: fail the build loudly rather than ship a broken page.

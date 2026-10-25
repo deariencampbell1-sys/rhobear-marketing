@@ -9,5 +9,5 @@ export type { ButtonProps, ButtonVariant } from './buttons';
 export { InfoList, InfoRow, RadioList, SwitchRow, Chip } from './rows';
 export type { RadioOption } from './rows';
 export { Sheet, Progress, LiveRegion } from './overlays';
-export { useMotion, MOTION_NAMES } from './motion';
+export { useMotion, motionSpecs, MOTION_NAMES } from './motion';
 export type { MotionName, MotionSpec } from './motion';

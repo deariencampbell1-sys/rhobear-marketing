@@ -3,7 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
-import { Button, InfoList, InfoRow, Progress, Sheet, useMotion, MOTION_NAMES } from '../src/kit';
+import {
+  Button,
+  InfoList,
+  InfoRow,
+  Progress,
+  Sheet,
+  useMotion,
+  motionSpecs,
+  MOTION_NAMES,
+} from '../src/kit';
 import { handleSheetKeyDown, openSheetEffect } from '../src/kit/overlays';
 
 const pages = [...routes.map((r) => r.path), notFoundRoute.path];
@@ -43,7 +52,17 @@ describe('kit: Button', () => {
     const disabled = renderToStaticMarkup(
       React.createElement(Button, { disabled: true, children: 'Get' }),
     );
-    expect(disabled).toContain('disabled');
+    expect(disabled).toContain('disabled=""');
+
+    const disabledLink = renderToStaticMarkup(
+      React.createElement(Button, {
+        as: 'a',
+        href: '/plans',
+        disabled: true,
+        children: 'Plans',
+      }),
+    );
+    expect(disabledLink).toContain('aria-disabled="true"');
   });
 });
 
@@ -60,8 +79,8 @@ describe('kit: rows', () => {
     const styles = [...html.matchAll(/style="([^"]*)"/g)].map((m) => m[1]);
     const rowStyle = styles.find((s) => s.includes('display:flex'));
     expect(rowStyle).toBeDefined();
-    expect(rowStyle).not.toMatch(/border|background|radius/);
-    expect(styles.some((s) => s.includes('border-bottom'))).toBe(true);
+    expect(rowStyle).not.toMatch(/background|border-radius/);
+    expect(rowStyle).toContain('border-bottom:1px solid currentColor');
   });
 });
 
@@ -128,6 +147,20 @@ describe('kit: Sheet', () => {
     handleSheetKeyDown(tab, dialog, last, onClose);
     expect(first.focus).toHaveBeenCalledTimes(1);
     expect(tab.preventDefault).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('kit: motion specs', () => {
+  it('removes motion for every kit name when reduced motion is requested', () => {
+    const reduced = motionSpecs(true);
+    for (const name of MOTION_NAMES) {
+      expect(reduced[name], name).toEqual({ reduced: true, duration: '0s', easing: 'linear' });
+    }
+    const full = motionSpecs(false);
+    for (const name of MOTION_NAMES) {
+      expect(full[name].reduced, name).toBe(false);
+      expect(full[name].duration, name).not.toBe('0s');
+    }
   });
 });
 
