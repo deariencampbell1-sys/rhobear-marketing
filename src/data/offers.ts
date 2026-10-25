@@ -74,8 +74,8 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
 ];
 
-// Herald is separate from Builds; its offers are recorded in the same contract
-// section that covers quote and entitlement.
+// Herald is separate from Builds; CONTRACT §3 (priceSource) is also where its
+// Pro and texting offers, including the texting setup charge, are recorded.
 export type HeraldOffer = {
   id: string;
   monthly: Money;
@@ -98,16 +98,20 @@ export const billingTerms = {
   source: priceSource,
 } as const;
 
-// Locked copy: this text cannot drift. The engine names follow the newest
-// registry in engines.ts / INTENT §3; the older locked-facts line in
-// lanes/README.md still carried the pre-public Imagine alias.
+// Locked copy: the body sentence cannot drift. Terms are owner-locked to
+// lanes/README.md; the seven engine names follow INTENT §3 and the seven-engine
+// registry (the newest iteration). README's pre-public "Imagine" alias still
+// needs an upstream owner correction in rhobear-north-star (not edited here).
 export const launchOffer = {
   headline: 'The first 100 accounts get 90 days of no metered engine usage.',
   body:
     'Engine and MCP calls — Spaces, Forge renders, Designs, Captur\'d, Vision, Search and Teams — are not metered for the first 100 accounts for 90 days from the day each account starts. It is not a free plan: your subscription and your model tokens bill as usual, and the usual abuse and rate limits still apply.',
   state: 'announced', // not 'active': the counter is L2's entitlement flag, not built yet
   source: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — Launch offer' },
-  nameSource: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products — Engines' },
+  engineNameSource: {
+    doc: 'lanes/L9-front-door/INTENT.md',
+    section: '3. What each product really is — and what the front door may say',
+  },
 } as const;
 
 export const salePolicy = {

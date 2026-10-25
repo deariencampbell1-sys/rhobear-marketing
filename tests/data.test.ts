@@ -52,6 +52,11 @@ describe('five apps, one destination', () => {
     expect(brand.enginesDestination).toBe('/engines');
     expect(enginesDestination.publicName).toBe('Engines');
   });
+
+  it('freezes the brand object and its appOrder array at runtime', () => {
+    expect(Object.isFrozen(brand)).toBe(true);
+    expect(Object.isFrozen(brand.appOrder)).toBe(true);
+  });
 });
 
 describe('one-liners are verbatim', () => {
@@ -234,6 +239,17 @@ describe('public data is frozen at runtime', () => {
     for (const internals of Object.values(productInternals)) {
       expect(Object.isFrozen(internals)).toBe(true);
     }
+  });
+});
+
+describe('Herald availability', () => {
+  it('routes to a quote while checkout is closed', () => {
+    expect(checkoutState.state).toBe('closed');
+    expect(productsById.herald.availability).toEqual({
+      state: 'waitlist',
+      label: 'Talk to us',
+      reason: 'Herald is quoted and set up with you; checkout is not open on this site.',
+    });
   });
 });
 

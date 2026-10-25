@@ -26,7 +26,10 @@ import { engines, engineScenarios } from './engines';
 import { approvedPriceList, billingTerms, launchOffer } from './offers';
 import { legalStatus, legalPages, checkoutState, retention } from './legal';
 
-/** The composed subset of the data modules returned by loadContent(). */
+/**
+ * The composed subset of the data modules returned by loadContent(). Other
+ * data exports stay available from this entry point as named re-exports.
+ */
 export type Content = {
   brand: typeof brand;
   products: typeof products;

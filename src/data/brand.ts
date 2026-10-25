@@ -14,6 +14,10 @@ export const brand = {
   enginesDestination: '/engines',
 } as const;
 
+// `as const` is type-only; freeze the object and its nested order array at runtime.
+Object.freeze(brand.appOrder);
+Object.freeze(brand);
+
 // local until W0-02c composes the model
 export const brandSources = {
   tagline: { doc: 'lanes/README.md', section: 'Locked facts every lane needs — The tagline' },

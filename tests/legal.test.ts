@@ -6,14 +6,19 @@ import {
   retention,
 } from '../src/data/legal';
 
-const CONTRACT_ROUTES = {
+const CONTRACT_IA = {
   doc: 'lanes/L9-front-door/CONTRACT.md',
-  section: '2. Routes',
+  section: '2. Public information architecture and routes',
 };
 
 const CONTRACT_CATALOG = {
   doc: 'lanes/L9-front-door/CONTRACT.md',
   section: '3. Generated catalog, quote and entitlement',
+};
+
+const OWNER_LEGAL = {
+  doc: 'lanes/L9-front-door/OWNER-DECISIONS.md',
+  section: 'Q12 Legal',
 };
 
 const OWNER_RETENTION = {
@@ -27,7 +32,7 @@ describe('legal status', () => {
       state: 'replacement-under-legal-review',
       reason:
         'This site replaces the previous one and its legal pages are under legal review before launch. Nothing here is a signed agreement yet.',
-      source: CONTRACT_ROUTES,
+      source: OWNER_LEGAL,
     });
   });
 });
@@ -86,12 +91,18 @@ describe('legal pages', () => {
     ]);
   });
 
-  it('cites the exact source per page: privacy Q10, terms CONTRACT §3, support CONTRACT §2', () => {
+  it('cites the exact source per page: privacy Q10, terms CONTRACT §3, support CONTRACT §2 IA', () => {
     expect(legalPages.map((page) => page.source)).toEqual([
       OWNER_RETENTION,
       CONTRACT_CATALOG,
-      CONTRACT_ROUTES,
+      CONTRACT_IA,
     ]);
+  });
+
+  it('never cites the non-heading "2. Routes" string', () => {
+    for (const source of [legalStatus.source, ...legalPages.map((page) => page.source)]) {
+      expect(source.section, source.doc).not.toContain('2. Routes');
+    }
   });
 
   it('keeps every page object exact, with no extra fields', () => {
@@ -118,7 +129,7 @@ describe('legal pages', () => {
         state: 'owner-review-pending',
         summary:
           'How to reach a person and how fast to expect an answer; the contact route is published when the page is signed off.',
-        source: CONTRACT_ROUTES,
+        source: CONTRACT_IA,
       },
     ]);
   });

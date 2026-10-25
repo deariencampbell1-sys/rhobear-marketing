@@ -8,7 +8,7 @@ import {
 
 const SOURCE = {
   doc: 'lanes/L9-front-door/INTENT.md',
-  section: '3. Products — Engines',
+  section: '3. What each product really is — and what the front door may say',
 };
 
 const ENGINE_IDS = ['teams', 'designs', 'forge', 'capturd', 'vision', 'search', 'spaces'];

@@ -15,7 +15,7 @@ export const legalStatus = {
   state: 'replacement-under-legal-review',
   reason:
     'This site replaces the previous one and its legal pages are under legal review before launch. Nothing here is a signed agreement yet.',
-  source: { doc: 'lanes/L9-front-door/CONTRACT.md', section: '2. Routes' },
+  source: { doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q12 Legal' },
 } as const;
 
 export const checkoutState = {
@@ -25,12 +25,13 @@ export const checkoutState = {
   source: { doc: 'lanes/L9-front-door/CONTRACT.md', section: '3. Generated catalog, quote and entitlement' },
 } as const;
 
+// Q10 Retention explicitly contains the deletion timing clause ("stops billing,
+// offers export, erases primary data and removes backups within 30 days"). Q13
+// approves the deletion runbook, not this wording, so the source stays on Q10.
 export const retention = {
   afterPaidPeriod:
     'A 7-day read-only grace period: you can read and export your work, but you cannot start new jobs.',
   then: 'Your hosted data is deleted. Backups are removed within 30 days.',
-  // Q10 covers retention and account deletion; Q13 is the separate old-estate
-  // deletion approval, not the account-deletion promise.
   deletion:
     'Deleting your account stops billing first, then deletes your data; backups are gone within 30 days.',
   source: { doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q10 Retention' },
@@ -62,6 +63,9 @@ export const legalPages: readonly LegalPage[] = [
     state: 'owner-review-pending',
     summary:
       'How to reach a person and how fast to expect an answer; the contact route is published when the page is signed off.',
-    source: { doc: 'lanes/L9-front-door/CONTRACT.md', section: '2. Routes' },
+    source: {
+      doc: 'lanes/L9-front-door/CONTRACT.md',
+      section: '2. Public information architecture and routes',
+    },
   },
 ];

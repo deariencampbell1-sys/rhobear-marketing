@@ -149,13 +149,14 @@ describe('launch offer', () => {
       doc: 'lanes/README.md',
       section: 'Locked facts every lane needs — Launch offer',
     });
-    expect(launchOffer.nameSource).toEqual({
+    expect(launchOffer.engineNameSource).toEqual({
       doc: 'lanes/L9-front-door/INTENT.md',
-      section: '3. Products — Engines',
+      section: '3. What each product really is — and what the front door may say',
     });
   });
 
   it('names every public engine from the engines registry', () => {
+    expect(engines.length).toBe(7);
     for (const engine of engines) {
       expect(launchOffer.body, engine.publicName).toContain(engine.publicName);
     }

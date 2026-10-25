@@ -14,7 +14,7 @@ export interface ProductEntry {
   publicName: string;
   oneLiner: string;
   promise: string;
-  whatItIs: string[];
+  whatItIs: readonly string[];
   availability: {
     state: 'not-available' | 'testflight' | 'waitlist';
     label: string;

@@ -21,12 +21,12 @@ export const enginesDestination = {
   whatItIs:
     'Engines are mini apps inside Builds plus @ MCPs for other harnesses. Every one will be shown here by a real-speed recording of the product doing the work — never a mock, never a stock clip.',
   evidenceState: 'awaiting-approved-demos',
-  source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products — Engines' },
+  source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. What each product really is — and what the front door may say' },
 } as const;
 
 const enginesSource = {
   doc: 'lanes/L9-front-door/INTENT.md',
-  section: '3. Products — Engines',
+  section: '3. What each product really is — and what the front door may say',
 } as const;
 
 export const engines = Object.freeze([
@@ -108,7 +108,7 @@ export const enginesById: Readonly<Record<EngineId, EngineRow>> =
 
 export const engineScenarios: readonly {
   scenarioId: string;
-  engineId: string;
+  engineId: EngineId;
   publicationState: 'footage-pending';
   source: { doc: string; section: string };
 }[] = engines.flatMap((engine) =>
