@@ -49,7 +49,8 @@ export type ParsedManifest =
   | { ok: true; releases: readonly Release[] }
   | { ok: false; problems: readonly ManifestProblem[] };
 
-const RFC3339_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+// RFC3339 as published: a 'Z' or a numeric offset (a pipeline may emit either).
+const RFC3339_SHAPE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
 
 /** Strict shape first, then a real instant — never a junk string Date coerces. */
 export function isRfc3339(value: string): boolean {
@@ -194,9 +195,10 @@ export function parseManifest(raw: unknown): ParsedManifest {
   if (Array.isArray(raw)) {
     rows = raw;
   } else if (isRecord(raw)) {
-    if (raw.schema !== undefined && raw.schema !== RELEASE_MANIFEST_SCHEMA) {
-      problems.push('wrong-schema');
-    }
+    // The object form must name its schema: a v2 payload must not parse as v1
+    // just because it omitted the field. The bare-array form is the documented
+    // exception (it carries no envelope to identify).
+    if (raw.schema !== RELEASE_MANIFEST_SCHEMA) problems.push('wrong-schema');
     if (!Array.isArray(raw.releases)) return { ok: false, problems: [...problems, 'not-an-object'] };
     rows = raw.releases;
   } else {

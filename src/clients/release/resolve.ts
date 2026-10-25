@@ -91,8 +91,12 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
     return { state: 'unavailable', reason: 'marked-unavailable' };
   // A superseded build is history: it is shown, named, and not downloadable.
   if (release.supersededBy !== null) return { state: 'unavailable', reason: 'superseded' };
-  if (release.storeUrl !== null && release.artifactUrl === null)
+  if (release.storeUrl !== null && release.artifactUrl === null) {
+    // The store link is a live link too: it gets the same https-and-no-credentials
+    // check as an artifact, so a bypassing Release[] cannot surface it.
+    if (!isHttpsUrl(release.storeUrl)) return { state: 'unavailable', reason: 'insecure-artifact' };
     return { state: 'store', reason: null };
+  }
   if (release.artifactUrl === null) return { state: 'unavailable', reason: 'no-artifact' };
   // The schema's own check, not a second weaker one: it refuses a URL carrying
   // user:pass@ as well as a non-https scheme.
@@ -101,13 +105,21 @@ function classify(release: Release): { state: ReleaseRow['state']; reason: Unava
   // refuses a macOS row whose notarization is not 'passed').
   if (release.platform === 'macos' && release.notarization !== 'passed')
     return { state: 'unavailable', reason: 'notarization-incomplete' };
-  if (release.signer === null || release.signer === '')
+  if (release.signer === null || release.signer.trim() === '')
     return { state: 'unavailable', reason: 'signer-missing' };
   return { state: 'downloadable', reason: null };
 }
 
+/**
+ * A row carries a URL only when its state may use one: `artifactUrl` on
+ * 'downloadable', `storeUrl` on 'store'. Every other state gets nulls, so a
+ * screen that reads the URL instead of gating on `state` still cannot render a
+ * link to an unsigned, insecure, pulled or superseded build.
+ */
 function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
   const { state, reason } = classify(release);
+  const downloadable = state === 'downloadable';
+  const store = state === 'store';
   return {
     platform: release.platform,
     version: release.version,
@@ -117,8 +129,8 @@ function toRow(release: Release, currentPlatform: Platform | null): ReleaseRow {
     reason,
     supersededBy: release.supersededBy,
     isCurrentDevice: release.platform === currentPlatform,
-    artifactUrl: release.artifactUrl,
-    storeUrl: release.storeUrl,
+    artifactUrl: downloadable ? release.artifactUrl : null,
+    storeUrl: store ? release.storeUrl : null,
     bytes: release.bytes,
     sha256: release.sha256,
     acceptedAt: release.acceptedAt,

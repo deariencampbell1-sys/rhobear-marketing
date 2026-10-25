@@ -188,6 +188,14 @@ describe('resolveReleases — availability and detection', () => {
     expect(detectPlatform({ userAgent: ua, maxTouchPoints: null })).toBe(null);
   });
 
+  it('a Linux desktop and a Chromebook both resolve to linux', () => {
+    // A shipping platform: the two branches that reach 'linux' get their own test.
+    expect(detectPlatform({ userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36' })).toBe('linux');
+    expect(detectPlatform({ userAgent: 'Mozilla/5.0 (X11; CrOS x86_64 14541.0.0) AppleWebKit/537.36' })).toBe('linux');
+    // Android is checked first, so an Android UA never falls through to linux.
+    expect(detectPlatform({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7)' })).toBe('android');
+  });
+
   it('a phone user agent resolves to the phone platform', () => {
     expect(detectPlatform({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)' })).toBe('ios');
     expect(detectPlatform({ userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 7)' })).toBe('android');
@@ -346,5 +354,63 @@ describe('resolveReleases — fail-closed branches', () => {
   it('carries acceptedAt so history can be ordered without the manifest', () => {
     const rows = rowsOf(MANIFEST);
     expect(rows.every((row) => row.acceptedAt === ACCEPTED_AT)).toBe(true);
+  });
+});
+
+// Apollo's round-3 review: a URL may only exist on the state that can use it,
+// and the belt checks apply to the store link and to a whitespace signer too.
+describe('resolveReleases — no live link on a refused row', () => {
+  it('a superseded row carries no artifact URL', () => {
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'macos' && release.version === '1.4.0'
+          ? { ...release, supersededBy: EXTRA_VERSION }
+          : release,
+      ),
+    };
+    const rows = rowsOf(manifest);
+    const superseded = rowWhere(rows, (r) => r.platform === 'macos' && r.version === '1.4.0');
+    expect(superseded.state).toBe('unavailable');
+    expect(superseded.artifactUrl).toBeNull();
+    expect(superseded.storeUrl).toBeNull();
+    // The live row keeps its URL.
+    const live = rowWhere(rows, (r) => r.platform === 'macos' && r.version === EXTRA_VERSION);
+    expect(live.artifactUrl).toBe(ARTIFACT.macos);
+  });
+
+  it('an unsigned, insecure or pulled row carries no URL a screen could render', () => {
+    const unsigned = rowWhere(rowsOf(manifestWith({ signer: '   ' })), (r) => r.version === EXTRA_VERSION);
+    expect(unsigned.reason).toBe('signer-missing');
+    expect(unsigned.artifactUrl).toBeNull();
+
+    const insecure = rowWhere(
+      rowsOf(manifestWith({ artifactUrl: 'http://releases.example.com/rhobear.dmg' })),
+      (r) => r.version === EXTRA_VERSION,
+    );
+    expect(insecure.reason).toBe('insecure-artifact');
+    expect(insecure.artifactUrl).toBeNull();
+
+    const pulled = rowWhere(rowsOf(MANIFEST), (r) => r.platform === 'cli');
+    expect(pulled.reason).toBe('marked-unavailable');
+    expect(pulled.artifactUrl).toBeNull();
+  });
+
+  it('a store row keeps only its store URL, and an insecure store URL is refused', () => {
+    const ios = rowWhere(rowsOf(MANIFEST), (r) => r.platform === 'ios');
+    expect(ios.state).toBe('store');
+    expect(ios.storeUrl).toBe(STORE.ios);
+    expect(ios.artifactUrl).toBeNull();
+
+    const manifest: ReleaseManifest = {
+      releases: MANIFEST.releases.map((release) =>
+        release.platform === 'ios'
+          ? { ...release, storeUrl: 'http://apps.apple.com/app/rhobear/id1234567890' }
+          : release,
+      ),
+    };
+    const insecure = rowWhere(rowsOf(manifest), (r) => r.platform === 'ios');
+    expect(insecure.state).toBe('unavailable');
+    expect(insecure.reason).toBe('insecure-artifact');
+    expect(insecure.storeUrl).toBeNull();
   });
 });

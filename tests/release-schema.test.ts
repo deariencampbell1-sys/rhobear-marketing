@@ -184,6 +184,14 @@ describe('parseRelease rejection codes', () => {
     expect(code(wellFormedRow('linux', { acceptedAt: 0 }))).toBe('bad-accepted-at');
   });
 
+  it('accepts both RFC3339 forms: a Z and a numeric offset', () => {
+    expect(code(wellFormedRow('linux', { acceptedAt: '2026-10-25T12:00:00Z' }))).toBe('parsed');
+    expect(code(wellFormedRow('linux', { acceptedAt: '2026-10-25T12:00:00+02:00' }))).toBe('parsed');
+    expect(code(wellFormedRow('linux', { acceptedAt: '2026-10-25T12:00:00.500-05:00' }))).toBe('parsed');
+    expect(isRfc3339('2026-10-25T12:00:00+02:00')).toBe(true);
+    expect(isRfc3339('2026-10-25 12:00:00Z')).toBe(false); // no space separator
+  });
+
   it('no-target: available with neither an artifact nor a store link', () => {
     expect(code(wellFormedRow('linux', { artifactUrl: null, storeUrl: null }))).toBe('no-target');
   });
@@ -307,6 +315,19 @@ describe('parseManifest input shapes', () => {
       problems: ['not-an-object'],
     });
     expect(parseManifest({ schema: RELEASE_MANIFEST_SCHEMA })).toEqual({
+      ok: false,
+      problems: ['not-an-object'],
+    });
+  });
+
+  it('refuses an object manifest that names no schema', () => {
+    // A v2 payload that omits the id must not parse as v1: the object form has
+    // an envelope, so the envelope is required.
+    expect(parseManifest({ releases: [wellFormedRow('linux')] })).toEqual({
+      ok: false,
+      problems: ['wrong-schema'],
+    });
+    expect(parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: 'x' })).toEqual({
       ok: false,
       problems: ['not-an-object'],
     });
