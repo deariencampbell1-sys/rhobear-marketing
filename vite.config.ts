@@ -1,6 +1,7 @@
-import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+
+const mainEntry = new URL('src/main.tsx', import.meta.url).pathname;
 
 // Client build for rhobear.ai. Prerendering happens after `vite build`
 // in scripts/prerender.mjs, which writes one index.html per canonical route.
@@ -13,7 +14,7 @@ export default defineConfig({
     // No index.html entry: HTML is generated per route by scripts/prerender.mjs.
     // main.tsx is the hydration bundle, injected into dynamic routes only.
     rollupOptions: {
-      input: { main: resolve(import.meta.dirname, 'src/main.tsx') },
+      input: { main: mainEntry },
     },
   },
 });

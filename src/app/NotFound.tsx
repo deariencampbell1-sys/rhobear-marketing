@@ -1,6 +1,5 @@
 // W0-01: 404 page. Plain apology, links to all five products, /plans,
 // /support and a canonical home link. No client-side redirect, no old routes.
-import * as React from 'react';
 import { RouteSkeleton } from './RouteSkeleton';
 import { productPaths, routes } from './routes';
 
