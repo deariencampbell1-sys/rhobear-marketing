@@ -8,7 +8,7 @@
 export type { SiteContent } from './types';
 
 export { brand, brandSources } from './brand';
-export { products, productsById, productOrder } from './products';
+export { productById, products, productsById, productOrder } from './products';
 export { engines, enginesById, engineScenarios, enginesDestination } from './engines';
 export {
   approvedPriceList,

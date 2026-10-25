@@ -15,6 +15,7 @@ import {
   launchOffer,
   loadContent,
   planCopy,
+  productById,
   productOrder,
   products,
   productsById,
@@ -23,6 +24,16 @@ import {
 } from '../src/data';
 import * as data from '../src/data';
 
+const sourceFiles = import.meta.glob('../src/**/*.{ts,tsx}', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+
+const nonDataSources = Object.entries(sourceFiles).filter(
+  ([path]) => !path.startsWith('../src/data/'),
+);
+
 describe('data entry', () => {
   it('re-exports the source module references', () => {
     expect(data.brand).toBe(brand);
@@ -30,6 +41,7 @@ describe('data entry', () => {
     expect(data.products).toBe(products);
     expect(data.productsById).toBe(productsById);
     expect(data.productOrder).toBe(productOrder);
+    expect(data.productById).toBe(productById);
     expect(data.engines).toBe(engines);
     expect(data.enginesById).toBe(enginesById);
     expect(data.engineScenarios).toBe(engineScenarios);
@@ -44,6 +56,39 @@ describe('data entry', () => {
     expect(data.legalPages).toBe(legalPages);
     expect(data.checkoutState).toBe(checkoutState);
     expect(data.retention).toBe(retention);
+  });
+
+  it('has exactly the public barrel surface and no internal caveats', () => {
+    expect(Object.keys(data).sort()).toEqual(
+      [
+        'approvedPriceList',
+        'billingTerms',
+        'brand',
+        'brandSources',
+        'checkoutState',
+        'engineScenarios',
+        'engines',
+        'enginesById',
+        'enginesDestination',
+        'heraldOffers',
+        'launchOffer',
+        'legalPages',
+        'legalStatus',
+        'loadContent',
+        'planCopy',
+        'productById',
+        'productOrder',
+        'products',
+        'productsById',
+        'retention',
+        'salePolicy',
+      ].sort(),
+    );
+    expect((data as Record<string, unknown>).productInternals).toBeUndefined();
+  });
+
+  it('looks a product up by id through the happy path', () => {
+    expect(productById('builds')).toBe(productsById.builds);
   });
 
   it('loadContent returns the same object references without cloning', () => {
@@ -75,5 +120,20 @@ describe('data entry', () => {
       'products',
       'retention',
     ]);
+  });
+});
+
+describe('entry-point boundary', () => {
+  it('keeps loadContent out of every non-data source until Wave 1 wires it', () => {
+    for (const [path, source] of nonDataSources) {
+      expect(source, path).not.toMatch(/\bloadContent\b/);
+    }
+  });
+
+  it('keeps the internal caveats out of every other source import', () => {
+    for (const [path, source] of Object.entries(sourceFiles)) {
+      if (path === '../src/data/products.internal.ts') continue;
+      expect(source, path).not.toMatch(/from\s+['"][^'"]*products\.internal['"]/);
+    }
   });
 });
