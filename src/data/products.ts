@@ -141,7 +141,7 @@ export const products: readonly ProductEntry[] = Object.freeze<ProductEntry[]>([
 ]);
 
 // The ids in display order: a frozen copy of brand.appOrder, not a live alias.
-export const productOrder = Object.freeze([...brand.appOrder]) as readonly string[];
+export const productOrder: readonly ProductId[] = Object.freeze([...brand.appOrder]);
 
 export function productById(id: ProductId): ProductEntry {
   const found = products.find((product) => product.id === id);
@@ -152,11 +152,13 @@ export function productById(id: ProductId): ProductEntry {
 }
 
 // Built from the products array — no hand-written key list to drift.
+// Null prototype: an unknown id must never resolve through Object.prototype.
+const productsByIdUnfrozen = Object.create(null) as Record<ProductId, ProductEntry>;
+for (const product of products) {
+  productsByIdUnfrozen[product.id] = product;
+}
 export const productsById: Readonly<Record<ProductId, ProductEntry>> = Object.freeze(
-  Object.fromEntries(products.map((product) => [product.id, product] as const)) as Record<
-    ProductId,
-    ProductEntry
-  >,
+  productsByIdUnfrozen,
 );
 
 // Module-scope guard: the display order in brand.appOrder must be fully covered

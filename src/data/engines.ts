@@ -19,7 +19,7 @@ export const enginesDestination = {
   publicName: 'Engines',
   oneLiner: 'See the engine do real work.',
   whatItIs:
-    'Engines are mini apps inside Builds plus @ MCPs for other harnesses. Every one is shown here by a real-speed recording of the product doing the work — never a mock, never a stock clip.',
+    'Engines are mini apps inside Builds plus @ MCPs for other harnesses. Every one will be shown here by a real-speed recording of the product doing the work — never a mock, never a stock clip.',
   evidenceState: 'awaiting-approved-demos',
   source: { doc: 'lanes/L9-front-door/INTENT.md', section: '3. Products — Engines' },
 } as const;

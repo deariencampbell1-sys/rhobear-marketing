@@ -89,6 +89,13 @@ describe('productsById', () => {
   it('freezes the public productsById object', () => {
     expect(Object.isFrozen(productsById)).toBe(true);
   });
+
+  it('has a null prototype so unknown ids cannot resolve', () => {
+    expect(Object.getPrototypeOf(productsById)).toBeNull();
+    const byName = productsById as unknown as Record<string, unknown>;
+    expect(byName.constructor).toBeUndefined();
+    expect(byName.toString).toBeUndefined();
+  });
 });
 
 describe('product internals', () => {

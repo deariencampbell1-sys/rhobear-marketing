@@ -62,7 +62,8 @@ export const approvedPriceList: readonly PriceRow[] = [
   },
 ];
 
-// Herald is separate from Builds and priced in its own lane.
+// Herald is separate from Builds; its offers are recorded in the same contract
+// section that covers quote and entitlement.
 export type HeraldOffer = {
   id: string;
   monthly: Money;

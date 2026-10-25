@@ -29,6 +29,8 @@ export const retention = {
   afterPaidPeriod:
     'A 7-day read-only grace period: you can read and export your work, but you cannot start new jobs.',
   then: 'Your hosted data is deleted. Backups are removed within 30 days.',
+  // Q10 covers retention and account deletion; Q13 is the separate old-estate
+  // deletion approval, not the account-deletion promise.
   deletion:
     'Deleting your account stops billing first, then deletes your data; backups are gone within 30 days.',
   source: { doc: 'lanes/L9-front-door/OWNER-DECISIONS.md', section: 'Q10 Retention' },
