@@ -13,6 +13,8 @@
 // Invariants enforced in code:
 //   - a missing/unsafe baseUrl, an unsafe path or a non-GET request never
 //     touches fetch;
+//   - redirects are refused (redirect: 'error'), never followed out of the
+//     guarded origin, and a redirect response is never parsed;
 //   - exactly one retry, only for GET network/timeout failures;
 //   - one X-Request-Id per logical request, never derived from any credential;
 //   - nothing is logged, and no detail ever carries a token, cookie,
@@ -49,8 +51,13 @@ type AttemptResult<T> =
   | { outcome: 'fail'; reason: MoneyFailureReason; detail?: string };
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_TIMEOUT_MS = 60_000;
 const MAX_BODY_BYTES = 262_144;
 const JSON_CONTENT_TYPE = 'application/json';
+// A header value is bytes, and anything outside printable ASCII (a control
+// character, a lone CR/LF, a non-ASCII codepoint) either breaks the header line
+// or is re-encoded by the runtime; such a value is never sent.
+const CONTROL_CHAR = /[^\u0020-\u007e]/;
 
 // Conservative path allowlist: normal route characters and percent escapes
 // only. It excludes '\', whitespace, C0/C1 controls, '?' and '#'.
@@ -65,29 +72,43 @@ function fallbackRequestId(): string {
 }
 
 function defaultRequestId(): string {
-  return crypto.randomUUID();
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return fallbackRequestId();
+  }
 }
 
 // crypto.randomUUID() is unavailable outside secure contexts and an injected
 // generator may throw or return nothing; get() must never reject for this.
+// A value carrying CR, LF or any control character is refused too: it would
+// corrupt the header line, and fetch would reject it as a TypeError that
+// looks like a network failure and triggers a pointless retry.
 function safeRequestId(newRequestId: () => string): string {
+  let candidate: unknown;
   try {
-    const candidate = newRequestId();
-    if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+    candidate = newRequestId();
   } catch {
-    // Fall through to the deterministic fallback below.
+    return fallbackRequestId();
   }
-  return fallbackRequestId();
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    return fallbackRequestId();
+  }
+  if (CONTROL_CHAR.test(candidate)) return defaultRequestId();
+  return candidate;
 }
 
 // baseUrl must be an absolute https origin; anything else never reaches fetch.
 // Userinfo, search and hash are rejected so the configured base cannot smuggle
 // a credential or a second scope into every request.
 function safeBaseUrl(baseUrl: string | undefined): URL | null {
-  if (typeof baseUrl !== 'string' || baseUrl.length === 0) return null;
-  if (!baseUrl.startsWith('https://')) return null;
+  // A CRLF checkout or a quoted env value must not turn a configured base
+  // into not-configured, so the value is trimmed before it is judged.
+  const trimmed = typeof baseUrl === 'string' ? baseUrl.trim() : '';
+  if (trimmed.length === 0) return null;
+  if (!trimmed.startsWith('https://')) return null;
   try {
-    const parsed = new URL(baseUrl);
+    const parsed = new URL(trimmed);
     if (parsed.protocol !== 'https:' || parsed.hostname === '') return null;
     if (parsed.username !== '' || parsed.password !== '') return null;
     if (parsed.search !== '' || parsed.hash !== '') return null;
@@ -132,6 +153,41 @@ function buildUrl(base: URL, req: MoneyRequest): string | null {
   return url.toString();
 }
 
+// Thrown by readCappedBody once the running byte count passes the cap; the
+// caller maps it to a failure before any of the body is parsed.
+const BODY_TOO_LARGE = Symbol('money.body-too-large');
+
+// The cap is enforced on the bytes actually received, so a chunked or
+// header-less response cannot stream past it the way a content-length-only
+// check allows.
+async function readCappedBody(response: Response): Promise<string> {
+  const body = response.body;
+  if (body === null) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    received += value.byteLength;
+    if (received > MAX_BODY_BYTES) {
+      // Stop the stream immediately: an over-cap body is never fully read. A
+      // rejecting cancel() must not turn this into a 'parse' failure, so it is
+      // swallowed here and the over-cap classification is preserved.
+      try {
+        await reader.cancel();
+      } catch {
+        // The stream is already unusable; the reason below is the one that matters.
+      }
+      throw BODY_TOO_LARGE;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 async function attempt<T>(
   url: string,
   timeoutMs: number,
@@ -149,12 +205,18 @@ async function attempt<T>(
         cache: 'no-store',
         credentials: 'same-origin',
         signal: controller.signal,
+        redirect: 'error',
       });
     } catch {
       if (controller.signal.aborted) {
         return { outcome: 'fail', reason: 'timeout' };
       }
       return { outcome: 'fail', reason: 'network' };
+    }
+    if (response.status >= 300 && response.status < 400) {
+      // A redirect is never followed and never parsed: it only survives as a
+      // failure whose detail records why the body is not here.
+      return { outcome: 'fail', reason: 'http', detail: 'redirect' };
     }
     if (response.status < 200 || response.status >= 300) {
       // detail carries at most the HTTP status; never query, headers or body.
@@ -175,10 +237,15 @@ async function attempt<T>(
     }
     let raw: unknown;
     try {
-      raw = await response.json();
-    } catch {
+      // The body is read through the stream with a running byte count and
+      // parsed by hand; response.json() would ignore the cap.
+      raw = JSON.parse(await readCappedBody(response));
+    } catch (error) {
       if (controller.signal.aborted) {
         return { outcome: 'fail', reason: 'timeout' };
+      }
+      if (error === BODY_TOO_LARGE) {
+        return { outcome: 'fail', reason: 'http', detail: 'body-too-large' };
       }
       return { outcome: 'fail', reason: 'parse' };
     }
@@ -195,10 +262,28 @@ async function attempt<T>(
   }
 }
 
+export type MoneyTransport = ReturnType<typeof createMoneyTransport>;
+
+/**
+ * What a client actually needs from a transport: one read. A client that takes
+ * this cannot be handed a fake that lies about a timeout it never uses.
+ */
+export type MoneyTransportGet = Pick<MoneyTransport, 'get'>;
+
 export function createMoneyTransport(config: MoneyTransportConfig): {
   get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>>;
+  timeoutMs: number; // the validated value in use, exposed for callers and tests
 } {
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // timeoutMs must be a finite number in (0, 60_000]; 0, -5, NaN, Infinity and
+  // anything above the ceiling fall back to the default instead of throwing.
+  const requestedTimeout = config.timeoutMs;
+  const timeoutMs =
+    typeof requestedTimeout === 'number' &&
+    Number.isFinite(requestedTimeout) &&
+    requestedTimeout > 0 &&
+    requestedTimeout <= MAX_TIMEOUT_MS
+      ? requestedTimeout
+      : DEFAULT_TIMEOUT_MS;
   const now = config.now ?? Date.now;
   const newRequestId = config.requestId ?? defaultRequestId;
 
@@ -239,5 +324,5 @@ export function createMoneyTransport(config: MoneyTransportConfig): {
     return { ok: true, data: result.data, requestId, fetchedAt: now() };
   }
 
-  return { get };
+  return { get, timeoutMs };
 }
