@@ -41,6 +41,9 @@ type AttemptResult<T> =
   | { outcome: 'fail'; reason: MoneyFailureReason; detail?: string };
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_TIMEOUT_MS = 60_000;
+const MAX_BODY_BYTES = 1_048_576;
+const SAFE_REQUEST_ID = /^[\x21-\x7e]{1,128}$/;
 
 function defaultRequestId(): string {
   return crypto.randomUUID();
@@ -48,10 +51,13 @@ function defaultRequestId(): string {
 
 // baseUrl must be an absolute https origin; anything else never reaches fetch.
 function safeBaseUrl(baseUrl: string | undefined): URL | null {
-  if (typeof baseUrl !== 'string' || baseUrl.length === 0) return null;
-  if (!baseUrl.startsWith('https://')) return null;
+  // A trailing CR or a line continuation in an env file must not silently
+  // disable the client, so the value is trimmed before it is judged.
+  const trimmed = typeof baseUrl === 'string' ? baseUrl.trim() : '';
+  if (trimmed.length === 0) return null;
+  if (!trimmed.startsWith('https://')) return null;
   try {
-    const parsed = new URL(baseUrl);
+    const parsed = new URL(trimmed);
     if (parsed.protocol !== 'https:' || parsed.hostname === '') return null;
     return parsed;
   } catch {
@@ -78,6 +84,29 @@ function buildUrl(base: URL, req: MoneyRequest): string {
   return url.toString();
 }
 
+// The cap is enforced on the bytes actually received, so a chunked or
+// header-less response cannot stream past it.
+async function readCappedBody(response: Response): Promise<string> {
+  const body = response.body;
+  if (body === null) return '';
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let received = 0;
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value === undefined) continue;
+    received += value.byteLength;
+    if (received > MAX_BODY_BYTES) {
+      await reader.cancel();
+      throw new Error('body-too-large');
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 async function attempt<T>(
   url: string,
   timeoutMs: number,
@@ -93,6 +122,7 @@ async function attempt<T>(
         method: 'GET',
         headers: { 'X-Request-Id': requestId },
         signal: controller.signal,
+        redirect: 'manual',
       });
     } catch {
       if (controller.signal.aborted) {
@@ -100,16 +130,24 @@ async function attempt<T>(
       }
       return { outcome: 'fail', reason: 'network' };
     }
+    if (response.status >= 300 && response.status < 400) {
+      // A redirect is refused, never followed: the origin guard must constrain
+      // the response that is actually parsed.
+      return { outcome: 'fail', reason: 'http', detail: `HTTP ${response.status} redirect` };
+    }
     if (response.status < 200 || response.status >= 300) {
       // detail carries at most the HTTP status; never query, headers or body.
       return { outcome: 'fail', reason: 'http', detail: `HTTP ${response.status}` };
     }
     let raw: unknown;
     try {
-      raw = await response.json();
-    } catch {
+      raw = JSON.parse(await readCappedBody(response));
+    } catch (error) {
       if (controller.signal.aborted) {
         return { outcome: 'fail', reason: 'timeout' };
+      }
+      if (error instanceof Error && error.message === 'body-too-large') {
+        return { outcome: 'fail', reason: 'http', detail: 'body-too-large' };
       }
       return { outcome: 'fail', reason: 'parse' };
     }
@@ -123,8 +161,16 @@ async function attempt<T>(
 
 export function createMoneyTransport(config: MoneyTransportConfig): {
   get<T>(req: MoneyRequest, parse: (raw: unknown) => T | null): Promise<MoneyResult<T>>;
+  timeoutMs: number;
 } {
-  const timeoutMs = config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const requestedTimeout = config.timeoutMs;
+  const timeoutMs =
+    typeof requestedTimeout === 'number' &&
+    Number.isFinite(requestedTimeout) &&
+    requestedTimeout > 0 &&
+    requestedTimeout <= MAX_TIMEOUT_MS
+      ? requestedTimeout
+      : DEFAULT_TIMEOUT_MS;
   const now = config.now ?? Date.now;
   const newRequestId = config.requestId ?? defaultRequestId;
 
@@ -132,7 +178,10 @@ export function createMoneyTransport(config: MoneyTransportConfig): {
     req: MoneyRequest,
     parse: (raw: unknown) => T | null,
   ): Promise<MoneyResult<T>> {
-    const requestId = newRequestId();
+    const generated = newRequestId();
+    // A CR/LF in a header value makes fetch throw; that would be misread as a
+    // network failure and retried, so an unsafe id is replaced, never sent.
+    const requestId = SAFE_REQUEST_ID.test(generated) ? generated : defaultRequestId();
     const base = safeBaseUrl(config.baseUrl);
     if (base === null || !safePath(req.path) || req.method !== 'GET') {
       return { ok: false, reason: 'not-configured', requestId };
@@ -158,5 +207,5 @@ export function createMoneyTransport(config: MoneyTransportConfig): {
     return { ok: true, data: result.data, requestId, fetchedAt: now() };
   }
 
-  return { get };
+  return { get, timeoutMs };
 }
