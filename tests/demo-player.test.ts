@@ -51,7 +51,10 @@ function rendition(
     width,
     height,
     durationSeconds,
-    chapters,
+    // r8 F7: a fresh copy per rendition — `readonly` is compile-time only,
+    // and a shared mutable array handed to every rendition could be mutated
+    // through one and seen by all. The fixture is the fix; no test needed.
+    chapters: [...chapters],
   };
 }
 
@@ -2670,5 +2673,245 @@ describe("demo player state machine — W0-05b-r7 (Apollo's review of the r6 hea
     expect(ended.snapshot().state).toBe('paused');
     ended.dispatch({ type: 'open-transcript' });
     expect(ended.dispatch({ type: 'close-transcript' }).state).toBe('paused');
+  });
+});
+
+// W0-05b-r8 — Apollo's review of the r7 head (2026-10-26 13:17:35Z).
+// F1 is six named transitions/guards with no test — tests-only, one row each,
+// pinning behaviour the machine already has. F3 (the lower-rendition re-check
+// against the new rendition's duration), F4 (the support reference id
+// sequence) and F6 (snapshot() copies) were red-first: these were the red
+// tests for round r8's fix; they guard the regressions now. F7's shared
+// chapter fixture is fixed in `rendition()` above (fixture-only — the fixture
+// is the fix).
+describe("demo player state machine — W0-05b-r8 (Apollo's review of the r7 head)", () => {
+  it('r8 F1.1 (D05): open-interactive from poster opens the sheet — the guard admits poster — and does not touch the media', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('poster');
+    const callsBefore = media.calls.length;
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('r8 F1.2 (D06): open-transcript from poster opens the sheet — the guard admits poster — and does not touch the media', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('poster');
+    const callsBefore = media.calls.length;
+    const opened = player.dispatch({ type: 'open-transcript' });
+    expect(opened.state).toBe('transcript');
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('r8 F1.3 (D07): media-error while pending and while revoked is a deep-equal no-op — no error overlay invented, unplayableReason untouched', async () => {
+    for (const presentation of [footagePending, revoked()] as const) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: presentation }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      expect(['pending', 'revoked']).toContain(player.snapshot().state);
+      const before = player.snapshot();
+      expect(player.dispatch({ type: 'media-error', reason: 'network' })).toEqual(before);
+    }
+  });
+
+  it('r8 F1.4 (D03/S1): return with no active rendition is a deep-equal no-op — on pending and on revoked the media port is never touched', async () => {
+    for (const presentation of [footagePending, revoked()] as const) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: presentation }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      expect(['pending', 'revoked']).toContain(player.snapshot().state);
+      const before = player.snapshot();
+      expect(player.dispatch({ type: 'return' })).toEqual(before);
+    }
+  });
+
+  it('r8 F1.5 (D03): ended from paused is a no-op — no media call, the state stays paused', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'pause' });
+    expect(player.snapshot().state).toBe('paused');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'ended' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('r8 F1.6 (behaviour 8): waiting from paused is a no-op — no media call, the state stays paused', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'pause' });
+    expect(player.snapshot().state).toBe('paused');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'waiting' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it("r8 F3 (behaviour 12): lower-rendition re-checks the kept place against the NEW rendition's duration — a shorter lower rendition resets the place to 0 and the resume seek is seekTo(0)", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [rendition(1280, 720, 42), rendition(854, 480, 5)],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    expect(player.snapshot().state).toBe('error');
+
+    player.dispatch({ type: 'lower-rendition' });
+    const after = player.snapshot();
+    expect(after.state).toBe('poster');
+    expect(after.renditionIndex).toBe(1);
+    // The snapshot reported positionSeconds 9 on a rendition of 5 s — the
+    // resume seekTo(9) would have run past the end of the new source. The
+    // kept place is re-checked against the new rendition's real duration and
+    // reset outside it — never clamped to its end.
+    expect(after.positionSeconds).toBe(0);
+    expect(after.durationSeconds).toBe(5);
+    // And the one-shot resume seeks to the reset place.
+    const mark = media.calls.length;
+    player.dispatch({ type: 'playing' });
+    expect(media.calls.slice(mark)).toEqual(['seekTo:0']);
+  });
+
+  it('r8 F3 edge (behaviour 12): a lower rendition with no known duration keeps the place — a null duration is no bound to re-check against (the rule\'s first arm)', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [
+            rendition(1280, 720, 42),
+            { ...rendition(854, 480, 42), durationSeconds: null as unknown as number },
+          ],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+
+    player.dispatch({ type: 'lower-rendition' });
+    const after = player.snapshot();
+    expect(after.renditionIndex).toBe(1);
+    // The place stands: with no duration there is no bound to check it
+    // against — exactly like a timeupdate with no known duration (r4 F6).
+    expect(after.positionSeconds).toBe(9);
+    expect(after.durationSeconds).toBeNull();
+    const mark = media.calls.length;
+    player.dispatch({ type: 'playing' });
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9']);
+  });
+
+  it('r8 F4 (D07): two failure episodes in the same millisecond hand out different support reference ids — the sequence is module-level and monotonic, and the id is stable within an episode', async () => {
+    // Both episodes live in the same millisecond on the stubbed clock.
+    const clock = () => 1_000;
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+      now: clock,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+
+    // Episode one: two failures with no playback in between (D07).
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    const first = player.snapshot().error?.supportReferenceId;
+    expect(first).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
+    // Stable for the whole episode: one reference per failure episode.
+    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    expect(player.snapshot().error?.supportReferenceId).toBe(first);
+
+    // Playback resumes — the episode is over (r7 F1) — and a second episode
+    // fails twice in the SAME millisecond. The id is the one value support
+    // correlates a report with a failure: the two must differ.
+    player.dispatch({ type: 'playing' });
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    const second = player.snapshot().error?.supportReferenceId;
+    expect(second).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
+    expect(second).not.toBe(first);
+  });
+
+  it('r8 F6 (D07/D04): snapshot() hands out copies — mutating the returned error or chapter between two reads never changes the next snapshot', async () => {
+    const { player } = await playerInMediaError();
+    // A repeated failure, so the error carries a support reference id too.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    const first = player.snapshot();
+    const expectedId = first.error?.supportReferenceId ?? '';
+    const expectedOffers = [...(first.error?.offers ?? [])];
+    const expectedLabel = first.currentChapter?.label ?? '';
+    const expectedStart = first.currentChapter?.startSeconds ?? -1;
+    expect(expectedId).not.toBe('');
+    expect(expectedLabel).toBe('Preparation');
+
+    // A screen mutating what it was handed corrupts nothing.
+    first.error!.supportReferenceId = 'corrupted';
+    (first.error!.offers as unknown as string[]).push('corrupted');
+    first.currentChapter!.label = 'Corrupted';
+    first.currentChapter!.startSeconds = -1;
+
+    const second = player.snapshot();
+    expect(second.error?.supportReferenceId).toBe(expectedId);
+    expect(second.error?.offers).toEqual(expectedOffers);
+    expect(second.currentChapter?.label).toBe(expectedLabel);
+    expect(second.currentChapter?.startSeconds).toBe(expectedStart);
   });
 });

@@ -267,18 +267,31 @@ describe('demo captions', () => {
     ]);
 
     // Nothing is ever thrown into the UI: hostile and empty bodies parse to a
-    // named verdict or empty cues, never an exception.
-    for (const hostile of [
-      '',
-      'not webvtt at all',
-      '\uFEFFWEBVTT',
-      'WEBVTT',
-      'WEBVTT\r\n\r\n\u0000\u0001 --> \u0002',
-      'x'.repeat(10_000),
-      'WEBVTT\n\n--> \n',
-    ]) {
+    // NAMED verdict, never an exception — and (r8 F8) the exact verdict and
+    // reason are pinned per input, per the parser's actual classification.
+    // The reason each input keeps is stated beside it; an unpinned verdict
+    // pins nothing.
+    for (const [hostile, reason] of [
+      // An empty body: there is no signature line at all.
+      ['', 'not-webvtt'],
+      // The first non-blank line is not a signature.
+      ['not webvtt at all', 'not-webvtt'],
+      // A tolerated BOM and the signature — and nothing else: no cue block.
+      ['\uFEFFWEBVTT', 'no-cues'],
+      // The signature alone: the header runs to the end, no cue blocks.
+      ['WEBVTT', 'no-cues'],
+      // One cue block whose only line matches no timing grammar: bad-timing,
+      // and no cue survives.
+      ['WEBVTT\r\n\r\n\u0000\u0001 --> \u0002', 'no-cues'],
+      // Ten thousand characters that are no signature.
+      ['x'.repeat(10_000), 'not-webvtt'],
+      // A bare arrow line is no timing line: bad-timing, no cue survives.
+      ['WEBVTT\n\n--> \n', 'no-cues'],
+    ] as const) {
+      expect(() => parseWebVTT(hostile, `${mediaBase}/transcript.html`)).not.toThrow();
       const result = parseWebVTT(hostile, `${mediaBase}/transcript.html`);
-      expect(['captions', 'captions-failed']).toContain(result.state);
+      // The exact verdict and the exact reason — per input, nothing looser.
+      expect(result).toMatchObject({ state: 'captions-failed', reason });
     }
   });
 
@@ -593,5 +606,121 @@ describe("demo captions — W0-05b-r7 (Apollo's review of the r6 head)", () => {
     expect(parsed.state).toBe('captions');
     expect(parsed.cues).toEqual([{ startSeconds: 3, endSeconds: 3, text: 'A zero-length cue.' }]);
     expect(parsed.skipped).toEqual([{ cueIndex: 1, reason: 'end-before-start' }]);
+  });
+});
+
+// W0-05b-r8 — Apollo's review of the r7 head (2026-10-26 13:17:35Z). F2 is a
+// security gap: one leading whitespace/C0 character skipped the `//`
+// refusal — `' //evil.example/x.vtt'` and `'\t//evil.example/x.vtt'` slipped
+// past `startsWith('//')`, `new URL()` threw on the scheme-relative input,
+// and the catch returned the relative-path answer. The fix is structural —
+// strip, then normalise, then discriminate — so no decoration of the
+// blacklist target can win. F5 is the honesty fix on the parse: a shape
+// guard decides untrusted shapes BEFORE the parse and the pure parse runs
+// without a blanket catch. F2 and F5 were red-first; F8's exact verdicts
+// were strengthened in place above (tests-only).
+describe("demo deep links and captions — W0-05b-r8 (Apollo's review of the r7 head)", () => {
+  const transcriptUrl = `${mediaBase}/transcript.html`;
+
+  it('r8 F2 (behaviour 20): isWebVttUrl refuses the whole variant table of a scheme-relative //evil.example/x.vtt — no decoration survives the strip and the backslash normalisation', () => {
+    // The whole variant table, pinned. Every spelling below a browser
+    // resolves to `https://evil.example/x.vtt` (or to a foreign scheme) is
+    // refused. Where the review quotes a backslash spelling, BOTH literal
+    // readings are pinned — the spelling as JS source and the spelling as
+    // raw characters (the review escapes control characters but writes
+    // visible backslashes as they stand).
+    for (const disguised of [
+      ' //evil.example/x.vtt', // a leading space (the review's spelling)
+      '\t//evil.example/x.vtt', // a leading tab (the review's spelling)
+      '\u0000//evil.example/x.vtt', // a leading C0 control (the review's spelling)
+      '//evil.example/x.vtt', // plain scheme-relative (the review's spelling)
+      '\\\\evil.example/x.vtt', // "'\\\\evil.example/x.vtt'" as JS source — two literal backslashes
+      '\\\\\\\\evil.example/x.vtt', // "'\\\\evil.example/x.vtt'" as raw characters — four literal backslashes
+      '/\\evil.example/x.vtt', // "'/\\evil.example/x.vtt'" as JS source — slash + one literal backslash
+      '/\\\\evil.example/x.vtt', // "'/\\evil.example/x.vtt'" as raw characters — slash + two literal backslashes
+      'javascript:alert(1)//x.vtt', // the review's spelling
+      'data:text/vtt;base64,xxx.vtt', // the review's spelling
+      'JavaScript:alert(1)//x.vtt', // the review's spelling — the scheme rule is case-insensitive
+      // A value that needs BOTH operations (the review's
+      // "'\t\\\\evil.example/x.vtt'"): the strip leads — without it the tab
+      // is not a `//` lead — and the normalisation then makes the `//`.
+      '\t\\\\\\\\evil.example/x.vtt', // as raw characters — tab + four literal backslashes
+      '\t\\\\evil.example/x.vtt', // as JS source — tab + two literal backslashes
+    ]) {
+      expect(isWebVttUrl(disguised)).toBe(false);
+    }
+  });
+
+  it("r8 F2 boundary calls (behaviour 20): 'C:/captions.vtt' is refused — an opaque scheme-like prefix is not a relative path — and '/captions.vtt ' is accepted — it stripped to a clean relative path", () => {
+    expect(isWebVttUrl('C:/captions.vtt')).toBe(false);
+    expect(isWebVttUrl('/captions.vtt ')).toBe(true);
+    // The accepted side of the rule, pinned with them: the front door's own
+    // relative captions and http(s) wherever it points.
+    for (const own of [
+      'captions.vtt',
+      './captions.vtt',
+      '/captions.vtt',
+      'https://x/c.vtt',
+      'HTTPS://x/c.vtt',
+      'http://x/c.vtt',
+    ]) {
+      expect(isWebVttUrl(own)).toBe(true);
+    }
+    // Stated boundary (the review's "'\\evil.example/x.vtt'" read as ONE
+    // literal backslash): a single leading `\` is one `/` to a browser —
+    // `new URL('\\evil.example/x.vtt', base)` resolves same-origin, to
+    // `https://media.example.com/evil.example/x.vtt` — so the value is
+    // `/evil.example/x.vtt`, the front door's OWN root-relative path, exactly
+    // the class pinned-accepted `'/captions.vtt'` belongs to. It is not a
+    // variant of the scheme-relative attack (two or more leading backslashes,
+    // or a `/` among them, are), and refusing it would need a blacklist on
+    // path content — the structural order cannot carry one.
+    expect(isWebVttUrl('\\evil.example/x.vtt')).toBe(true);
+  });
+
+  it("r8 F5 (behaviour 20): the shape guard decides untrusted shapes before the parse — a string-imitating impostor never reaches the parser and still returns 'unreadable'", () => {
+    // The r5 non-string cases keep their verdict — they now hit the guard at
+    // the top of the function, not a blanket catch around the parse.
+    for (const raw of [null, undefined, 42, { toString: () => 'WEBVTT' }]) {
+      expect(parseWebVTT(raw as unknown as string, transcriptUrl)).toEqual({
+        state: 'captions-failed',
+        reason: 'unreadable',
+        cues: [],
+        skipped: [],
+        transcriptAvailable: true,
+      });
+    }
+
+    // An impostor that imitates a string well enough to be parsed — replace
+    // returning itself, split returning fabricated cue lines — is decided by
+    // the shape guard BEFORE the parse: its methods are never called and no
+    // fabricated cue is ever produced.
+    const touched: string[] = [];
+    const impostor = {
+      replace: (): unknown => {
+        touched.push('replace');
+        return impostor;
+      },
+      split: (): string[] => {
+        touched.push('split');
+        return ['WEBVTT', '', '00:00:00.000 --> 00:00:01.000', 'Fabricated'];
+      },
+    };
+    expect(parseWebVTT(impostor as unknown as string, transcriptUrl)).toEqual({
+      state: 'captions-failed',
+      reason: 'unreadable',
+      cues: [],
+      skipped: [],
+      transcriptAvailable: true,
+    });
+    expect(touched).toEqual([]);
+
+    // A string of only C0 controls IS a string: it reaches the parse and gets
+    // a named verdict, never a throw.
+    expect(() => parseWebVTT('\u0000\u0001', transcriptUrl)).not.toThrow();
+    expect(parseWebVTT('\u0000\u0001', transcriptUrl)).toMatchObject({
+      state: 'captions-failed',
+      reason: 'not-webvtt',
+    });
   });
 });
