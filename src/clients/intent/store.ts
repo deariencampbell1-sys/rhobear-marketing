@@ -37,7 +37,21 @@
 // record removes it in the same call, and consume() applies the same
 // retention — the same boundary, equal counts as past — to its
 // `already-consumed` answer. The two readers can therefore never disagree
-// about a record's age at the same instant.
+// about a record's age at the same instant. The consume that reports
+// `expired` removes the record too (W0-06-r8 finding 3), inside the locked
+// critical section like every other mutation: expired intents do not linger,
+// whichever reader finds them.
+//
+// Writes clean up after themselves (W0-06-r8 finding 1): every successful
+// write best-effort removes the key from every OTHER adapter, so a record
+// superseded by a newer intent can never resurrect from the sibling adapter
+// — a fresh tab with an empty sessionStorage used to fall back through the
+// adapter order and resolve a leftover install record into /get instead of
+// /account. The cleanup is honest about its own limits: a sibling removal
+// that throws (a disabled-storage window) is swallowed — it never fails the
+// write and never escapes the total boundary — and a write that lands only
+// in the mirror (its setItem threw) performs no cleanup, because only a
+// successful write supersedes what is stored.
 //
 // The consume body is wrapped (W0-06 review r2, finding 7): a failure inside
 // the critical section — for example createIntentId when
@@ -320,15 +334,39 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     return { text: null, durable: false, from: null };
   }
 
+  /** W0-06-r8 finding 1: on every successful write, best-effort remove the
+   * key from every OTHER adapter. The newest write is the only live intent;
+   * anything left in a sibling adapter is a superseded record that must not
+   * resurrect through readRaw()'s fallback order on a fresh tab or after a
+   * browser restart. Best-effort is honest: each removal is swallowed on
+   * failure — a disabled-storage window can throw here, and a cleanup
+   * failure must never fail the write or escape the total boundary — and the
+   * mirror is never touched, so the record just written stays readable. */
+  async function sweepSiblings(writtenTo: IntentStorage): Promise<void> {
+    for (const adapter of adapters) {
+      if (adapter === writtenTo) continue;
+      try {
+        await adapter.removeItem(INTENT_STORAGE_KEY);
+      } catch {
+        // Best-effort: the write already succeeded; swallow and move on.
+      }
+    }
+  }
+
   async function writeRaw(text: string, adapter: IntentStorage): Promise<boolean> {
     try {
       await adapter.setItem(INTENT_STORAGE_KEY, text);
       mirror.delete(INTENT_STORAGE_KEY);
-      return true;
     } catch {
       mirror.set(INTENT_STORAGE_KEY, text);
       return false;
     }
+    // W0-06-r8 finding 1: only a successful write supersedes — sweep the
+    // siblings then, and only then. sweepSiblings never throws (every
+    // removal is swallowed), so the write result above stands whatever the
+    // cleanup does.
+    await sweepSiblings(adapter);
+    return true;
   }
 
   async function removeRaw(): Promise<ClearResult> {
@@ -502,7 +540,14 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
       }
       return { outcome: 'already-consumed', returnRoute: current.returnRoute, durable: decoded.durable };
     }
-    if (Date.parse(current.expiresAt) <= now()) return { outcome: 'expired' };
+    if (Date.parse(current.expiresAt) <= now()) {
+      // W0-06-r8 finding 3: the consume that reports `expired` removes the
+      // record too — the same discipline load() follows: expired intents do
+      // not linger in storage. The removal runs here, inside the locked
+      // critical section, like every other mutation.
+      await removeRaw();
+      return { outcome: 'expired' };
+    }
 
     // Re-read immediately before the winning write (W0-06 review r1):
     // `consumedAt` may have appeared since the first read. The nonce only

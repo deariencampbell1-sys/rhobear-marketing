@@ -543,7 +543,16 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       // and the guarantee of THIS restore attempt (the exclusivity the
       // consume call actually ran under), never the last restore's.
       if (intent) {
-        intent = stampConsumed(intent); // W0-06 review r4 (finding 6)
+        // W0-06-r8 finding 2: the stamp comes from result.returnRoute — the
+        // STORE's record is the one that was actually consumed, and the two
+        // routes must agree on this path. When the stored record diverged
+        // from the loaded copy between load and consume, the store's route
+        // wins, explicitly: the stale copy never sends the person back to a
+        // destination that record did not carry. The failure mode is safe:
+        // snapshot() still re-checks the destination against the allowlist
+        // (a hostile route reports destination: null), and nothing here
+        // throws.
+        intent = stampConsumed({ ...intent, returnRoute: result.returnRoute }); // W0-06 review r4 (finding 6)
       }
       restoreGuarantee = result.exclusive;
       // W0-06 review r5 (finding 1): the loser of the consume race is held to
