@@ -972,3 +972,44 @@ describe("demo deep links and captions — W0-05b-r11 (Apollo's union review of 
     ).toEqual({ kind: 'not-found', reason: 'unknown-scenario' });
   });
 });
+
+// W0-05b-r12 — Apollo's review of the r11 head (2026-10-26 19:02:48Z):
+// F5 in the review's own numbering (F1 in this round's dispatch) is the
+// fragment parse accepting a shape no real `Location` produces — a `hash`
+// without the `#` prefix. The fix reads the fragment only from a
+// `#`-prefixed hash and treats anything else as no fragment, the empty
+// shape r10 F6 fixed for a malformed hash half. This was the red test for
+// round r12's fix; it guards the regression now.
+describe("demo deep links — W0-05b-r12 (Apollo's review of the r11 head)", () => {
+  it("r12 F1 (behaviour 18): a hash without the # prefix is no fragment — 't=42' never parses as a position, and the # form and the empty hash are unchanged", () => {
+    // A real `Location`'s hash is '' or begins with '#'. A hash that does
+    // not is not this format's fragment at all: no fragment, no position —
+    // and its contents are never parsed (`'t=42'` must never become 42).
+    // This is r10 F6's empty shape for a malformed hash half, made strict
+    // for the un-prefixed spelling too.
+    for (const hash of ['t=42', 't=42&token=sekrit', 'x=1']) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'player',
+        scenarioId: 'teams-01',
+        positionSeconds: null,
+      });
+    }
+    // Unchanged: the fragment form parses to the position it always did.
+    expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=42' }, 60)).toEqual({
+      kind: 'player',
+      scenarioId: 'teams-01',
+      positionSeconds: 42,
+    });
+    // Unchanged: the empty hash — and the empty `#` — are no fragment.
+    expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '' }, 60)).toEqual({
+      kind: 'player',
+      scenarioId: 'teams-01',
+      positionSeconds: null,
+    });
+    expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#' }, 60)).toEqual({
+      kind: 'player',
+      scenarioId: 'teams-01',
+      positionSeconds: null,
+    });
+  });
+});

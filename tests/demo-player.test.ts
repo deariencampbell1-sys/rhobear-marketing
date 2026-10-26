@@ -3295,14 +3295,14 @@ describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 he
   it("r10 F3 (behaviour 12): the constructor's accept table and the guard's accept table agree — both sides of every value in the pinned table", () => {
     // Accepted side: the constructor renders the reason and the guard accepts
     // the rendering. 0 is in the table (the guard accepts `http-0`, so the
-    // constructor must agree), and so are the largest integers whose decimal
-    // rendering is canonical.
+    // constructor must agree), and so are the largest statuses in the
+    // constructor's HTTP status space — r12 F2 bounds it at the integers
+    // `0 <= status <= 9999`.
     for (const [status, rendering] of [
       [0, 'http-0'],
       [200, 'http-200'],
       [1000, 'http-1000'],
-      [Number.MAX_SAFE_INTEGER, `http-${Number.MAX_SAFE_INTEGER}`],
-      [2 ** 53, 'http-9007199254740992'],
+      [9999, 'http-9999'],
     ] as const) {
       const reason = httpReason(status);
       expect(reason).toBe(rendering);
@@ -3319,6 +3319,21 @@ describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 he
     ] as const) {
       expect(httpReason(status)).toBeNull();
       expect(isMediaErrorReason(spelling)).toBe(false);
+    }
+    // r12 F2's bounded-out side: outside the status space the constructor
+    // returns null — and the guard, the unchanged runtime predicate for
+    // untyped strings, still accepts the canonical spelling. These rows were
+    // this table's accepted side before r12; the collision F2 names
+    // (`2**53` and `2**53 + 1` are one double and render one decimal) is
+    // exactly what the bound removes. Every value stays pinned — only the
+    // verdicts moved, with the contract.
+    for (const [status, rendering] of [
+      [10000, 'http-10000'],
+      [Number.MAX_SAFE_INTEGER, `http-${Number.MAX_SAFE_INTEGER}`],
+      [2 ** 53, 'http-9007199254740992'],
+    ] as const) {
+      expect(httpReason(status)).toBeNull();
+      expect(isMediaErrorReason(rendering)).toBe(true);
     }
   });
 });
@@ -3523,5 +3538,222 @@ describe("demo player state machine — W0-05b-r11 (Apollo's union review of the
     expect(replayed.state).toBe('playing');
     expect(replayed.positionSeconds).toBe(0);
     expect(replayMedia.calls).toContain('seekTo:0');
+  });
+});
+
+// W0-05b-r12 — Apollo's review of the r11 head (2026-10-26 19:02:48Z):
+// 3 MEDIUM, 2 LOW. F3 (this round's numbering) is the locked never-throw
+// contract's last hole — `activeRenditions()` threw a `TypeError` out of
+// `start()` and every `dispatch()` when the presentation's `media` key was
+// absent (the r9 F2 class: hand-built/JSON-decoded). F4 and F5 are D06/S1
+// "never lose the person's place": the null-duration rule contradicted the
+// `lower-rendition` path (and its own r8 F3 comment), and the one-shot
+// resume seek followed the live position, so a `timeupdate` could retarget
+// it and lose the kept place. F2 bounds `httpReason()` to the HTTP status
+// space (the 2**53 collision). These were the red tests for round r12's
+// fix; they guard the regressions now. F1 lives in tests/demo-deeplink.test.ts.
+describe("demo player state machine — W0-05b-r12 (Apollo's review of the r11 head)", () => {
+  it('r12 F2 (behaviour 12): httpReason is bounded to the HTTP status space — 9999 renders, 10000 and the colliding float pair return null', () => {
+    // The ceiling is the smallest named bound that covers every status the
+    // wire renders; it is documented at the constructor. Inside the space
+    // the rendering is canonical and injective.
+    expect(httpReason(9999)).toBe('http-9999');
+    // Outside it `String(status)` is no longer injective — 2**53 and
+    // 2**53 + 1 are one double and render one decimal — so two distinct
+    // inputs would build the same reason, and a reason that cannot name its
+    // input cannot name a failure (D07). Both are refused now.
+    expect(httpReason(10000)).toBeNull();
+    expect(httpReason(2 ** 53)).toBeNull();
+    expect(httpReason(2 ** 53 + 1)).toBeNull();
+  });
+
+  it('r12 F3 (never-throw / behaviour 8): a playable presentation with the media key absent — media: undefined and media: null — start() resolves onto the r9 F2 no-rendition poster and every dispatch returns, no TypeError reaches the caller', async () => {
+    // The r9 F2 table's missing rows: the shape guard decided the shape of
+    // `renditions` before dereferencing it (r9 F2 case 3) but never the
+    // shape of `media` itself — `presentation.media.renditions` threw a
+    // TypeError out of start() and every dispatch() on a hand-built or
+    // JSON-decoded playable presentation with the key absent. An absent
+    // `media` is the empty shape: exactly r9 F2 case 3's no-rendition path,
+    // the one the schema's `empty-renditions` problem already names — no
+    // throw, no new refusal value, no state outside the twelve.
+    for (const absent of [undefined, null]) {
+      const media = fakeMedia();
+      const handBuilt = {
+        ...playable({ interactive: null }),
+        media: absent,
+      } as unknown as DemoPresentation;
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: handBuilt }),
+        media,
+        reducedMotion: false,
+      });
+      // start() resolves — no rejection, no TypeError out of the machine.
+      const settled = await player.start();
+      expect(settled.state).toBe('poster');
+      expect(settled.durationSeconds).toBeNull();
+      expect(settled.currentChapter).toBeNull();
+      expect(settled.unplayableReason).toBeNull();
+      // Every dispatch returns normally — the machine degrades, it does
+      // not throw (r9 F2's contract, on the media key itself).
+      const played = player.dispatch({ type: 'play' });
+      expect(played.state).toBe('poster'); // r11 F6's no-rendition guard
+      const errored = player.dispatch({ type: 'media-error', reason: 'network' });
+      expect(errored.state).toBe('poster');
+      expect(errored.error).toBeNull();
+      expect(player.dispatch({ type: 'select-chapter', label: 'The run' }).state).toBe('poster');
+      expect(player.dispatch({ type: 'open-interactive' })).toMatchObject({
+        state: 'poster',
+        interactiveRefusal: 'absent',
+      });
+    }
+  });
+
+  it("r12 F4 (D06/S1): a deep-link start onto an unknown-duration presentation keeps the person's place — the preserved 42 is still in the snapshot (the rule, once everywhere)", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [{ ...rendition(1280, 720, 42), durationSeconds: null as unknown as number }],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+      positionSeconds: 42,
+    });
+    const settled = await player.start();
+    // A null duration is no bound to check against — the place is kept,
+    // exactly like `lower-rendition` keeps it (r8 F3's edge). Before this
+    // round `applyPresentation` reset it to 0: a deep-link start onto an
+    // unknown-duration presentation silently lost the person's place.
+    expect(settled.positionSeconds).toBe(42);
+    expect(settled.durationSeconds).toBeNull();
+    expect(media.calls).toContain('seekTo:42');
+  });
+
+  it("r12 F4 (D06/S1): a retry onto an unknown-duration presentation keeps the person's place — the preserved 42 survives into the new presentation (still 42 in the snapshot)", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: queuedResolver([
+        { state: 'invalid', reason: 'hash-mismatch' },
+        playable({
+          renditions: [{ ...rendition(1280, 720, 42), durationSeconds: null as unknown as number }],
+        }),
+      ]),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    // The media keeps its clock through the failure (media time is the only
+    // clock): the person's place is 42 when the retry re-resolves.
+    player.dispatch({ type: 'timeupdate', positionSeconds: 42 });
+    expect(player.snapshot().positionSeconds).toBe(42);
+    const settled = await player.retry();
+    expect(settled.state).toBe('poster');
+    // The retry's applyPresentation lands with keepPosition — and an
+    // unknown duration keeps the place (the one rule, shared with
+    // lower-rendition). Before this round it reset to 0 here.
+    expect(settled.positionSeconds).toBe(42);
+    expect(settled.durationSeconds).toBeNull();
+    expect(media.calls).toContain('seekTo:42');
+  });
+
+  it('r12 F4 edge (D06/S1): a known duration still bounds the place — 42 onto a 12 s presentation resets to 0, never clamped to the end', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 12)] }),
+      }),
+      media,
+      reducedMotion: false,
+      positionSeconds: 42,
+    });
+    const settled = await player.start();
+    // The old behaviour, pinned: outside a KNOWN duration the place resets
+    // to 0 — the `#t=42` on a 12 s package edge — and is never clamped.
+    expect(settled.positionSeconds).toBe(0);
+    expect(settled.durationSeconds).toBe(12);
+  });
+
+  it("r12 F4 edge (D06/S1): the rule protects only calls that promise to keep — a scenario swap onto an unknown-duration presentation starts the new scenario at its own zero", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [{ ...rendition(1280, 720, 42), durationSeconds: null as unknown as number }],
+        }),
+        [SWITCHED_SCENARIO_ID]: playable({
+          scenarioId: SWITCHED_SCENARIO_ID,
+          renditions: [{ ...rendition(854, 480, 42), durationSeconds: null as unknown as number }],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'timeupdate', positionSeconds: 42 });
+    expect(player.snapshot().positionSeconds).toBe(42);
+    const switching = player.switchScenario(SWITCHED_SCENARIO_ID);
+    player.dispatch({ type: 'poster-ready' });
+    const settled = await switching;
+    // Both directions are the one rule (r12 F4): a null duration keeps a
+    // place a call promised to preserve — and `switchScenario` never
+    // promises one (behaviour 13: the new scenario starts at its own zero).
+    expect(settled.scenarioId).toBe(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('poster');
+    expect(settled.positionSeconds).toBe(0);
+    expect(settled.durationSeconds).toBeNull();
+  });
+
+  it('r12 F5 (D06/S1): the lower-rendition resume seeks to the captured place — a timeupdate(0) before playing cannot retarget it', async () => {
+    const { player, media } = await playerInMediaError(); // the kept place is 9
+    player.dispatch({ type: 'lower-rendition' });
+    expect(player.snapshot().positionSeconds).toBe(9);
+    // The screen swapping the source resets the element to 0 and says so —
+    // the contract pins no event order, so the resume must not follow it.
+    player.dispatch({ type: 'timeupdate', positionSeconds: 0 });
+    const mark = media.calls.length;
+    player.dispatch({ type: 'playing' });
+    // The one-shot resume seeks to the place CAPTURED when it was armed,
+    // not to the live position — before this round this was seekTo:0, the
+    // exact D06 regression the r3 F8 one-shot exists to prevent.
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9']);
+    expect(player.snapshot().positionSeconds).toBe(9);
+  });
+
+  it('r12 F5 (D06/S1): the captured resume survives a second timeupdate and a finite positive live position — still one seek, to the captured place, and later timeupdates behave as always', async () => {
+    const { player, media } = await playerInMediaError(); // the kept place is 9
+    player.dispatch({ type: 'lower-rendition' });
+    // Two timeupdates before playing — the second a finite positive live
+    // position that would retarget a live-following resume to 20.
+    player.dispatch({ type: 'timeupdate', positionSeconds: 0 });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 20 });
+    const mark = media.calls.length;
+    player.dispatch({ type: 'playing' });
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9']);
+    expect(player.snapshot().positionSeconds).toBe(9);
+    // After the resume lands, media time is the only clock again.
+    player.dispatch({ type: 'timeupdate', positionSeconds: 3 });
+    expect(player.snapshot().positionSeconds).toBe(3);
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9']);
+  });
+
+  it('r12 F5 (D06/S1): the retry whose seekTo IS the resume seeks to the captured place too — a timeupdate before the retry cannot retarget it', async () => {
+    const { player, media } = await playerInMediaError(); // the kept place is 9
+    player.dispatch({ type: 'lower-rendition' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 0 });
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().state).toBe('error');
+    // r5 F3: this retry's seekTo IS the resume — it goes to the captured
+    // place like the `playing` one, never to the live position.
+    const mark = media.calls.length;
+    await player.retry();
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9', 'play']);
+    expect(player.snapshot().positionSeconds).toBe(9);
   });
 });
