@@ -21,6 +21,10 @@ npm test          # route table, prerender output, no-JS content, a11y shell, ki
 npm run build     # tsc --noEmit -> vite build -> scripts/prerender.mjs -> dist/
 ```
 
+Build variables: `RHOBEAR_DIST` (default `dist/`) moves both the vite output and the prerender output, and moves the
+SSR bundle cache with it (`.cache/prerender-<name>`), so two builds in one working copy cannot empty each other's
+directories. The routes test sets it; a production build does not.
+
 `dist/` contains one `index.html` per canonical route plus `404.html`, `sitemap.xml` and `robots.txt`. Every page is
 readable with JavaScript disabled. Run `npm run build` first; `npm run dev` then serves `dist/` locally at
 `http://127.0.0.1:4173` (it exits with an error if `dist/index.html` is missing).

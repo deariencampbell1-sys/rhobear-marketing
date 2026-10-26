@@ -31,7 +31,10 @@ const cp = (await import(cpName)) as unknown as CpLike;
 // working copy used to race on `dist/` (vite empties it first), so a green run
 // could fail on a build another process was halfway through deleting. The
 // directory is per-process, so concurrent runs cannot see each other at all.
-const DIST = `dist-tests-${proc?.pid ?? 0}`;
+// Loud, not quiet: without a pid every run would share `dist-tests-0` and the
+// isolation this file exists for would silently disappear.
+if (!proc?.pid) throw new Error('routes.test.ts needs process.pid to isolate its build directory');
+const DIST = `dist-tests-${proc.pid}`;
 
 const CANONICAL_PATHS = [
   '/',
@@ -87,7 +90,11 @@ describe('prerender output', () => {
     // Always build from source, into this process's own directory, so these
     // assertions can never run against a stale bundle from an earlier build and
     // two concurrent runs of this suite can never invalidate each other.
-    cp.execSync(`npx vite build --outDir ${DIST} --emptyOutDir && node scripts/prerender.mjs`, {
+    // The real build script, not a hand-assembled command line: `npm run build`
+    // is `tsc --noEmit && vite build && node scripts/prerender.mjs`, and
+    // `RHOBEAR_DIST` redirects both the vite output and the prerender output, so
+    // this exercises the production path while writing nothing into `dist/`.
+    cp.execSync('npm run build', {
       encoding: 'utf8',
       timeout: 240_000,
       env: { ...(proc?.env ?? {}), RHOBEAR_DIST: DIST },
@@ -96,6 +103,7 @@ describe('prerender output', () => {
 
   afterAll(() => {
     fs.rmSync(DIST, { recursive: true, force: true });
+    fs.rmSync(`.cache/prerender-${DIST}`, { recursive: true, force: true });
   });
 
   it('writes an index.html for every route, 404.html, sitemap.xml and robots.txt', () => {
