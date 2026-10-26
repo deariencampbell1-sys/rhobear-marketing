@@ -237,4 +237,30 @@ describe('demo captions', () => {
     // or removes one.
     expect(parseWebVTT('WEBVTT\n', null).transcriptAvailable).toBe(false);
   });
+
+  it('F8 (behaviour 20): isWebVttUrl accepts a relative .vtt URL — presence is a path rule, not an absolute-URL rule', () => {
+    expect(isWebVttUrl('/captions.vtt')).toBe(true);
+    expect(isWebVttUrl('captions.vtt')).toBe(true);
+    expect(isWebVttUrl('/captions.vtt?token=abc')).toBe(true);
+    // The rule still refuses a URL that does not name WebVTT.
+    expect(isWebVttUrl('/captions.html')).toBe(false);
+  });
+
+  it('F10 (behaviour 20): the WebVTT signature is exact — WEBVTTX fails not-webvtt while WEBVTT and a noted header pass', () => {
+    const transcriptUrl = `${mediaBase}/transcript.html`;
+    const cue = '00:00:00.000 --> 00:00:01.000\nHi';
+
+    // The signature is the word WEBVTT and nothing longer.
+    const forged = parseWebVTT(`WEBVTTX\n\n${cue}`, transcriptUrl);
+    expect(forged.state).toBe('captions-failed');
+    expect(forged).toMatchObject({ reason: 'not-webvtt' });
+
+    const plain = parseWebVTT(`WEBVTT\n\n${cue}`, transcriptUrl);
+    expect(plain.state).toBe('captions');
+    expect(plain.cues).toHaveLength(1);
+
+    const noted = parseWebVTT(`WEBVTT - some note\n\n${cue}`, transcriptUrl);
+    expect(noted.state).toBe('captions');
+    expect(noted.cues).toHaveLength(1);
+  });
 });

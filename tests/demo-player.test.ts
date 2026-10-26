@@ -9,7 +9,11 @@ import { describe, expect, it } from 'vitest';
 // no real media, no network, no timer. The one real call is the D01 test at
 // the bottom, which runs the real W0-05a resolver with no mirror configured
 // and proves the machine resolves to the locked footage-pending state.
-import { createDemoPlayer, type DemoMediaElement } from '../src/clients/demo/player';
+import {
+  createDemoPlayer,
+  type DemoMediaElement,
+  type DemoPlayer,
+} from '../src/clients/demo/player';
 import { createDemoResolver, type DemoPresentation } from '../src/clients/demo/resolve';
 import type { DemoChapter, DemoInteractive, DemoRendition } from '../src/clients/demo/schema';
 
@@ -112,6 +116,38 @@ function stubResolver(byScenarioId: Record<string, DemoPresentation>) {
       return byScenarioId[scenarioId] ?? footagePending;
     },
   };
+}
+
+/** A resolver that answers from a queue per call, repeating its last answer. */
+function queuedResolver(queue: readonly DemoPresentation[]) {
+  const calls: string[] = [];
+  return {
+    calls,
+    resolve: async (scenarioId: string): Promise<DemoPresentation> => {
+      calls.push(scenarioId);
+      return queue[Math.min(calls.length - 1, queue.length - 1)];
+    },
+  };
+}
+
+/** A started, playing player whose package carries one interactive artifact. */
+async function playerWithInteractive(
+  sandbox: string,
+): Promise<{ player: DemoPlayer; media: FakeMedia }> {
+  const media = fakeMedia();
+  const player = createDemoPlayer({
+    scenarioId: SCENARIO_ID,
+    resolver: stubResolver({
+      [SCENARIO_ID]: playable({
+        interactive: { url: `${mediaBase(SCENARIO_ID)}/artifact.html`, sandbox },
+      }),
+    }),
+    media,
+    reducedMotion: false,
+  });
+  await player.start();
+  player.dispatch({ type: 'play' });
+  return { player, media };
 }
 
 describe('demo player state machine', () => {
@@ -541,6 +577,348 @@ describe('demo player state machine', () => {
     for (const call of media.calls) {
       expect(call).toMatch(/^(play|pause|seekTo:)/);
     }
+  });
+
+  it('F1 (behaviour 15): the sandbox guard is ASCII case-insensitive — ALLOW-SAME-ORIGIN is refused to the video path, the reason recorded, the iframe sandbox never populated', async () => {
+    const { player, media } = await playerWithInteractive('ALLOW-SAME-ORIGIN');
+    const callsBefore = media.calls.length;
+    player.dispatch({ type: 'open-interactive' });
+    // The video path is used: still playing, nothing paused or fetched.
+    expect(player.snapshot().state).toBe('playing');
+    expect(player.snapshot().interactiveRefusal).toBe('sandbox-allows-same-origin');
+    expect(player.snapshot().interactiveSandbox).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('F1 (behaviour 15): the sandbox guard refuses Allow-Same-Origin — the reason recorded, the iframe sandbox never populated', async () => {
+    const { player, media } = await playerWithInteractive('Allow-Same-Origin');
+    const callsBefore = media.calls.length;
+    player.dispatch({ type: 'open-interactive' });
+    expect(player.snapshot().state).toBe('playing');
+    expect(player.snapshot().interactiveRefusal).toBe('sandbox-allows-same-origin');
+    expect(player.snapshot().interactiveSandbox).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('F1 (behaviour 15): the sandbox guard refuses the mixed-case token inside a multi-token string — `allow-scripts ALLOW-SAME-ORIGIN` never becomes an iframe', async () => {
+    const { player, media } = await playerWithInteractive('allow-scripts ALLOW-SAME-ORIGIN');
+    const callsBefore = media.calls.length;
+    player.dispatch({ type: 'open-interactive' });
+    expect(player.snapshot().state).toBe('playing');
+    expect(player.snapshot().interactiveRefusal).toBe('sandbox-allows-same-origin');
+    expect(player.snapshot().interactiveSandbox).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it('F1 (behaviour 15): an accepted sandbox is applied canonicalised — lowercased tokens, never the mixed-case original', async () => {
+    const { player } = await playerWithInteractive('Allow-Forms ALLOW-SCRIPTS');
+    player.dispatch({ type: 'open-interactive' });
+    expect(player.snapshot().state).toBe('interactive');
+    expect(player.snapshot().interactiveSandbox).toBe('allow-forms allow-scripts');
+    expect(player.snapshot().interactiveRefusal).toBeNull();
+  });
+
+  it('F2 (behaviour 12): a successful media retry clears the error — no error outlives its failure', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().error).not.toBeNull();
+
+    // The retry succeeds: playback resumes and the overlay is gone.
+    await player.retry();
+    expect(player.snapshot().state).toBe('buffering');
+    expect(player.snapshot().error).toBeNull();
+    player.dispatch({ type: 'playing' });
+    expect(player.snapshot().state).toBe('playing');
+    expect(player.snapshot().error).toBeNull();
+  });
+
+  it("F3 (behaviour 12): a superseded resolve lands in error carrying 'superseded', and retry() re-resolves onto the new presentation", async () => {
+    const media = fakeMedia();
+    const resolver = queuedResolver([
+      { state: 'superseded', reason: 'superseded' },
+      playable(),
+    ]);
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver,
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    expect(player.snapshot().error?.reason).toBe('superseded');
+    expect(player.snapshot().unplayableReason).toBe('superseded');
+    expect(player.snapshot().scenarioId).toBe(SCENARIO_ID);
+
+    // retry() takes the resolve branch and lands on the new presentation.
+    const settled = await player.retry();
+    expect(settled.state).toBe('poster');
+    expect(resolver.calls).toEqual([SCENARIO_ID, SCENARIO_ID]);
+    expect(player.snapshot().error).toBeNull();
+    expect(player.snapshot().unplayableReason).toBeNull();
+  });
+
+  it('F3 (behaviour 12): an invalid resolve lands in error carrying its InvalidReason, and retry() re-resolves onto the new presentation', async () => {
+    const media = fakeMedia();
+    const resolver = queuedResolver([
+      { state: 'invalid', reason: 'hash-mismatch' },
+      playable(),
+    ]);
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver,
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    expect(player.snapshot().error?.reason).toBe('hash-mismatch');
+    expect(player.snapshot().unplayableReason).toBe('hash-mismatch');
+
+    const settled = await player.retry();
+    expect(settled.state).toBe('poster');
+    expect(resolver.calls).toEqual([SCENARIO_ID, SCENARIO_ID]);
+    expect(player.snapshot().error).toBeNull();
+  });
+
+  it('F4 (behaviour 13): switching to a revoked scenario pauses the old media and lands on revoked — pendingSwitchTo cleared, scenario switched', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: revoked(),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    const callsBefore = media.calls.length;
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    // The old media played until this instant; the swap lands on the named state.
+    expect(media.calls.slice(callsBefore)).toContain('pause');
+    expect(player.snapshot().state).toBe('revoked');
+    expect(player.snapshot().unplayableReason).toBe('revoked');
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+    expect(player.snapshot().scenarioId).toBe(SWITCHED_SCENARIO_ID);
+  });
+
+  it('F4 (behaviour 13): switching to a footage-pending scenario pauses the old media and lands on pending — pendingSwitchTo cleared, scenario switched', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: footagePending,
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    const callsBefore = media.calls.length;
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(media.calls.slice(callsBefore)).toContain('pause');
+    expect(player.snapshot().state).toBe('pending');
+    expect(player.snapshot().unplayableReason).toBe('footage-pending');
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+    expect(player.snapshot().scenarioId).toBe(SWITCHED_SCENARIO_ID);
+  });
+
+  it('F5 (behaviour 13): the picker works from every state — a switch from pending resolves onto the new scenario, with no media to pause', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('pending');
+    const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('poster');
+    expect(player.snapshot().scenarioId).toBe(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+    // No old media: the swap must not pause a null port.
+    expect(media.calls).not.toContain('pause');
+  });
+
+  it('F5 (behaviour 13): the picker works from revoked too — a switch resolves onto the new scenario state', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: revoked(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('revoked');
+    const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('poster');
+    expect(player.snapshot().scenarioId).toBe(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+    expect(media.calls).not.toContain('pause');
+  });
+
+  it('F5 (behaviour 13): the picker works from a resolve-error too — a switch resolves onto the new scenario state', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: { state: 'invalid', reason: 'hash-mismatch' },
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('poster');
+    expect(player.snapshot().scenarioId).toBe(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+    expect(media.calls).not.toContain('pause');
+  });
+
+  it('F6 (D01): an in-flight guard — two concurrent start() calls resolve once and the second returns the snapshot unchanged', async () => {
+    const media = fakeMedia();
+    let invocations = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: {
+        resolve: async (scenarioId: string): Promise<DemoPresentation> => {
+          invocations += 1;
+          await gate;
+          return playable({ scenarioId });
+        },
+      },
+      media,
+      reducedMotion: false,
+    });
+    const first = player.start();
+    const second = player.start();
+    // The second call in flight must not reset the state.
+    expect(player.snapshot().state).toBe('resolve');
+    release();
+    const settled = await first;
+    const unchanged = await second;
+    expect(settled.state).toBe('poster');
+    expect(unchanged.state).toBe('resolve');
+    // The resolver ran exactly once: no race on applyPresentation.
+    expect(invocations).toBe(1);
+    expect(player.snapshot().state).toBe('poster');
+  });
+
+  it('F6 (D07): an in-flight guard on retry() — two concurrent retry() calls re-resolve once', async () => {
+    const media = fakeMedia();
+    let invocations = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: {
+        resolve: async (scenarioId: string): Promise<DemoPresentation> => {
+          invocations += 1;
+          if (invocations > 1) await gate;
+          return invocations === 1
+            ? { state: 'invalid', reason: 'hash-mismatch' }
+            : playable({ scenarioId });
+        },
+      },
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    const first = player.retry();
+    const second = player.retry();
+    expect(player.snapshot().state).toBe('error');
+    release();
+    const settled = await first;
+    expect(settled.state).toBe('poster');
+    const unchanged = await second;
+    expect(unchanged.state).toBe('error');
+    // The start resolve plus exactly one retry resolve — never two.
+    expect(invocations).toBe(2);
+  });
+
+  it('F7 (D06/D03): a chapter selected from the open transcript seeks the real media and leaves the sheet open; leave from playing and from buffering pauses and lands on paused', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 3 });
+
+    // The transcript is open during playback; a chapter link seeks the real
+    // media while the sheet stays open.
+    player.dispatch({ type: 'open-transcript' });
+    expect(player.snapshot().state).toBe('transcript');
+    player.dispatch({ type: 'select-chapter', label: 'The run' });
+    expect(media.calls).toContain('seekTo:30');
+    expect(player.snapshot().state).toBe('transcript');
+    expect(player.snapshot().positionSeconds).toBe(30);
+
+    // Close, then leave from playing.
+    player.dispatch({ type: 'close-transcript' });
+    player.dispatch({ type: 'play' });
+    const callsBeforeLeave = media.calls.length;
+    player.dispatch({ type: 'leave' });
+    expect(media.calls.slice(callsBeforeLeave)).toContain('pause');
+    expect(player.snapshot().state).toBe('paused');
+
+    // Leave from buffering.
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'waiting' });
+    expect(player.snapshot().state).toBe('buffering');
+    const callsBeforeBufferingLeave = media.calls.length;
+    player.dispatch({ type: 'leave' });
+    expect(media.calls.slice(callsBeforeBufferingLeave)).toContain('pause');
+    expect(player.snapshot().state).toBe('paused');
+  });
+
+  it('F9 (D04): restart() clears the swapTransition — a screen never re-applies an animation for a swap that did not happen', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    player.dispatch({ type: 'poster-ready' });
+    expect(player.snapshot().swapTransition).toBe('crossfade');
+    player.restart();
+    expect(player.snapshot().swapTransition).toBeNull();
   });
 
   it('D01 edge: with no mirror configured the machine resolves to footage-pending and never touches a media element', async () => {
