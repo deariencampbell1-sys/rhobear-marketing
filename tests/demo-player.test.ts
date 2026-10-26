@@ -2915,3 +2915,297 @@ describe("demo player state machine — W0-05b-r8 (Apollo's review of the r7 hea
     expect(second.currentChapter?.startSeconds).toBe(expectedStart);
   });
 });
+
+// W0-05b-r9 — Apollo's review of the r8 head (2026-10-26 15:11:39Z): one
+// contract fix and three soundness fixes, all red-first. F2 breaks the locked
+// "nothing is ever thrown into the UI" contract on hand-built presentations
+// (TypeError out of dispatch()); F3 leaves a scrubbing clip's audio running
+// across a navigate; F4 never checks the answer's own identity, only its
+// freshness; F5 can strand the machine in `resolve` with a dropped start().
+// F1 (the captions URL guard's third disguise) lives in the captions tests.
+describe("demo player state machine — W0-05b-r9 (Apollo's review of the r8 head)", () => {
+  it("r9 F2 case 1 (D05): a hand-built presentation with interactive: undefined records the 'absent' refusal and dispatch() returns — no TypeError ever reaches the caller", async () => {
+    const media = fakeMedia();
+    // A JSON-decoded or hand-built presentation that omits the key: the field
+    // is `undefined`, not `null`, and `interactive.sandbox` then dereferenced
+    // undefined — a TypeError thrown out of dispatch(), the exact class the
+    // guard exists for and a violation of the locked never-throw contract.
+    const handBuilt = {
+      ...playable({ interactive: null }),
+      media: {
+        renditions: [rendition(1280, 720, 42)],
+        posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+        interactive: undefined,
+      },
+    } as unknown as DemoPresentation;
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: handBuilt }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    const callsBefore = media.calls.length;
+    const returned = player.dispatch({ type: 'open-interactive' });
+    // The video path is used, the EXISTING 'absent' refusal is recorded (no
+    // new value in the frozen vocabulary), and the dispatch RETURNS.
+    expect(returned.state).toBe('playing');
+    expect(returned.interactiveRefusal).toBe('absent');
+    expect(returned.interactiveSandbox).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
+  });
+
+  it("r9 F2 case 2 (D05): a sandbox that is missing or not a string records the 'absent' refusal too — the guard reads the shape before it dereferences, never sandbox.trim() on undefined", async () => {
+    for (const sandbox of [undefined, 42, null]) {
+      const media = fakeMedia();
+      const handBuilt = {
+        ...playable({ interactive: null }),
+        media: {
+          renditions: [rendition(1280, 720, 42)],
+          posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+          interactive: { url: `${mediaBase(SCENARIO_ID)}/artifact.html`, sandbox },
+        },
+      } as unknown as DemoPresentation;
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: handBuilt }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      player.dispatch({ type: 'play' });
+      const callsBefore = media.calls.length;
+      const returned = player.dispatch({ type: 'open-interactive' });
+      expect(returned.state).toBe('playing');
+      expect(returned.interactiveRefusal).toBe('absent');
+      expect(returned.interactiveSandbox).toBeNull();
+      expect(media.calls.length).toBe(callsBefore);
+    }
+  });
+
+  it('r9 F2 case 3 (behaviour 8): renditions: undefined degrades to the empty shape — no duration, no throw — and the legitimate renditions: [] behaves exactly as it always has', async () => {
+    for (const renditions of [undefined, []]) {
+      const media = fakeMedia();
+      const handBuilt = {
+        ...playable({ interactive: null }),
+        media: {
+          renditions,
+          posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+          interactive: null,
+        },
+      } as unknown as DemoPresentation;
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: handBuilt }),
+        media,
+        reducedMotion: false,
+      });
+      const settled = await player.start();
+      // The empty shape, whatever put it there: the poster with no
+      // rendition, exactly the no-renditions behaviour the schema's
+      // `empty-renditions` problem already names. The shape guard must not
+      // swallow the legitimate `[]` case — both land the same.
+      expect(settled.state).toBe('poster');
+      expect(settled.durationSeconds).toBeNull();
+      expect(settled.currentChapter).toBeNull();
+      // A media error concerns media that exists — none is invented — and
+      // every dispatch RETURNS: the machine degrades, it does not throw.
+      const returned = player.dispatch({ type: 'media-error', reason: 'network' });
+      expect(returned.state).toBe('poster');
+      expect(returned.error).toBeNull();
+      expect(player.dispatch({ type: 'select-chapter', label: 'The run' }).state).toBe('poster');
+      expect(player.dispatch({ type: 'open-interactive' })).toMatchObject({
+        state: 'poster',
+        interactiveRefusal: 'absent',
+      });
+    }
+  });
+
+  it('r9 F2 case 4 (behaviour 10): chapters: undefined degrades to the empty shape — no current chapter, select-chapter never throws and seeks nothing', async () => {
+    const media = fakeMedia();
+    const handBuilt = {
+      ...playable({ interactive: null }),
+      media: {
+        renditions: [
+          {
+            url: `${mediaBase(SCENARIO_ID)}/clip-1280.mp4`,
+            mime: 'video/mp4',
+            width: 1280,
+            height: 720,
+            durationSeconds: 42,
+            chapters: undefined,
+          },
+        ],
+        posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+        interactive: null,
+      },
+    } as unknown as DemoPresentation;
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: handBuilt }),
+      media,
+      reducedMotion: false,
+    });
+    const settled = await player.start();
+    expect(settled.state).toBe('poster');
+    expect(settled.durationSeconds).toBe(42);
+    expect(settled.currentChapter).toBeNull();
+    // A chapter selection on the shape never throws and seeks nothing —
+    // the machine treats a non-array `chapters` as empty.
+    const callsBefore = media.calls.length;
+    const returned = player.dispatch({ type: 'select-chapter', label: 'The run' });
+    expect(returned.currentChapter).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
+    // Media time still runs and stays chapterless.
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 35 });
+    expect(player.snapshot().currentChapter).toBeNull();
+    expect(player.snapshot().positionSeconds).toBe(35);
+  });
+
+  it('r9 F3 (behaviour 8/S1): leave while seeking pauses the media and lands on paused — the late seeked keeps paused and never restores playing over a paused element', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 5 });
+    player.dispatch({ type: 'seek', positionSeconds: 20 });
+    expect(player.snapshot().state).toBe('seeking');
+
+    // Scrub-then-navigate: the clip's audio must not keep playing on an
+    // unrelated screen — leave pauses the media from `seeking` too.
+    const callsBefore = media.calls.length;
+    const left = player.dispatch({ type: 'leave' });
+    expect(media.calls.slice(callsBefore)).toContain('pause');
+    expect(left.state).toBe('paused');
+
+    // The in-flight seeked lands late: it must keep `paused`, never restore
+    // `playing` over a paused element.
+    const beforeSeeked = player.snapshot();
+    const seeked = player.dispatch({ type: 'seeked' });
+    expect(seeked.state).toBe('paused');
+    expect(seeked).toEqual(beforeSeeked);
+
+    // Coming back keeps the place (S1) and never autoplays.
+    const playsBefore = media.calls.filter((call) => call === 'play').length;
+    player.dispatch({ type: 'return' });
+    expect(player.snapshot().state).toBe('paused');
+    expect(player.snapshot().positionSeconds).toBe(20);
+    expect(media.calls).toContain('seekTo:20');
+    expect(media.calls.filter((call) => call === 'play').length).toBe(playsBefore);
+  });
+
+  it("r9 F4 (D01): a start() answer whose own scenarioId is not the one asked for fails closed — the footage-pending answer lands pending, never the wrong scenario's poster; the matching case is unchanged", async () => {
+    const media = fakeMedia();
+    // A resolver/cache bug returning B's presentation under A's id must not
+    // be presented as A.
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }) }),
+      media,
+      reducedMotion: false,
+    });
+    const settled = await player.start();
+    expect(settled.state).toBe('pending');
+    expect(settled.unplayableReason).toBe('footage-pending');
+    expect(settled.scenarioId).toBe(SCENARIO_ID);
+    expect(settled.durationSeconds).toBeNull();
+    expect(media.calls).toEqual([]);
+
+    // The matching case is unchanged: the answer's identity holds and it
+    // applies exactly as before.
+    const matching = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media: fakeMedia(),
+      reducedMotion: false,
+    });
+    const applied = await matching.start();
+    expect(applied.state).toBe('poster');
+    expect(applied.durationSeconds).toBe(42);
+  });
+
+  it('r9 F4 (D07): a retry() answer with a mismatched identity fails closed the same way', async () => {
+    const media = fakeMedia();
+    const resolver = queuedResolver([
+      { state: 'invalid', reason: 'hash-mismatch' },
+      // The queued answer names a DIFFERENT scenario than the one asked for.
+      playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+    ]);
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver,
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    const settled = await player.retry();
+    expect(settled.state).toBe('pending');
+    expect(settled.unplayableReason).toBe('footage-pending');
+    expect(settled.durationSeconds).toBeNull();
+    expect(settled.scenarioId).toBe(SCENARIO_ID);
+    expect(resolver.calls).toEqual([SCENARIO_ID, SCENARIO_ID]);
+  });
+
+  it("r9 F4 (behaviour 13): a switchScenario() answer with a mismatched identity fails closed — pending under the picked scenario, the wrong presentation never swaps in", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        // The answer to the SWITCH names the OLD scenario.
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('pending');
+    expect(settled.unplayableReason).toBe('footage-pending');
+    expect(settled.scenarioId).toBe(SWITCHED_SCENARIO_ID);
+    expect(settled.durationSeconds).toBeNull();
+    expect(settled.pendingSwitchTo).toBeNull();
+  });
+
+  it('r9 F5 (D01): a start() dropped by the in-flight guard is never a strand — restart() mid-flight, the second start() turned away, the stale answer lands and the machine refills the slot with exactly one fresh resolve()', async () => {
+    const media = fakeMedia();
+    let calls = 0;
+    const first = deferred<DemoPresentation>();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: {
+        resolve: async (scenarioId: string): Promise<DemoPresentation> => {
+          calls += 1;
+          return calls === 1 ? first.promise : playable({ scenarioId });
+        },
+      },
+      media,
+      reducedMotion: false,
+    });
+    const started = player.start(); // start() #1 hangs in flight
+    player.restart(); // the restart moves the world — #1 is condemned
+    const dropped = await player.start(); // start() #2: turned away by the in-flight guard
+    expect(dropped.state).toBe('resolve');
+    first.resolve(footagePending); // #1's answer lands stale and is discarded
+
+    // The discarded slot is refilled by exactly one fresh resolve() — the
+    // machine applies a fresh answer and is not stranded in `resolve` even
+    // though the screen's mount effect will not call start() again. The
+    // stale footage-pending is never applied under the refilled call.
+    const settled = await started;
+    expect(calls).toBe(2); // single-flight still holds: never two racing
+    expect(settled.state).toBe('poster');
+    expect(settled.scenarioId).toBe(SCENARIO_ID);
+    expect(settled.unplayableReason).toBeNull();
+    expect(player.snapshot().state).toBe('poster');
+  });
+});

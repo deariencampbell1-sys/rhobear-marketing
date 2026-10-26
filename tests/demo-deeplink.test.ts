@@ -724,3 +724,92 @@ describe("demo deep links and captions — W0-05b-r8 (Apollo's review of the r7 
     });
   });
 });
+
+// W0-05b-r9 — Apollo's review of the r8 head (2026-10-26 15:11:39Z). F1 is
+// the third disguise of the same guard and this round closes the class: the
+// normalisation is no longer a blacklist of decorations, it is the URL
+// parser's own steps in the parser's own order. WHATWG "basic URL parser"
+// removes ALL ASCII tab or newline from anywhere in the input BEFORE it
+// parses anything, then removes leading/trailing C0 control or space, and
+// reads `\` as `/` in special schemes — so `'java\tscript:...'`,
+// `'/\t/evil.example/x.vtt'` and their newline spellings are the SAME URL to
+// every browser as the plain refused ones. Any spelling that survives this
+// normalisation is the same URL to every browser, so no decoration of a
+// refused shape can ever win the race to the discrimination again.
+describe("demo deep links and captions — W0-05b-r9 (Apollo's review of the r8 head)", () => {
+  it('r9 F1 (behaviour 20): isWebVttUrl removes tab and newline the way the URL parser does — every spelling of a foreign scheme or a scheme-relative host split by a tab or newline is refused', () => {
+    for (const disguised of [
+      // The r8 variant table, unchanged — every row still refused.
+      ' //evil.example/x.vtt', // a leading space
+      '\t//evil.example/x.vtt', // a leading tab
+      '\u0000//evil.example/x.vtt', // a leading C0 control
+      '//evil.example/x.vtt', // plain scheme-relative
+      '\\\\evil.example/x.vtt', // as JS source — two literal backslashes
+      '\\\\\\\\evil.example/x.vtt', // as raw characters — four literal backslashes
+      '/\\evil.example/x.vtt', // as JS source — slash + one literal backslash
+      '/\\\\evil.example/x.vtt', // as raw characters — slash + two literal backslashes
+      'javascript:alert(1)//x.vtt',
+      'data:text/vtt;base64,xxx.vtt',
+      'JavaScript:alert(1)//x.vtt', // the scheme rule is case-insensitive
+      '\t\\\\\\\\evil.example/x.vtt', // as raw characters — tab + four literal backslashes
+      '\t\\\\evil.example/x.vtt', // as JS source — tab + two literal backslashes
+
+      // r9 F1, the review's spellings: one tab or newline INSIDE the string.
+      // The r8 strip never touched the middle, `SCHEME_PREFIX` stopped at the
+      // tab and the value fell to the relative branch — ACCEPTED with `.vtt`,
+      // while every browser removes the tab/newline first and reads
+      // `javascript:` / `data:` / `//evil.example`.
+      'java\tscript:alert(1)//x.vtt', // the review's spelling
+      'java\nscript:alert(1)//x.vtt', // the review's spelling
+      'java\rscript:alert(1)//x.vtt', // the parser removes \r with the rest
+      'javascript\t:alert(1)//x.vtt', // the tab between the scheme and the colon
+      'da\tta:text/vtt;base64,xxx.vtt', // the review's spelling
+      '/\t/evil.example/x.vtt', // the review's spelling — the tab splitting the `//` lead
+      '/\r\n/evil.example/x.vtt', // the same with the other two removed characters
+
+      // The edge that needs ALL THREE parser steps — tab/newline removal,
+      // the C0/space edge strip, and the backslash-as-slash — in both
+      // literal readings of the review's "'\t\\\\\t//evil.example/x.vtt'":
+      '\t\\\\\t//evil.example/x.vtt', // as JS source — tab + two literal backslashes + tab
+      '\t\\\\\\\\\t//evil.example/x.vtt', // as raw characters — tab + four literal backslashes + tab
+      // ... and one spelling where each step must fire on its own part: a
+      // leading C0/space (step 2), interior tabs (step 1) and backslashes
+      // (step 3) sitting between the `/` and the host. Without any one of
+      // the three the value slips to the relative branch and is accepted.
+      ' \t/\t\\\\/evil.example/x.vtt',
+    ]) {
+      expect(isWebVttUrl(disguised)).toBe(false);
+    }
+  });
+
+  it("r9 F1 boundary calls (behaviour 20): 'C:/captions.vtt' is still refused and '/captions.vtt ' still accepted — and the one-literal-backslash reading of the review's '\\t\\\\evil.example/x.vtt' is r8's pinned boundary spelling, the same URL to every browser", () => {
+    expect(isWebVttUrl('C:/captions.vtt')).toBe(false);
+    expect(isWebVttUrl('/captions.vtt ')).toBe(true);
+    // The accepted side of the rule, pinned with them: the front door's own
+    // relative captions and http(s) wherever it points.
+    for (const own of [
+      'captions.vtt',
+      './captions.vtt',
+      '/captions.vtt',
+      'https://x/c.vtt',
+      'HTTPS://x/c.vtt',
+      'http://x/c.vtt',
+    ]) {
+      expect(isWebVttUrl(own)).toBe(true);
+    }
+    // Stated boundary (r8's row, with the review's leading tab). The review's
+    // "'\t\\evil.example/x.vtt'" read as ONE literal backslash (as JS source)
+    // is the SAME URL to every browser as r8's pinned-accepted
+    // "'\\evil.example/x.vtt'": the parser removes the tab first, and what
+    // survives is one leading `/` — `/evil.example/x.vtt`, the front door's
+    // own root-relative path, same-origin. This round's own claim is the
+    // rule — any spelling that survives the normalisation is the same URL to
+    // every browser — so it keeps the same, accepted verdict; refusing it
+    // would need a blacklist on path content, which the structural order
+    // cannot carry. The raw reading of the review's spelling (tab + two
+    // literal backslashes) IS refused above: it normalises to
+    // `//evil.example/x.vtt`.
+    expect(isWebVttUrl('\\evil.example/x.vtt')).toBe(true);
+    expect(isWebVttUrl('\t\\evil.example/x.vtt')).toBe(true);
+  });
+});
