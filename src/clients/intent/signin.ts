@@ -80,6 +80,16 @@ export const SIGNIN_STATES = Object.freeze([
 ] as const);
 export type SignInState = (typeof SIGNIN_STATES)[number];
 
+/**
+ * The only states a magic-link event may arrive from: while the machine is
+ * still waiting on the provider, or inside the magic-link states themselves.
+ * A late or duplicated provider event arriving at a finished state (done,
+ * denied, conflict, expired, used, wrong-browser, offline, …) must not drag
+ * the flow backwards — onMagicLinkEvent refuses it and reports false
+ * (W0-06 review r1).
+ */
+const MAGIC_LINK_EVENT_SOURCES: readonly string[] = Object.freeze(['provider-pending', 'sent', 'cooldown']);
+
 /** Provider-reported magic-link events; the machine owns no provider. */
 export type MagicLinkEvent =
   | { type: 'sent' }
@@ -351,6 +361,9 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
 
   function onMagicLinkEvent(event: MagicLinkEvent): boolean {
     if (method !== 'email' || !intent) return false;
+    // A late or duplicated event must never drag a finished state (done,
+    // denied, conflict, …) back into sent/used/offline.
+    if (!MAGIC_LINK_EVENT_SOURCES.includes(state)) return false;
     if (event.type === 'sent') {
       state = 'sent';
     } else if (event.type === 'cooldown') {

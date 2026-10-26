@@ -11,7 +11,10 @@ import {
   isMethodAvailable,
   magicLinkSentCopy,
   visibleMethods,
+  type MagicLinkEvent,
+  type SignInMachine,
   type SignInProviderConfig,
+  type SignInState,
 } from '../src/clients/intent/signin';
 import {
   CONSUMED_RETENTION_MS,
@@ -113,30 +116,121 @@ describe('sign-in state machine', () => {
     machine.continueToMethodSelect();
     expect(machine.chooseMethod('email')).toBe(true);
     expect(machine.requestMagicLink('person@example.com')).toBe(true);
-    machine.onMagicLinkEvent({ type: 'sent' });
+    expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true); // from provider-pending
     expect(machine.snapshot().state).toBe('sent');
     // The sent copy cannot know or say whether the address owns an account:
     // no enumeration, no "we couldn't find that email".
     expect(magicLinkSentCopy('new@example.com')).toBe(magicLinkSentCopy('longtime@example.com'));
     expect(machine.snapshot().copy).toBe(magicLinkSentCopy('person@example.com'));
     expect(magicLinkSentCopy('person@example.com')).not.toMatch(/couldn't find|no account|not registered|unknown address/i);
-    // Cooldown carries the remaining seconds on the injected clock.
-    machine.onMagicLinkEvent({ type: 'cooldown', until: clock.now() + 30_000 });
+    // Cooldown from sent (an allowed source), remaining seconds on the clock.
+    expect(machine.onMagicLinkEvent({ type: 'cooldown', until: clock.now() + 30_000 })).toBe(true);
     expect(machine.snapshot().state).toBe('cooldown');
     expect(machine.remainingCooldownSeconds()).toBe(30);
     clock.advance(10_000);
     expect(machine.remainingCooldownSeconds()).toBe(20);
-    // The remaining link states, each reachable and named.
-    machine.onMagicLinkEvent({ type: 'expired' });
+    // Expired from cooldown (an allowed source).
+    expect(machine.onMagicLinkEvent({ type: 'expired' })).toBe(true);
     expect(machine.snapshot().state).toBe('expired');
-    machine.onMagicLinkEvent({ type: 'used' });
-    expect(machine.snapshot().state).toBe('used');
-    machine.onMagicLinkEvent({ type: 'wrong-browser' });
-    expect(machine.snapshot().state).toBe('wrong-browser');
-    machine.onMagicLinkEvent({ type: 'offline' });
-    expect(machine.snapshot().state).toBe('offline');
     expect(machine.snapshot().intent).not.toBeNull();
     expect(machine.snapshot().claimedSuccess).toBe(false);
+
+    // used, wrong-browser and offline, each from an allowed source state.
+    const leafFrom = async (event: MagicLinkEvent, expected: SignInState) => {
+      const fresh = setup({ email: true });
+      await fresh.machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+      fresh.machine.continueToMethodSelect();
+      fresh.machine.chooseMethod('email');
+      fresh.machine.requestMagicLink('person@example.com');
+      expect(fresh.machine.onMagicLinkEvent(event), expected).toBe(true);
+      expect(fresh.machine.snapshot().state).toBe(expected);
+      expect(fresh.machine.snapshot().intent).not.toBeNull();
+      expect(fresh.machine.snapshot().claimedSuccess).toBe(false);
+    };
+    await leafFrom({ type: 'used' }, 'used');
+    await leafFrom({ type: 'wrong-browser' }, 'wrong-browser');
+    await leafFrom({ type: 'offline' }, 'offline');
+  });
+
+  it('a late or duplicated magic-link event cannot drag a finished state backwards', async () => {
+    const events: MagicLinkEvent[] = [
+      { type: 'sent' },
+      { type: 'used' },
+      { type: 'expired' },
+      { type: 'cooldown', until: BASE + 60_000 },
+      { type: 'wrong-browser' },
+      { type: 'offline' },
+    ];
+
+    // done: every event is ignored — the state stays done.
+    const done = setup({ email: true });
+    await done.machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute: '/get' });
+    done.machine.continueToMethodSelect();
+    done.machine.chooseMethod('email');
+    done.machine.sessionApproved();
+    await done.machine.restoreDestination();
+    done.machine.completeRestore();
+    expect(done.machine.snapshot().state).toBe('done');
+    for (const event of events) {
+      expect(done.machine.onMagicLinkEvent(event), `done ignores ${event.type}`).toBe(false);
+      expect(done.machine.snapshot().state, `done ignores ${event.type}`).toBe('done');
+    }
+
+    // denied: ignored, the state stays denied.
+    const denied = setup({ email: true });
+    await denied.machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute: '/get' });
+    denied.machine.continueToMethodSelect();
+    denied.machine.chooseMethod('email');
+    denied.machine.providerDenied();
+    expect(denied.machine.snapshot().state).toBe('denied');
+    for (const event of events) {
+      expect(denied.machine.onMagicLinkEvent(event), `denied ignores ${event.type}`).toBe(false);
+      expect(denied.machine.snapshot().state, `denied ignores ${event.type}`).toBe('denied');
+    }
+
+    // conflict: ignored, the state stays conflict.
+    const conflict = setup({ email: true });
+    await conflict.machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute: '/get' });
+    conflict.machine.continueToMethodSelect();
+    conflict.machine.chooseMethod('email');
+    conflict.machine.channelConflict();
+    expect(conflict.machine.snapshot().state).toBe('conflict');
+    for (const event of events) {
+      expect(conflict.machine.onMagicLinkEvent(event), `conflict ignores ${event.type}`).toBe(false);
+      expect(conflict.machine.snapshot().state, `conflict ignores ${event.type}`).toBe('conflict');
+    }
+
+    // The three allowed sources still accept events.
+    const toPending = (m: SignInMachine): void => {
+      m.continueToMethodSelect();
+      m.chooseMethod('email');
+      m.requestMagicLink('person@example.com');
+    };
+    const fromSource = async (walk: (m: SignInMachine) => void, event: MagicLinkEvent, expected: SignInState) => {
+      const fresh = setup({ email: true });
+      await fresh.machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+      walk(fresh.machine);
+      expect(fresh.machine.onMagicLinkEvent(event), `${event.type} from an allowed source`).toBe(true);
+      expect(fresh.machine.snapshot().state).toBe(expected);
+    };
+    await fromSource(toPending, { type: 'sent' }, 'sent'); // from provider-pending
+    await fromSource(
+      (m) => {
+        toPending(m);
+        m.onMagicLinkEvent({ type: 'sent' });
+      },
+      { type: 'used' },
+      'used',
+    ); // from sent
+    await fromSource(
+      (m) => {
+        toPending(m);
+        m.onMagicLinkEvent({ type: 'sent' });
+        m.onMagicLinkEvent({ type: 'cooldown', until: BASE + 60_000 });
+      },
+      { type: 'expired' },
+      'expired',
+    ); // from cooldown
   });
 
   it('denied, canceled, offline and conflict keep the intent and never grant', async () => {
