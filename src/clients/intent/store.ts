@@ -32,6 +32,13 @@
 // never fall back to the stale stored record — a cleared intent cannot
 // resurrect — and clear() returns which of the two happened.
 //
+// Reads clean up what they report (W0-06 review r4, findings 5 and 8): the
+// load that reports a `consumed` record past its retention or an `expired`
+// record removes it in the same call, and consume() applies the same
+// retention — the same boundary, equal counts as past — to its
+// `already-consumed` answer. The two readers can therefore never disagree
+// about a record's age at the same instant.
+//
 // The consume body is wrapped (W0-06 review r2, finding 7): a failure inside
 // the critical section — for example createIntentId when
 // globalThis.crypto.getRandomValues is absent — becomes the outcome
@@ -197,10 +204,22 @@ async function underConsumeLock(
   if (locks) {
     let ran = false;
     try {
-      const core = await locks.request(CONSUME_LOCK_NAME, { mode: 'exclusive' }, async () => {
-        ran = true;
-        return body();
-      });
+      // The result is typed `| undefined` because a LockManager that resolves
+      // without ever invoking the callback is possible (W0-06 review r4,
+      // finding 7). When that happens the body still runs — inline, on the
+      // in-process guarantee: consume() stays a total function whatever the
+      // lock manager does.
+      const core: ConsumeCore | undefined = await locks.request(
+        CONSUME_LOCK_NAME,
+        { mode: 'exclusive' },
+        async () => {
+          ran = true;
+          return body();
+        },
+      );
+      if (core === undefined) {
+        return { core: await body(), exclusive: 'in-process' };
+      }
       return { core, exclusive: 'web-locks' };
     } catch {
       if (ran) {
@@ -212,6 +231,13 @@ async function underConsumeLock(
     }
   }
   return { core: await body(), exclusive: 'in-process' };
+}
+
+/** W0-06 review r4 (finding 5): the one retention judgement both readers use
+ * — load() and consume() agree about a consumed record's age at the same
+ * instant, boundary included: exactly CONSUMED_RETENTION_MS counts as past. */
+function consumedPastRetention(consumedAt: string, nowMs: number): boolean {
+  return nowMs - Date.parse(consumedAt) >= CONSUMED_RETENTION_MS;
 }
 
 function readEnvelope(text: string): { ok: true; env: Envelope } | { ok: false } {
@@ -406,16 +432,21 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     const { intent, durable } = decoded;
     if (intent.consumedAt !== undefined) {
       // Behaviour 8: a consumed record is kept only long enough to restore the
-      // route and is then removed on the next load. This cleanup is load's
-      // ONLY mutation — active records are never touched by a read.
-      if (now() - Date.parse(intent.consumedAt) >= CONSUMED_RETENTION_MS) {
+      // route and is then removed by the load that finds it past retention.
+      if (consumedPastRetention(intent.consumedAt, now())) {
         await removeRaw();
         return { state: 'absent' };
       }
       return { state: 'consumed', intent, durable };
     }
-    // An expiresAt that has passed by even one millisecond is expired.
-    if (Date.parse(intent.expiresAt) <= now()) return { state: 'expired' };
+    // An expiresAt that has passed by even one millisecond is expired — and
+    // the load that reports it removes the record too (W0-06 review r4,
+    // finding 8), the same discipline as `consumed`: expired intents do not
+    // linger in storage. Active records are never touched by a read.
+    if (Date.parse(intent.expiresAt) <= now()) {
+      await removeRaw();
+      return { state: 'expired' };
+    }
     return { state: 'active', intent, durable };
   }
 
@@ -460,6 +491,15 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     // A consumed record never re-runs: the caller gets the original route so
     // the screen can restore the destination without repeating the checkout.
     if (current.consumedAt !== undefined) {
+      // W0-06 review r4 (finding 5): the same retention load() applies — the
+      // two readers agree at the same instant. Past it the record is removed
+      // and the answer is `absent`, never `already-consumed` (which used to
+      // send this tab back into a completed checkout ten minutes after
+      // another tab finished).
+      if (consumedPastRetention(current.consumedAt, now())) {
+        await removeRaw();
+        return { outcome: 'absent' };
+      }
       return { outcome: 'already-consumed', returnRoute: current.returnRoute, durable: decoded.durable };
     }
     if (Date.parse(current.expiresAt) <= now()) return { outcome: 'expired' };
@@ -474,6 +514,12 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
       if (rival.ok) {
         const rivalRecord = parseIntent(rival.env.i);
         if (rivalRecord.ok && rivalRecord.intent.consumedAt !== undefined) {
+          // W0-06 review r4 (finding 5): the same retention check guards every
+          // already-consumed answer.
+          if (consumedPastRetention(rivalRecord.intent.consumedAt, now())) {
+            await removeRaw();
+            return { outcome: 'absent' };
+          }
           return {
             outcome: 'already-consumed',
             returnRoute: rivalRecord.intent.returnRoute,
@@ -500,13 +546,17 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     if (envelope.env.n === nonce) {
       return { outcome: 'consumed', intent: wonRecord, durable: confirm.durable };
     }
-    // Another consumer won the race. Their record carries the original route.
+    // Another consumer won the race. Their record carries the original route
+    // and a stamp written moments ago; the same retention check guards the
+    // answer anyway (W0-06 review r4, finding 5).
     const winner = parseIntent(envelope.env.i);
-    return {
-      outcome: 'already-consumed',
-      returnRoute: winner.ok ? winner.intent.returnRoute : current.returnRoute,
-      durable: confirm.durable,
-    };
+    const winnerRoute = winner.ok ? winner.intent.returnRoute : current.returnRoute;
+    const winnerStamp = winner.ok ? winner.intent.consumedAt : undefined;
+    if (winnerStamp !== undefined && consumedPastRetention(winnerStamp, now())) {
+      await removeRaw();
+      return { outcome: 'absent' };
+    }
+    return { outcome: 'already-consumed', returnRoute: winnerRoute, durable: confirm.durable };
   }
 
   /** W0-06 review r2 (finding 7): nothing here throws into the UI, and that

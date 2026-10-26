@@ -104,10 +104,14 @@ export type RestoreDestinationResult =
   | { outcome: 'already-restored'; snapshot: SignInSnapshot }
   | { outcome: 'not-restoring'; snapshot: SignInSnapshot };
 
-/** W0-06 review r3 (finding 2): the money path may pass its own
- * re-confirmation details when calling confirmRestore(); nothing in this
- * machine reads them — the confirmation itself is L2's act. */
-export type ConfirmRestoreOptions = Readonly<Record<string, unknown>>;
+/** W0-06 review r4 (finding 4): the money path's re-confirmation before
+ * charging, asserted at the call site. This machine cannot verify the
+ * re-confirmation; the caller asserts it, and the required argument exists so
+ * the assertion is visible at every call site. It is not a token and nothing
+ * here verifies anything — L2 owns the re-confirmation itself. A missing or
+ * false assertion is refused with 'not-restoring', exactly like a wrong
+ * state. */
+export type MoneyPathAssertion = { readonly moneyPathConfirmed: true };
 
 /** W0-06 review r3 (finding 2): confirmRestore answers with the done
  * snapshot, or the literal 'not-restoring' from any other state — a wrong
@@ -127,7 +131,7 @@ const MAGIC_LINK_EVENT_SOURCES: readonly string[] = Object.freeze(['provider-pen
 /** Provider-reported magic-link events; the machine owns no provider. */
 export type MagicLinkEvent =
   | { type: 'sent' }
-  | { type: 'cooldown'; until: number } // epoch ms, judged on the injected clock
+  | { type: 'cooldown'; until: number } // epoch ms on the injected clock; finite and positive, refused otherwise
   | { type: 'expired' }
   | { type: 'used' }
   | { type: 'wrong-browser' } // the link was opened in a different browser
@@ -189,9 +193,20 @@ export type SignInMachine = {
    * done, or was called from a state where nothing is being restored. */
   completeRestore(): CompleteRestoreResult;
   /** restored-unverified → done, called by the money path AFTER its own
-   * re-confirmation through L2. Every other state reports 'not-restoring'
-   * and is left untouched (W0-06 review r3, finding 2). */
-  confirmRestore(options?: ConfirmRestoreOptions): ConfirmRestoreResult;
+   * re-confirmation through L2 (W0-06 review r3, finding 2). The assertion is
+   * required and explicit (W0-06 review r4, finding 4): this machine cannot
+   * verify the re-confirmation; the caller asserts it, and the required
+   * argument exists so the assertion is visible at every call site. A missing
+   * or false assertion — like every other state — reports 'not-restoring'
+   * and is left untouched. */
+  confirmRestore(assertion: MoneyPathAssertion): ConfirmRestoreResult;
+  /** W0-06 review r4 (finding 9): the named predicate that exposes what a
+   * bare zero cannot — true exactly when a cooldown deadline exists and has
+   * passed: the cooldown is over and a new link may be requested.
+   * remainingCooldownSeconds() reports a distinct 0 both when no cooldown is
+   * running and when one has finished; this predicate is the distinction, so
+   * a screen never reads a permanent zero as "still counting". */
+  readyToResend(): boolean;
   requestMagicLink(email: string): boolean;
   onMagicLinkEvent(event: MagicLinkEvent): boolean;
   remainingCooldownSeconds(): number;
@@ -215,7 +230,10 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   let recovery: readonly RecoveryOption[] | null = null;
   let purchasesPreserved: boolean | null = null;
   let copy: string | null = null;
-  let cooldownUntil = 0;
+  // W0-06 review r4 (finding 1): nullable so resetTransient() can clear it —
+  // null means "no cooldown deadline exists", never a zero that could be
+  // mistaken for a countdown.
+  let cooldownUntil: number | null = null;
   // W0-06 review r2 (finding 3): the exclusivity of the last restore, so the
   // screen can tell a cross-tab guarantee from a same-tab one.
   let restoreGuarantee: RestoreGuarantee = 'none';
@@ -249,6 +267,32 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     };
   }
 
+  /** W0-06 review r4 (finding 1): the ONE reset for every transient field the
+   * machine owns — claimedSuccess, recovery, purchasesPreserved,
+   * restoreGuarantee, copy, method and cooldownUntil. It runs at the top of
+   * beginWithStoredIntent() and on both branches of armIntent() (every path
+   * back to `idle` is one of those branches). Nothing else may set these
+   * fields to their defaults: one function, so the next branch cannot forget. */
+  function resetTransient(): void {
+    claimedSuccess = false;
+    recovery = null;
+    purchasesPreserved = null;
+    restoreGuarantee = 'none';
+    copy = null;
+    method = null;
+    cooldownUntil = null;
+  }
+
+  /** W0-06 review r4 (finding 6): a fabricated consumed stamp never exceeds
+   * the record's own expiresAt — a stamp past it would make the snapshot's
+   * record fail parseIntent's consumedAt range check and refuse to re-save. */
+  function stampConsumed(record: Intent): Intent {
+    return {
+      ...record,
+      consumedAt: new Date(Math.min(now(), Date.parse(record.expiresAt))).toISOString(),
+    };
+  }
+
   function requireIntent(): boolean {
     if (!intent) {
       state = 'no-intent';
@@ -260,16 +304,20 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   async function armIntent(input: CreateIntentInput): Promise<CreateResult> {
     const result = await store.create(input);
     if (result.ok) {
+      // W0-06 review r4 (finding 1): resetTransient() on BOTH branches — a
+      // fresh intent starts with nothing claimed, nothing restored and no
+      // leftover copy, method or cooldown from the walk before it.
+      resetTransient();
       intent = result.intent;
       state = 'intent-loaded';
-      claimedSuccess = false;
-      recovery = null;
-      purchasesPreserved = null;
-      copy = null;
-      restoreGuarantee = 'none'; // nothing has been restored for a fresh intent
     } else {
       // The whole intent was rejected (bad route, bad product, …): there is
-      // no fallback destination and nothing to restore later.
+      // no fallback destination and nothing to restore later. resetTransient()
+      // runs here too (W0-06 review r4, finding 1) — a machine that had
+      // claimed a session or hit a conflict must not report that history over
+      // a rejected intent — and the only copy left is this return's failure
+      // copy.
+      resetTransient();
       state = 'idle';
       intent = null;
       copy = `That destination could not be saved (${result.problem}).`;
@@ -278,14 +326,13 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   }
 
   async function beginWithStoredIntent(): Promise<SignInSnapshot> {
-    // W0-06 review r3 (finding 6): EVERY branch resets the transient fields,
-    // not just `active` — a machine reused across returns must show this
-    // return's state only. On the consumed branch this reset is also the
+    // W0-06 review r3 (finding 6) and review r4 (findings 1 and 2): EVERY
+    // branch resets the transient fields, not just `active` — a machine
+    // reused across returns must show this return's state only, and
+    // resetTransient() clears all of them (copy and method included) at the
+    // top, before any branch. On the consumed branch this reset is also the
     // honest guarantee: no restore ran here, so no lock existed (finding 5).
-    claimedSuccess = false;
-    recovery = null;
-    purchasesPreserved = null;
-    restoreGuarantee = 'none';
+    resetTransient();
     const loaded: LoadResult = await store.load();
     if (loaded.state === 'active') {
       intent = loaded.intent;
@@ -321,7 +368,12 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       state === 'provider-pending' ||
       // W0-06 review r3 (finding 1): the link expired but the intent did not
       // — send a new link and keep the place.
-      state === 'link-expired'
+      state === 'link-expired' ||
+      // W0-06 review r4 (finding 3): a used link and a wrong-browser link are
+      // live-intent states — the intent is unconsumed in each — so both offer
+      // a new one instead of dead-ending until a page reload.
+      state === 'used' ||
+      state === 'wrong-browser'
     ) {
       state = 'method-select';
       copy = null;
@@ -422,7 +474,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       // and the guarantee of THIS restore attempt (the exclusivity the
       // consume call actually ran under), never the last restore's.
       if (intent) {
-        intent = { ...intent, consumedAt: new Date(now()).toISOString() };
+        intent = stampConsumed(intent); // W0-06 review r4 (finding 6)
       }
       restoreGuarantee = result.exclusive;
       state = 'done';
@@ -452,7 +504,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       // restore that reached done recorded — from the actual existence of a
       // lock. A second call must not rewrite that history.
       if (intent && intent.consumedAt === undefined) {
-        intent = { ...intent, consumedAt: new Date(now()).toISOString() };
+        intent = stampConsumed(intent); // W0-06 review r4 (finding 6)
       }
       return 'already-done'; // restoring → done happens once
     }
@@ -466,10 +518,15 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
    * restored on the weaker in-process guarantee — the dead end the review
    * found. The money path calls it AFTER its own re-confirmation through L2.
    * It does not charge, does not call the network and does not consume
-   * anything. Accepted only from 'restored-unverified'; from any other state
-   * it reports 'not-restoring' and changes nothing. */
-  function confirmRestore(options?: ConfirmRestoreOptions): ConfirmRestoreResult {
-    void options; // deliberately unused: the re-confirmation is L2's act
+   * anything. Accepted only from 'restored-unverified' with the explicit
+   * money-path assertion; a missing or false assertion — like every other
+   * state — reports 'not-restoring' and changes nothing. */
+  function confirmRestore(assertion: MoneyPathAssertion): ConfirmRestoreResult {
+    // W0-06 review r4 (finding 4): this machine cannot verify the
+    // re-confirmation; the caller asserts it, and the required argument
+    // exists so the assertion is visible at every call site. It is not a
+    // token and nothing here verifies anything — L2 owns the re-confirmation.
+    if (!assertion || assertion.moneyPathConfirmed !== true) return 'not-restoring';
     if (state !== 'restored-unverified') return 'not-restoring';
     state = 'done';
     return snapshot();
@@ -491,6 +548,12 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     // A late or duplicated event must never drag a finished state (done,
     // denied, conflict, …) back into sent/used/offline.
     if (!MAGIC_LINK_EVENT_SOURCES.includes(state)) return false;
+    if (event.type === 'cooldown' && (!Number.isFinite(event.until) || event.until <= 0)) {
+      // W0-06 review r4 (finding 9): a NaN or Infinity `until` would propagate
+      // NaN seconds to the screen, and a non-positive one could never count
+      // down. A malformed `until` is refused and changes nothing.
+      return false;
+    }
     if (event.type === 'sent') {
       state = 'sent';
     } else if (event.type === 'cooldown') {
@@ -511,9 +574,25 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     return true;
   }
 
+  /** W0-06 review r4 (finding 9): a distinct, finite 0 — never NaN, because a
+   * malformed `until` is refused at the door. The 0 alone cannot say whether
+   * no cooldown is running or one has finished; readyToResend() is the named
+   * predicate that does. */
   function remainingCooldownSeconds(): number {
-    if (state !== 'cooldown') return 0;
+    if (state !== 'cooldown' || cooldownUntil === null) return 0;
     return Math.max(0, Math.ceil((cooldownUntil - now()) / 1000));
+  }
+
+  /** W0-06 review r4 (finding 9): the named predicate that exposes what a
+   * bare zero cannot — true exactly when a cooldown deadline exists and has
+   * passed: the cooldown is over and a new link may be requested. It is false
+   * while one still counts down and while no deadline exists (a machine that
+   * never cooled down, or one resetTransient() has cleared — which is what
+   * makes a stale deadline from a previous walk impossible to misread). The
+   * deadline is judged regardless of the current state, so a cooldown the
+   * flow has since moved past still reports as run out. */
+  function readyToResend(): boolean {
+    return cooldownUntil !== null && cooldownUntil <= now();
   }
 
   return {
@@ -535,5 +614,6 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     requestMagicLink,
     onMagicLinkEvent,
     remainingCooldownSeconds,
+    readyToResend,
   };
 }
