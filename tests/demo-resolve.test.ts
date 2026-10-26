@@ -1,14 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 // The source scan imports the modules as text via vite's ?raw loader — the
 // repo has no @types/node, so no node: imports anywhere in these files.
 import schemaSource from '../src/clients/demo/schema.ts?raw';
 import resolveSource from '../src/clients/demo/resolve.ts?raw';
 import indexSource from '../src/clients/demo/index.ts?raw';
 // W0-05a — publication state → presentation. Every fixture is a contract-
-// complete package body whose contentHash really is the sha256 of the body
-// with the contentHash key removed (a digest cannot cover itself), so the
-// resolver's hash gate only fires when a test tampers on purpose. Fixed clock
-// via `now`; the network is a stub FetchLike — no real request is ever made.
+// complete package body whose contentHash really is the sha256 of the body in
+// canonical form with the contentHash key removed (a digest cannot cover
+// itself), so the resolver's hash gate only fires when a test tampers on
+// purpose. Fixed clock via `now`; the network is a stub FetchLike — no real
+// request is ever made.
 import { type ScenarioRegistry } from '../src/clients/demo/schema';
 import {
   buildEnginesIndex,
@@ -27,6 +28,22 @@ const sha256Hex = async (text: string): Promise<string> => {
   return hex;
 };
 
+/**
+ * The canonical form the content hash covers, produced from the documented
+ * rule: object keys sorted at every level, arrays in wire order, finite
+ * numbers as JSON.stringify writes them.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  if (value !== null && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+  }
+  const scalar = JSON.stringify(value);
+  return scalar === undefined ? 'null' : scalar;
+}
+
 const SOURCE_REVISION = 'a'.repeat(40);
 const PACKAGE_REVISION = 'rev-2026-10-25-1';
 const SCENARIO_ID = 'teams-01'; // a board scenario id
@@ -37,7 +54,8 @@ const mediaBase = (scenarioId: string) =>
 
 /**
  * A serialized contract-complete package. `contentHash` is computed over the
- * body with the contentHash key removed, exactly as the resolver verifies it.
+ * body in canonical form with the contentHash key removed, exactly as the
+ * resolver verifies it.
  */
 async function rawPackage(
   patch: Record<string, unknown> = {},
@@ -70,7 +88,7 @@ async function rawPackage(
     immutableUrls: true,
     ...patch,
   };
-  const contentHash = await sha256Hex(JSON.stringify(body));
+  const contentHash = await sha256Hex(canonicalJson(body));
   return JSON.stringify({ ...body, contentHash });
 }
 
@@ -218,6 +236,7 @@ describe('demo resolve', () => {
         purged.push(scenarioId);
         inner.markForPurge(scenarioId);
       },
+      isMarkedForPurge: (scenarioId) => inner.isMarkedForPurge(scenarioId),
     };
     const { fetchImpl } = mirror({
       [`/demos/${SCENARIO_ID}.json`]: await rawPackage({ publicationState: 'revoked' }),
@@ -268,10 +287,61 @@ describe('demo resolve', () => {
     expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
   });
 
-  it('no module in src/clients/demo/** references a placeholder video file — there is no fallback media in any state', () => {
+  it('no video-file literal appears in the demo modules', () => {
     const sources = [schemaSource, resolveSource, indexSource].join('\n');
     expect(sources).not.toMatch(/\.(mp4|webm|mov|m4v|ogv)\b/i);
     expect(sources).not.toMatch(/data:video|blob:/i);
+  });
+
+  it('every DemoPresentation state carries no media unless it is playable', () => {
+    // One instance per state, as a total record: a state added to the union
+    // fails to compile here before it can reach a screen.
+    const presentations: Record<DemoPresentation['state'], DemoPresentation> = {
+      playable: {
+        state: 'playable',
+        scenarioId: SCENARIO_ID,
+        packageRevision: PACKAGE_REVISION,
+        sourceRevision: SOURCE_REVISION,
+        contentHash: 'd'.repeat(64),
+        source: 'network',
+        fetchedAt: 1_000,
+        media: {
+          renditions: [],
+          posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+          interactive: null,
+        },
+        captionsUrl: `${mediaBase(SCENARIO_ID)}/captions.vtt`,
+        transcriptUrl: `${mediaBase(SCENARIO_ID)}/transcript.html`,
+      },
+      'footage-pending': { state: 'footage-pending', reason: 'footage-pending' },
+      superseded: { state: 'superseded', reason: 'superseded' },
+      revoked: { state: 'revoked', reason: 'revoked', transcriptUrl: null, purgeCached: true },
+      invalid: { state: 'invalid', reason: 'hash-mismatch' },
+    };
+    for (const presentation of Object.values(presentations)) {
+      switch (presentation.state) {
+        case 'playable':
+          // The one state allowed to carry media — and it must carry it.
+          expect(presentation.media).toBeDefined();
+          expect(presentation.media.renditions).toBeDefined();
+          break;
+        case 'footage-pending':
+        case 'superseded':
+        case 'revoked':
+        case 'invalid': {
+          expect('media' in presentation).toBe(false);
+          expect('mediaUrl' in presentation).toBe(false);
+          expect(JSON.stringify(presentation)).not.toMatch(/mediaUrl/);
+          break;
+        }
+        default: {
+          // Fails to compile if the union ever gains a state this switch does
+          // not gate.
+          const ungated: never = presentation;
+          expect(ungated).toBeUndefined();
+        }
+      }
+    }
   });
 
   it('with no mirror configured, resolve returns footage-pending and never touches the network', async () => {
@@ -325,5 +395,199 @@ describe('demo resolve', () => {
     const index = buildEnginesIndex(registry, [SCENARIO_ID, UNLISTED_ID, 'vision-01']);
     expect(index.rows.map((row) => row.scenarioId)).toEqual(['vision-01', SCENARIO_ID]);
     expect(index.unlisted).toEqual([UNLISTED_ID]);
+  });
+
+  it('a body whose scenarioId differs from the requested path is scenario-mismatch and nothing renders', async () => {
+    // The mirror is keyed for teams-01; the fetched body names vision-01.
+    const cache = createMemoryDemoCache();
+    const { fetchImpl, urls } = mirror({
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage({}, 'vision-01'),
+    });
+    const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+    // Exact-shape equality: a named reason and nothing else — no media a
+    // screen could render, and nothing cached.
+    expect(await resolver.resolve(SCENARIO_ID)).toEqual({
+      state: 'invalid',
+      reason: 'scenario-mismatch',
+    });
+    expect(cache.get(SCENARIO_ID)).toBeUndefined();
+    expect(urls).toEqual([`${MIRROR}/demos/${SCENARIO_ID}.json`]);
+  });
+
+  it("resolve refuses a deep-link id before it builds a URL: '../etc', a 65-char id and an empty id are footage-pending and fetch nothing", async () => {
+    // isScenarioId is the sole defence keeping an arbitrary deep-link string
+    // out of `${mirrorUrl}/demos/<id>.json`; a shape-invalid id is answered
+    // with the locked footage-pending state before any URL exists.
+    const { fetchImpl, urls } = mirror({});
+    const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
+    for (const scenarioId of ['../etc', 'a'.repeat(65), '']) {
+      expect(await resolver.resolve(scenarioId)).toEqual({
+        state: 'footage-pending',
+        reason: 'footage-pending',
+      });
+    }
+    expect(urls).toEqual([]);
+  });
+
+  it('a revoked scenario that is approved again stops being marked for purge', async () => {
+    let t = 1_000;
+    const cache = createMemoryDemoCache();
+    const bodies: Record<string, string> = {
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage({ publicationState: 'revoked' }),
+    };
+    const { fetchImpl } = mirror(bodies);
+    const online = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, now: () => t, cache });
+    expect((await online.resolve(SCENARIO_ID)).state).toBe('revoked');
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
+    // Re-approved: the fresh valid body re-arms the scenario via put().
+    bodies[`/demos/${SCENARIO_ID}.json`] = await rawPackage();
+    t = 2_000;
+    expectPlayable(await online.resolve(SCENARIO_ID));
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(false);
+    // And the approved demo plays offline again.
+    const offline = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: offlineFetch, now: () => t, cache });
+    const replay = expectPlayable(await offline.resolve(SCENARIO_ID));
+    expect(replay.source).toBe('cache');
+  });
+
+  it('a mirror that never answers resolves as footage-pending within the deadline, never hanging', async () => {
+    vi.useFakeTimers();
+    try {
+      const urls: string[] = [];
+      const hungFetch: FetchLike = (url) => {
+        urls.push(url);
+        return new Promise<never>(() => {}); // never settles
+      };
+      const resolver = createDemoResolver({
+        mirrorUrl: MIRROR,
+        fetchImpl: hungFetch,
+        fetchTimeoutMs: 1_000,
+      });
+      const pending = resolver.resolve(SCENARIO_ID);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await pending).toEqual({ state: 'footage-pending', reason: 'footage-pending' });
+      // One bounded request — no retry, no second request.
+      expect(urls).toEqual([`${MIRROR}/demos/${SCENARIO_ID}.json`]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('two resolves in flight for the same scenario with one hung and one fast each resolve, and neither hangs', async () => {
+    const body = await rawPackage();
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const urls: string[] = [];
+      const fetchImpl: FetchLike = (url) => {
+        urls.push(url);
+        calls += 1;
+        if (calls === 1) return new Promise<never>(() => {}); // hung
+        return Promise.resolve({ ok: true, status: 200, text: async () => body }); // fast
+      };
+      const cache = createMemoryDemoCache();
+      const resolver = createDemoResolver({
+        mirrorUrl: MIRROR,
+        fetchImpl,
+        cache,
+        fetchTimeoutMs: 1_000,
+      });
+      const hung = resolver.resolve(SCENARIO_ID);
+      const fast = expectPlayable(await resolver.resolve(SCENARIO_ID));
+      expect(fast.source).toBe('network');
+      await vi.advanceTimersByTimeAsync(1_000);
+      // The hung one resolves at its deadline, bounded, and falls through to
+      // what the fast one already verified and cached.
+      const late = expectPlayable(await hung);
+      expect(late.source).toBe('cache');
+      expect(urls).toEqual([`${MIRROR}/demos/${SCENARIO_ID}.json`, `${MIRROR}/demos/${SCENARIO_ID}.json`]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a corrupt body for a previously cached scenario marks the cache for purge and never plays the stale package', async () => {
+    const cache = createMemoryDemoCache();
+    const bodies: Record<string, string> = {
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage(),
+    };
+    const { fetchImpl } = mirror(bodies);
+    const online = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+    expectPlayable(await online.resolve(SCENARIO_ID));
+    const approved = cache.get(SCENARIO_ID);
+    // The update is corrupt: valid JSON, wrong hash.
+    bodies[`/demos/${SCENARIO_ID}.json`] = JSON.stringify({
+      ...JSON.parse(bodies[`/demos/${SCENARIO_ID}.json`]),
+      engineOrProduct: 'designs',
+    });
+    expect(await online.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'hash-mismatch' });
+    // Rule: an invalid network body condemns the cached media and is never
+    // written — a corrupt update cannot keep stale approved media playable.
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
+    expect(cache.get(SCENARIO_ID)).toBe(approved);
+    const offline = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: offlineFetch, cache });
+    expect(await offline.resolve(SCENARIO_ID)).toEqual({
+      state: 'footage-pending',
+      reason: 'footage-pending',
+    });
+  });
+
+  it('the module states the hash is corruption detection and makes no authenticity claim', async () => {
+    // The doc states it exactly: the hash detects corruption and truncation,
+    // the mirror host is the trust anchor, and this client makes no
+    // authenticity claim.
+    expect(resolveSource).toMatch(/corruption detection/);
+    expect(resolveSource).toMatch(/truncation/);
+    expect(resolveSource).toMatch(/trust anchor/);
+    expect(resolveSource).toMatch(/makes no authenticity claim/);
+    // And the client acts on it: a body whose hash matches its own rewritten
+    // content — unlike a known-good fixture — plays. The client does not
+    // authenticate the writer.
+    const knownGood = await rawPackage();
+    const rewritten = await rawPackage({
+      evidence: { runIds: ['run-2'], logs: [], artifactHashes: ['c'.repeat(64)] },
+    });
+    expect(rewritten).not.toBe(knownGood);
+    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: rewritten });
+    const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
+    expectPlayable(await resolver.resolve(SCENARIO_ID));
+  });
+
+  it('a mirror URL with credentials, a query or a fragment is refused, and the resolver never fetches', async () => {
+    const badMirrors = [
+      'https://user:pass@site.example',
+      'https://site.example?tenant=acme',
+      'https://site.example#mirror',
+    ];
+    for (const mirrorUrl of badMirrors) {
+      const { fetchImpl, urls } = mirror({});
+      const resolver = createDemoResolver({ mirrorUrl, fetchImpl });
+      expect(await resolver.resolve(SCENARIO_ID), mirrorUrl).toEqual({
+        state: 'footage-pending',
+        reason: 'footage-pending',
+      });
+      expect(urls, mirrorUrl).toEqual([]);
+    }
+  });
+
+  it('a mirror URL that is exactly https:// with nothing after it is refused, and the resolver never fetches', async () => {
+    const { fetchImpl, urls } = mirror({});
+    const resolver = createDemoResolver({ mirrorUrl: 'https://', fetchImpl });
+    expect(await resolver.resolve(SCENARIO_ID)).toEqual({
+      state: 'footage-pending',
+      reason: 'footage-pending',
+    });
+    expect(urls).toEqual([]);
+  });
+
+  it('an empty body, a body that is valid JSON but not an object, and a body that is null are each refused as not-an-object', async () => {
+    for (const body of ['', '[]', 'null']) {
+      const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: body });
+      const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
+      expect(await resolver.resolve(SCENARIO_ID), body).toEqual({
+        state: 'invalid',
+        reason: 'not-an-object',
+      });
+    }
   });
 });
