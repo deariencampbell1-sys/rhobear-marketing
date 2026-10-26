@@ -72,13 +72,25 @@ export function parseDemoDeepLink(
   mediaDurationSeconds: number,
   allowlist: readonly string[] = KNOWN_SCENARIO_IDS,
 ): ParsedDemoDeepLink {
-  const match = ENGINES_ROUTE.exec(parts.pathname);
+  // r10 F6: the shape is decided before anything is dereferenced — the
+  // locked never-throw contract ("nothing is ever thrown into the UI")
+  // covers the parsed location too, hand-built or hostile. Each malformed
+  // half falls back to its empty shape: a location that is not an object, or
+  // a `pathname` that is not a string, has no path parts at all — the
+  // `bad-path` refusal an empty path gets — and a `hash` that is not a
+  // string is no fragment — no position — exactly like the absent `hash` a
+  // valid location has always carried. A valid location is bit-identical
+  // through this guard.
+  if (parts === null || typeof parts !== 'object') return { kind: 'not-found', reason: 'bad-path' };
+  const pathname = typeof parts.pathname === 'string' ? parts.pathname : null;
+  if (pathname === null) return { kind: 'not-found', reason: 'bad-path' };
+  const match = ENGINES_ROUTE.exec(pathname);
   if (match === null) return { kind: 'not-found', reason: 'bad-path' };
   const rawId = match[1];
   if (!isScenarioId(rawId) || !allowlist.includes(rawId)) {
     return { kind: 'not-found', reason: 'unknown-scenario' };
   }
-  const fragment = parseFragmentPosition(parts.hash ?? '');
+  const fragment = parseFragmentPosition(typeof parts.hash === 'string' ? parts.hash : '');
   if ('refused' in fragment) return { kind: 'not-found', reason: 'bad-fragment' };
   // F11 — two controls, two rules. A deep link starts a clip — a start at
   // the very end is meaningless — so the fragment is `0 <= t < duration`.
@@ -86,6 +98,11 @@ export function parseDemoDeepLink(
   // (`./player.ts`) is `0 <= t <= duration`. The two rules are deliberate.
   // Out of this range the value is ignored: the link still opens the player,
   // at no position — never clamped, never an error page.
+  // r10 F5: the `Number.isFinite` and `> 0` conjuncts are belt-and-braces
+  // beside the range check — a NaN, zero or negative duration already falls
+  // out of `position < mediaDurationSeconds` — while an infinite duration
+  // needs the finiteness arm to fall out at all. Pinned by the r10 F5
+  // duration table; the conjuncts stay, do not remove them.
   const positionSeconds =
     fragment.position !== null &&
     Number.isFinite(mediaDurationSeconds) &&

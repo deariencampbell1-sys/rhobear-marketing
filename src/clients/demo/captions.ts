@@ -34,7 +34,10 @@
 //     `bad-timing`; a cue that ends before it starts is skipped as
 //     `end-before-start`; a cue with no text is skipped as `empty-text`.
 //     Every skip names the cue's index among the file's cue blocks.
-//   - Cues that survive keep their wire order and their exact text lines.
+//   - Cues that survive keep their wire order and their trimmed text lines
+//     — the payload is the trimmed joined lines (r10 F7: this header
+//     promised "exact text lines"; the parse trims, and the soft-cap
+//     behaviour stays).
 //   - If no cue survives, the verdict is `captions-failed` with reason
 //     `no-cues` (`not-webvtt` when the signature is missing) — and the
 //     transcript URL passed in is reported as still available, because a
@@ -113,6 +116,11 @@ export type ParsedCaptions =
  * (`\captions.vtt` resolves same-origin, as `/captions.vtt`) — it is a
  * relative path like the pinned `'/captions.vtt'`, not a scheme-relative
  * disguise (that takes two or more leading backslashes, or a `/` among them).
+ *
+ * The answer is one boolean and `false` covers two refusals: not a WebVTT
+ * URL **and** unparseable — both are refusals, the caller never learns which
+ * (r10 F1: a scheme-shaped value `new URL` throws on — `'http://['` — is the
+ * second refusal). The boolean API stays.
  */
 // r8 F2: the scheme grammar, run only on the stripped, normalised value —
 // exactly what makes a string an absolute reference rather than one of the
@@ -148,7 +156,8 @@ export function isWebVttUrl(value: string | null): boolean {
     if (protocol !== 'http' && protocol !== 'https') return false;
     // The extension is a rule about the path: the URL is parsed so a query or
     // fragment can never forge the suffix. A scheme-shaped value that parses
-    // to nothing names no file and is refused.
+    // to nothing names no file and is refused — the same `false` as "not a
+    // WebVTT URL": both are refusals, the caller never learns which (r10 F1).
     try {
       path = new URL(normalised).pathname;
     } catch {

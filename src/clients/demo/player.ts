@@ -92,7 +92,7 @@
 //     - F4: an error is the person's reality and cancels a pending switch —
 //       the offers on it (retry, transcript) are their immediate business,
 //       and the picker works from every state (r2's F5) if they still want
-//       the switch. `enterError` clears the pending switch; a switch's own
+//       the switch. The error path clears the pending switch; a switch's own
 //       resolve error is not cancelling itself (its swap already happened).
 //     - F5: `swapTransition` is cleared at the entry of every public call —
 //       `dispatch`, `start`, `retry`, `switchScenario`, `restart` — so the
@@ -161,6 +161,24 @@
 //       fired once would wait forever), and single-flight still holds. A
 //       stale discard with NO dropped caller stays a plain discard (r3 F1's
 //       edge: a later start() still lands).
+//   - W0-05b-r10 (Apollo's review of the r9 head), one answer and three
+//     structural fixes:
+//     - F2 is ANSWERED, not changed: the sandbox policy is the locked
+//       W0-05a schema's — its `SANDBOX_TOKENS` allow-list, applied verbatim
+//       as the iframe sandbox attribute — and a player-side refusal of a
+//       token the schema admits would make a schema-valid package render
+//       wrongly. The only change here is beside the policy: the existing
+//       `allow-same-origin` refusal now covers the token's case-normalised,
+//       whitespace-padded and C0-padded spellings (r10 F2's hardening).
+//     - F3: `MediaErrorReason`'s http arm is built by `httpReason()` alone —
+//       the brand is a compile-time construct, the runtime strings are
+//       unchanged, and the constructor's accept table and the guard's are
+//       the same table by construction.
+//     - F4: the pure boundary — `openInteractive` (the sandbox decision),
+//       `enterError`/`clearEpisode` (the failure-episode accounting over an
+//       explicit record) and `decideSeek` (`applySeek`'s transition table)
+//       are module-level pure functions; the closure keeps the mutable
+//       wiring only. No behaviour change.
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -187,22 +205,43 @@ export type DemoMediaElement = {
 
 /**
  * The actual reason a media request failed (D07): decode, network,
- * `http-<status>`. The number is a non-negative HTTP status rendered in
- * canonical decimal — `http-0`, `http-200`, `http-1000`: exactly what
- * `http-${number}` produces for a non-negative integer. Spellings the
- * template also matches but the wire never renders (`http-1.5`, `http-007`,
- * `http-+200`) are not reasons and `isMediaErrorReason` refuses them
- * (r6 F8: the guard and the type agree on exactly the canonical members).
+ * `http-<status>`. r10 F3: build the http arm with `httpReason()` — it is
+ * the one constructor, it renders `http-<canonical non-negative integer>` or
+ * returns `null`, and the type's http arm is what it returns. The brand is a
+ * compile-time construct; the runtime strings are unchanged (`http-0`,
+ * `http-200`, `http-1000`). The contract, plainly: build reasons with
+ * `httpReason()`; `isMediaErrorReason` — the runtime predicate for untyped
+ * input — accepts the canonical renderings the constructor produces and
+ * refuses every other spelling the raw template admits (`http-1.5`,
+ * `http-007`, `http-+200`, `http--200`).
  */
-export type MediaErrorReason = 'decode' | 'network' | `http-${number}`;
+declare const HTTP_REASON_BRAND: unique symbol;
+export type HttpMediaErrorReason = `http-${number}` & { readonly [HTTP_REASON_BRAND]: true };
+export type MediaErrorReason = 'decode' | 'network' | HttpMediaErrorReason;
 
 // F9 (W0-05b-r4) kept the guard and the type in agreement on the integers;
-// r6 F8 narrows the guard to the canonical renderings `http-${number}`
-// produces for non-negative integers — `0`, or a positive integer with no
-// leading zero. The r4 widening (`/^http-[+-]?[0-9]+$/`, which admitted
-// `http-+200`, `http--200` and `http-007`) is gone: those are spellings the
-// type does not canonically produce and the wire never renders.
+// r6 F8 narrowed the guard to the canonical renderings — `0`, or a positive
+// integer with no leading zero. The r4 widening (`/^http-[+-]?[0-9]+$/`,
+// which admitted `http-+200`, `http--200` and `http-007`) is gone: those are
+// spellings the wire never renders. r10 F3: this pattern is the single
+// definition of "canonical", shared by the constructor and the guard, so the
+// two accept tables cannot drift apart.
 const HTTP_STATUS_REASON = /^http-(0|[1-9][0-9]*)$/;
+
+/**
+ * The one constructor for the http arm (r10 F3): the canonical
+ * `http-<non-negative integer>` rendering — exactly what the guard accepts —
+ * or `null`. The two accept tables agree by construction: everything this
+ * returns passes `isMediaErrorReason`, and its `null` cases (`1.5`, `-1`,
+ * `NaN`, `Infinity`, a status whose decimal rendering is not canonical like
+ * `1e21` → `1e+21`) are spellings the guard refuses. `http-0` is included:
+ * the guard accepts it, so the constructor agrees.
+ */
+export function httpReason(status: number): HttpMediaErrorReason | null {
+  if (!Number.isInteger(status) || status < 0) return null;
+  const rendered: string = `http-${String(status)}`;
+  return HTTP_STATUS_REASON.test(rendered) ? (rendered as HttpMediaErrorReason) : null;
+}
 
 export function isMediaErrorReason(value: unknown): value is MediaErrorReason {
   return (
@@ -326,6 +365,146 @@ export type DemoPlayer = {
 };
 
 /**
+ * r10 F4: the sandbox decision (D05), pure — the one place that says what a
+ * validated sandbox and URL mean. `{ sandbox }` is the canonicalised
+ * attribute to apply; `{ reason }` is the named refusal. The
+ * `allow-same-origin` refusal covers the token's case-normalised,
+ * whitespace-padded and C0-padded spellings (the decoration class
+ * `./captions.ts` normalises): the token set is ASCII case-insensitive, like
+ * HTML's `sandbox` attribute, and no decoration of the refused token
+ * survives it. The policy beside it — which tokens may appear at all — is
+ * W0-05a's schema allow-list and this function refuses nothing it admits:
+ * the validated list is applied verbatim (r10 F2's answer and contract).
+ */
+export function openInteractive(
+  sandbox: unknown,
+  url: string,
+): { sandbox: string } | { reason: InteractiveRefusalReason } {
+  // The shape is decided before it is dereferenced (r9 F2): a hand-built
+  // presentation can omit the key (`undefined`, not `null`) or carry a
+  // `sandbox` that is not a string — both land in the EXISTING `absent`
+  // refusal: no new value in the frozen vocabulary.
+  if (typeof sandbox !== 'string') return { reason: 'absent' };
+  if (sandbox.trim() === '') return { reason: 'sandbox-empty' };
+  if (!isHttpsUrl(url)) return { reason: 'url-not-https' };
+  const tokens = sandbox.trim().toLowerCase().split(/\s+/);
+  // The refusal reads each token's spelling, not its decoration: the C0 and
+  // space edges a hostile value may pad the refused token with are gone
+  // before the comparison (r10 F2's hardening — the policy is untouched).
+  const names = tokens.map((token) =>
+    token.replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, ''),
+  );
+  // Any `allow-same-origin` token is refused outright — with `allow-scripts`
+  // or without: it would let the framed page act as this origin: remote code.
+  if (names.includes('allow-same-origin')) return { reason: 'sandbox-allows-same-origin' };
+  // Applied as the iframe sandbox attribute, canonicalised the way
+  // `./schema.ts` normalises the wire value: lowercased, single-space tokens
+  // — never a mixed-case string. On a schema-valid input this is the string
+  // verbatim (r10 F2's contract).
+  return { sandbox: tokens.join(' ') };
+}
+
+/**
+ * r10 F4: the failure-episode record (D07) — consecutive errors before
+ * playback resumes — stated explicitly, so the accounting below is pure over
+ * it and the closure holds the mutable wiring only.
+ */
+export type FailureEpisode = {
+  /** Consecutive failures before playback resumes (D07). */
+  errorCount: number;
+  /** One reference per episode: minted on the repeated failure, stable after. */
+  supportReferenceId: string | null;
+  /** What failed last — what `retry()` re-runs. Not an episode counter. */
+  lastErrorKind: 'media' | 'resolve';
+};
+
+/**
+ * The failure-episode accounting, pure (r10 F4): the episode one failure
+ * later. A repeated failure — an error reached again before playback ever
+ * resumed — produces the support reference id (D07), minted exactly once per
+ * episode so a person is never handed two ids for one problem. The mint is
+ * injected (it needs the host's clock and the module sequence) so this
+ * function itself never touches the outside.
+ */
+export function enterError(
+  episode: FailureEpisode,
+  kind: 'media' | 'resolve',
+  mintSupportReference: (errorCount: number) => string,
+): FailureEpisode {
+  const errorCount = episode.errorCount + 1;
+  const supportReferenceId =
+    errorCount >= 2 && episode.supportReferenceId === null
+      ? mintSupportReference(errorCount)
+      : episode.supportReferenceId;
+  return { errorCount, supportReferenceId, lastErrorKind: kind };
+}
+
+/**
+ * The episode is over — the counters reset on "playback resumed", a fresh
+ * presentation or a swap (r7 F1, r4 F1). `lastErrorKind` is not an episode
+ * counter: it says what failed last and stays with the record, because
+ * `retry()` reads it and nothing else re-sets it.
+ */
+export function clearEpisode(episode: FailureEpisode): FailureEpisode {
+  return { errorCount: 0, supportReferenceId: null, lastErrorKind: episode.lastErrorKind };
+}
+
+/** `applySeek`'s transition table (r10 F4): what a seek means from a state. */
+export type SeekDecision =
+  | { kind: 'ignore' }
+  | { kind: 'sheet-seek'; positionSeconds: number }
+  | { kind: 'scrub'; positionSeconds: number; seekReturn: 'playing' | 'paused'; state: 'seeking' };
+
+/**
+ * `applySeek`'s transition table, pure (r10 F4): what a seek from this state
+ * to this target, against this duration, means. F11 — two controls, two
+ * rules: a scrub can reach the end and stop there, so this bound is
+ * `0 <= t <= duration`; a deep link starts a clip — a start at the very end
+ * is meaningless — so its fragment bound is `0 <= t < duration`
+ * (`./deeplink.ts`). The two rules are deliberate.
+ */
+export function decideSeek(
+  state: DemoPlayerStateName,
+  seekReturn: 'playing' | 'paused',
+  target: number,
+  duration: number | null,
+): SeekDecision {
+  if (duration === null || !Number.isFinite(target) || target < 0 || target > duration) {
+    return { kind: 'ignore' };
+  }
+  if (state === 'transcript' || state === 'interactive') {
+    // A chapter link from the transcript sheet seeks the real media while
+    // the sheet stays open; Close restores the control at the new place.
+    return { kind: 'sheet-seek', positionSeconds: target };
+  }
+  if (
+    state === 'poster' ||
+    state === 'playing' ||
+    state === 'paused' ||
+    state === 'buffering' ||
+    state === 'ended' ||
+    state === 'seeking'
+  ) {
+    return {
+      kind: 'scrub',
+      positionSeconds: target,
+      // F2: where the scrub returns to is captured on the way in. A second
+      // seek while already seeking must not re-capture: the state is
+      // 'seeking' now, and the clobber would send a scrub that started during
+      // playback back to 'paused' — the UI would lie until the next tap.
+      seekReturn:
+        state !== 'seeking'
+          ? state === 'playing' || state === 'buffering'
+            ? 'playing'
+            : 'paused'
+          : seekReturn,
+      state: 'seeking',
+    };
+  }
+  return { kind: 'ignore' };
+}
+
+/**
  * r8 F4: a module-level monotonic sequence for the support reference id. The
  * per-episode `errorCount` reset every episode and could collide across
  * episodes in the same millisecond; this counter only ever moves forward.
@@ -359,9 +538,13 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   // Where an in-flight seek returns: playback continues if it was running.
   let seekReturn: 'playing' | 'paused' = 'paused';
   // A failure episode: consecutive errors before playback resumes (D07).
-  let errorCount = 0;
-  let supportReferenceId: string | null = null;
-  let lastErrorKind: 'media' | 'resolve' = 'resolve';
+  // r10 F4: one explicit record the pure accounting (`enterError`/
+  // `clearEpisode`) runs over; the closure holds the mutable wiring only.
+  let episode: FailureEpisode = {
+    errorCount: 0,
+    supportReferenceId: null,
+    lastErrorKind: 'resolve',
+  };
   let pendingSwitch: {
     scenarioId: string;
     presentation: DemoPresentation | null;
@@ -456,16 +639,22 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
    * the module-level monotonic sequence is folded into the id — the episode's
    * `errorCount` alone handed out the same id to two episodes in one
    * millisecond. The sequence is minted into the id exactly once per episode,
-   * so the id is unique per episode and stable for the whole of it.
+   * so the id is unique per episode and stable for the whole of it. r10 F4:
+   * this is the mint the pure `enterError` is handed — the clock is the one
+   * thing the accounting cannot be pure about.
    */
-  function makeSupportReferenceId(): string {
+  function mintSupportReference(errorCount: number): string {
     supportReferenceSequence += 1;
     return `sup-${now().toString(36)}-${errorCount.toString(36)}${supportReferenceSequence.toString(36)}`;
   }
 
   type PlayerFailureReason = MediaErrorReason | InvalidReason | 'superseded';
 
-  function enterError(reason: PlayerFailureReason, kind: 'media' | 'resolve'): void {
+  /**
+   * Land on `error`: the state and its fields, wired around the pure episode
+   * accounting (r10 F4's `enterError`).
+   */
+  function recordError(reason: PlayerFailureReason, kind: 'media' | 'resolve'): void {
     // r6 F4: an error is the person's reality and cancels a pending switch —
     // the offers on it (retry, transcript) are their immediate business, and
     // the picker works from every state (r2's F5) if they still want the
@@ -475,15 +664,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // itself: `performSwap` cleared the pending switch and recorded the swap
     // before that answer's error ever reaches this line.
     pendingSwitch = null;
-    lastErrorKind = kind;
-    errorCount += 1;
-    // A repeated failure — an error reached again before playback ever
-    // resumed — produces the support reference id (D07), stable for the rest
-    // of the episode so a person is never handed two ids for one problem.
-    if (errorCount >= 2 && supportReferenceId === null) {
-      supportReferenceId = makeSupportReferenceId();
-    }
-    error = { reason, supportReferenceId, offers: offersFor() };
+    episode = enterError(episode, kind, mintSupportReference);
+    error = { reason, supportReferenceId: episode.supportReferenceId, offers: offersFor() };
     state = 'error';
   }
 
@@ -516,8 +698,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       // keying the episode to `lastErrorKind`: only playable media proves
       // the failure is behind them — a pending or revoked answer proves
       // nothing about the media and keeps the episode open.
-      errorCount = 0;
-      supportReferenceId = null;
+      episode = clearEpisode(episode);
       unplayableReason = null;
       state = 'poster';
       const duration = activeDuration();
@@ -542,45 +723,24 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // `error` carrying the presentation's own named reason (see the header).
     if (next.state === 'superseded') {
       unplayableReason = 'superseded';
-      enterError('superseded', 'resolve');
+      recordError('superseded', 'resolve');
       return;
     }
     unplayableReason = next.reason;
-    enterError(next.reason, 'resolve');
+    recordError(next.reason, 'resolve');
   }
 
   function applySeek(target: number): void {
-    const duration = activeDuration();
-    // F11 — two controls, two rules. A scrub can reach the end and stop
-    // there, so this bound is `0 <= t <= duration`. A deep link starts a clip
-    // — a start at the very end is meaningless — so its fragment bound is
-    // `0 <= t < duration` (`./deeplink.ts`). The two rules are deliberate.
-    if (duration === null || !Number.isFinite(target) || target < 0 || target > duration) return;
-    if (state === 'transcript' || state === 'interactive') {
-      // A chapter link from the transcript sheet seeks the real media while
-      // the sheet stays open; Close restores the control at the new place.
-      media.seekTo(target);
-      positionSeconds = target;
-      return;
-    }
-    if (
-      state === 'poster' ||
-      state === 'playing' ||
-      state === 'paused' ||
-      state === 'buffering' ||
-      state === 'ended' ||
-      state === 'seeking'
-    ) {
-      // F2: where the scrub returns to is captured on the way in. A second
-      // seek while already seeking must not re-capture: the state is
-      // 'seeking' now, and the clobber would send a scrub that started during
-      // playback back to 'paused' — the UI would lie until the next tap.
-      if (state !== 'seeking') {
-        seekReturn = state === 'playing' || state === 'buffering' ? 'playing' : 'paused';
-      }
-      media.seekTo(target);
-      positionSeconds = target;
-      state = 'seeking';
+    // r10 F4: `decideSeek` is the transition table (with the F11 two-rules
+    // bound and the F2 capture rule living at the table); this is the wiring
+    // — the port calls and the fields the decision moves.
+    const decision = decideSeek(state, seekReturn, target, activeDuration());
+    if (decision.kind === 'ignore') return;
+    media.seekTo(decision.positionSeconds);
+    positionSeconds = decision.positionSeconds;
+    if (decision.kind === 'scrub') {
+      seekReturn = decision.seekReturn;
+      state = decision.state;
     }
   }
 
@@ -596,8 +756,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     swapTransition = crossfade && !reducedMotion ? 'crossfade' : 'none';
     // A swap is a new episode whatever the answer lands on (r4 F1 keeps this
     // reset as it was; applyPresentation resets again on a playable landing).
-    errorCount = 0;
-    supportReferenceId = null;
+    episode = clearEpisode(episode);
     scenarioId = swapScenarioId;
     applyPresentation(next, false);
   }
@@ -722,7 +881,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // r6 F5: every public call clears the swap transition on entry (field doc).
     swapTransition = null;
     if (state !== 'error' || resolving) return snapshot();
-    if (lastErrorKind === 'media' && activeRendition() !== null) {
+    if (episode.lastErrorKind === 'media' && activeRendition() !== null) {
       // A failed media request is retried as a media request — real playback
       // of the same source at the preserved position (S1), on the person's
       // explicit tap, never automatically. The overlay goes at once: an
@@ -827,8 +986,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       // The media-bearing path (r4 F2, unchanged): a media error restarts to
       // `poster` and its error fields are stale.
       error = null;
-      errorCount = 0;
-      supportReferenceId = null;
+      episode = clearEpisode(episode);
       media.pause();
       media.seekTo(0);
       positionSeconds = 0;
@@ -855,8 +1013,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // (r4 F2's rule).
     if (state !== 'error') {
       error = null;
-      errorCount = 0;
-      supportReferenceId = null;
+      episode = clearEpisode(episode);
     }
     return snapshot();
   }
@@ -924,8 +1081,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         // never through `buffering`, which is how the episode used to leak).
         // Only the episode counters reset; the error state and its fields
         // are the state's own and are untouched (r5 F1).
-        errorCount = 0;
-        supportReferenceId = null;
+        episode = clearEpisode(episode);
         if (state === 'buffering') {
           state = 'playing';
         }
@@ -1009,40 +1165,26 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           presentation !== null && presentation.state === 'playable'
             ? (presentation.media?.interactive ?? null)
             : null;
-        // r9 F2: the shape is decided before it is dereferenced. A hand-built
-        // presentation can omit the key (`undefined`, not `null`) or carry a
-        // `sandbox` that is not a string, and `interactive.sandbox.trim()` on
-        // that threw a TypeError out of dispatch() — the exact class the
-        // guard exists for, and a break of the locked never-throw contract.
-        // Both land in the EXISTING `absent` refusal: no new value in the
-        // frozen vocabulary.
-        if (interactive == null || typeof interactive.sandbox !== 'string') {
-          interactiveRefusal = 'absent';
-          break;
-        }
-        if (interactive.sandbox.trim() === '') {
-          interactiveRefusal = 'sandbox-empty';
-          break;
-        }
-        if (!isHttpsUrl(interactive.url)) {
-          interactiveRefusal = 'url-not-https';
-          break;
-        }
-        // Any `allow-same-origin` token is refused outright — with
-        // `allow-scripts` or without: it would let the framed page act as
-        // this origin: remote code. HTML's sandbox token set is ASCII
-        // case-insensitive, so the match is too: `ALLOW-SAME-ORIGIN` and any
-        // other casing are the same token and the same refusal.
-        const sandboxTokens = interactive.sandbox.trim().toLowerCase().split(/\s+/);
-        if (sandboxTokens.includes('allow-same-origin')) {
-          interactiveRefusal = 'sandbox-allows-same-origin';
+        // r9 F2 / r10 F4: the whole decision — the shape before it is
+        // dereferenced (a missing key is `undefined`, not `null`; a
+        // non-string `sandbox`), the empty sandbox, the https URL, the
+        // `allow-same-origin` refusal (case-normalised, whitespace-padded and
+        // C0-padded spellings alike) and the verbatim application — is the
+        // module-level pure `openInteractive`. This is the wiring: what it
+        // decides is recorded and the machine moves only on the open. Both
+        // shape cases land in the EXISTING `absent` refusal (r9 F2): no new
+        // value in the frozen vocabulary, and no TypeError out of dispatch.
+        const decision = openInteractive(interactive?.sandbox, interactive?.url ?? '');
+        if ('reason' in decision) {
+          interactiveRefusal = decision.reason;
           break;
         }
         interactiveRefusal = null;
-        // As the iframe sandbox attribute, canonicalised the way
-        // `./schema.ts` normalises the wire value: lowercased,
-        // single-space tokens — never a mixed-case string.
-        interactiveSandbox = sandboxTokens.join(' ');
+        // As the iframe sandbox attribute: the schema's validated list
+        // applied verbatim — canonicalised the way `./schema.ts` normalises
+        // the wire value (lowercased, single-space tokens), which on a
+        // schema-valid input is the string unchanged (r10 F2's contract).
+        interactiveSandbox = decision.sandbox;
         returnState =
           state === 'playing' || state === 'buffering' || state === 'seeking'
             ? 'paused'
@@ -1063,7 +1205,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         // The actual reason, or no event at all: the machine never invents
         // one. A media error can only concern media that exists.
         if (isMediaErrorReason(event.reason) && activeRendition() !== null) {
-          enterError(event.reason, 'media');
+          recordError(event.reason, 'media');
         }
         break;
       }
