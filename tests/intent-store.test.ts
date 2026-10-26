@@ -3,8 +3,19 @@
 // retention, and the throwing-storage degradation. Every test runs on an
 // injected storage adapter and an injected clock — no setTimeout, no real
 // sessionStorage, no sleep.
-import { describe, expect, it } from 'vitest';
-import { INTENT_KINDS } from '../src/clients/intent/schema';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  INTENT_KINDS,
+  INTENT_PLANS,
+  INTENT_PRODUCTS,
+  isIntentKind,
+  isIntentPlan,
+  isIntentProduct,
+  isKnownScenario,
+  isRfc3339,
+  type Intent,
+  type IntentProblem,
+} from '../src/clients/intent/schema';
 import {
   CHECKOUT_TTL_MS,
   CONSUMED_RETENTION_MS,
@@ -15,6 +26,7 @@ import {
   memoryIntentStorage,
   ttlMsForKind,
   type ConsumeResult,
+  type CreateIntentInput,
   type IntentStorage,
 } from '../src/clients/intent/store';
 
@@ -83,6 +95,37 @@ function yieldingStorage(): IntentStorage & { ops: string[] } {
       await Promise.resolve();
       ops.push(`del-${n++}`);
       map.delete(key);
+    },
+  };
+}
+
+/** Two "tabs" over one backing map: independent adapters, shared bytes. */
+function sharedBacking(backing: Map<string, string>): IntentStorage {
+  return {
+    getItem: async (key) => backing.get(key) ?? null,
+    setItem: async (key, value) => {
+      backing.set(key, value);
+    },
+    removeItem: async (key) => {
+      backing.delete(key);
+    },
+  };
+}
+
+/** yieldingStorage over a shared backing map, for two-store races. */
+function yieldingStorageOver(backing: Map<string, string>): IntentStorage {
+  return {
+    getItem: async (key) => {
+      await Promise.resolve();
+      return backing.get(key) ?? null;
+    },
+    setItem: async (key, value) => {
+      await Promise.resolve();
+      backing.set(key, value);
+    },
+    removeItem: async (key) => {
+      await Promise.resolve();
+      backing.delete(key);
     },
   };
 }
@@ -257,5 +300,267 @@ describe('intent store', () => {
     if (again.outcome === 'already-consumed') expect(again.returnRoute).toBe('/get');
     // And clearing never throws either.
     await expect(store.clear()).resolves.toBeUndefined();
+  });
+
+  it('two consumers with asymmetric latency: A settles entirely before B writes, exactly one wins', async () => {
+    // One backing store, two "tabs". Tab A's adapter is instant; tab B's
+    // adapter defers every operation after its first read until A's consume
+    // has fully settled — A's whole critical section completes before B's
+    // write could ever land. Only a re-read immediately before B's write can
+    // catch this; a nonce alone cannot.
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    const storeA = createIntentStore({ storage: sharedBacking(backing), now: clock.now });
+    const created = await storeA.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    expect(created.ok).toBe(true);
+
+    let bReads = 0;
+    let bWrites = 0;
+    let bWaitedForA = false;
+    const consumeA: { current: Promise<ConsumeResult> | null } = { current: null };
+    const storeB = createIntentStore({
+      storage: {
+        getItem: async (key) => {
+          bReads += 1;
+          if (bReads > 1 && consumeA.current) {
+            bWaitedForA = true;
+            await consumeA.current.catch(() => undefined);
+          }
+          return backing.get(key) ?? null;
+        },
+        setItem: async (key, value) => {
+          bWrites += 1;
+          if (consumeA.current) {
+            bWaitedForA = true;
+            await consumeA.current.catch(() => undefined);
+          }
+          backing.set(key, value);
+        },
+        removeItem: async (key) => {
+          backing.delete(key);
+        },
+      },
+      now: clock.now,
+    });
+
+    const pendingB = storeB.consume(); // B reads first, then parks
+    const pendingA = storeA.consume();
+    consumeA.current = pendingA;
+    const [resA, resB] = await Promise.all([pendingA, pendingB]);
+    expect(bWaitedForA, 'the asymmetric delay must have actually applied').toBe(true);
+    expect(bWrites, 'B must never reach its write: the re-read before it catches A').toBe(0);
+
+    const winners = [resA, resB].filter((r) => r.outcome === 'consumed');
+    expect(winners, 'exactly one consumer may win').toHaveLength(1);
+    expect(resA.outcome).toBe('consumed');
+    expect(resB.outcome).toBe('already-consumed');
+    if (resB.outcome === 'already-consumed') expect(resB.returnRoute).toBe('/plans');
+  });
+
+  it('with navigator.locks present the consume takes an exclusive web lock and reports web-locks', async () => {
+    const requests: { name: string; mode: string }[] = [];
+    const fakeLocks = {
+      request<R>(name: string, options: { mode: 'exclusive' | 'shared' }, body: (lock: unknown) => Promise<R> | R): Promise<R> {
+        requests.push({ name, mode: options.mode });
+        return Promise.resolve(body({ name, mode: options.mode }));
+      },
+    };
+    vi.stubGlobal('navigator', { locks: fakeLocks });
+    try {
+      const store = createIntentStore({ storage: memoryIntentStorage(), now: fakeClock().now });
+      await store.create({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      const won = await store.consume();
+      expect(won.outcome).toBe('consumed');
+      if (won.outcome === 'consumed') expect(won.exclusive).toBe('web-locks');
+      expect(requests).toEqual([{ name: `${INTENT_STORAGE_KEY}#consume`, mode: 'exclusive' }]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a fake exclusive lock manager serialises two independent stores over one backing', async () => {
+    const held = new Set<string>();
+    const waiters: (() => void)[] = [];
+    const requests: { name: string; mode: string }[] = [];
+    const fakeLocks = {
+      request<R>(name: string, options: { mode: 'exclusive' | 'shared' }, body: () => Promise<R> | R): Promise<R> {
+        requests.push({ name, mode: options.mode });
+        const acquire = (): Promise<R> => {
+          if (!held.has(name)) {
+            held.add(name);
+            return Promise.resolve()
+              .then(body)
+              .finally(() => {
+                held.delete(name);
+                const next = waiters.shift();
+                if (next) next();
+              });
+          }
+          return new Promise<void>((resolve) => waiters.push(resolve)).then(acquire);
+        };
+        return acquire();
+      },
+    };
+    vi.stubGlobal('navigator', { locks: fakeLocks });
+    try {
+      const backing = new Map<string, string>();
+      const clock = fakeClock();
+      const seeder = createIntentStore({ storage: sharedBacking(backing), now: clock.now });
+      await seeder.create({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+      // Two independent stores ("tabs") with yielding adapters over the same
+      // backing: only the exclusive lock keeps their consumes from racing.
+      const tabA = createIntentStore({ storage: yieldingStorageOver(backing), now: clock.now });
+      const tabB = createIntentStore({ storage: yieldingStorageOver(backing), now: clock.now });
+      const [ra, rb] = await Promise.all([tabA.consume(), tabB.consume()]);
+      expect([ra, rb].filter((r) => r.outcome === 'consumed'), 'exactly one tab wins').toHaveLength(1);
+      const winner = ra.outcome === 'consumed' ? ra : rb;
+      expect(winner.outcome === 'consumed' && winner.exclusive).toBe('web-locks');
+      expect(requests.length).toBeGreaterThanOrEqual(2);
+      expect(requests.every((r) => r.mode === 'exclusive')).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('without navigator.locks the consume still serialises and reports the weaker in-process guarantee', async () => {
+    const store = createIntentStore({ storage: yieldingStorage(), now: fakeClock().now });
+    await store.create({ product: 'herald', kind: 'account', returnRoute: '/account' });
+    const [a, b] = await Promise.all([store.consume(), store.consume()]);
+    expect([a, b].filter((r) => r.outcome === 'consumed')).toHaveLength(1);
+    for (const r of [a, b]) {
+      if (r.outcome === 'consumed' || r.outcome === 'already-consumed') {
+        expect(r.exclusive, 'no web locks here: the result must not claim them').toBe('in-process');
+      }
+    }
+  });
+
+  it('a navigator.locks that rejects degrades to the in-process guarantee and still serialises', async () => {
+    const fakeLocks = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, _body: () => Promise<R> | R): Promise<R> {
+        return Promise.reject(new Error('locks unavailable'));
+      },
+    };
+    vi.stubGlobal('navigator', { locks: fakeLocks });
+    try {
+      const store = createIntentStore({ storage: yieldingStorage(), now: fakeClock().now });
+      await store.create({ product: 'builds', kind: 'install', returnRoute: '/builds' });
+      const [a, b] = await Promise.all([store.consume(), store.consume()]);
+      expect([a, b].filter((r) => r.outcome === 'consumed')).toHaveLength(1);
+      for (const r of [a, b]) {
+        if (r.outcome === 'consumed' || r.outcome === 'already-consumed') {
+          expect(r.exclusive).toBe('in-process');
+        }
+      }
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a failed write leaves the newest record in the mirror: load and consume see it, not the stale stored value', async () => {
+    // The last good stored value predates the failed write and still answers
+    // getItem — here an old, already-consumed record. The mirror holds the
+    // most recent write, so it must outrank the stale stored value.
+    const staleConsumed = {
+      v: 1,
+      i: {
+        id: 'staleidQmPp0QeR5sT8uAw',
+        product: 'builds',
+        returnRoute: '/account',
+        kind: 'account',
+        createdAt: '2026-10-24T11:00:00.000Z',
+        expiresAt: '2026-10-25T11:00:00.000Z',
+        consumedAt: '2026-10-25T11:30:00.000Z',
+      },
+    };
+    const backing = new Map([[INTENT_STORAGE_KEY, JSON.stringify(staleConsumed)]]);
+    const store = createIntentStore({
+      storage: {
+        getItem: async (key) => backing.get(key) ?? null, // keeps answering with the stale value
+        setItem: async () => {
+          throw new Error('QuotaExceededError');
+        },
+        removeItem: async (key) => {
+          backing.delete(key);
+        },
+      },
+      now: fakeClock().now,
+    });
+    const created = await store.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    expect(created, 'the new record lands in the mirror').toMatchObject({ ok: true, durable: false });
+
+    const loaded = await store.load();
+    expect(loaded.state, 'load must see the newest record, not the stale consumed one').toBe('active');
+    if (loaded.state === 'active') {
+      expect(loaded.intent.returnRoute).toBe('/plans');
+      expect(loaded.durable).toBe(false);
+    }
+
+    const won = await store.consume();
+    expect(won.outcome, 'the first consume must run the checkout, not report it already done').toBe('consumed');
+    if (won.outcome === 'consumed') {
+      expect(won.intent.returnRoute).toBe('/plans');
+      expect(won.durable).toBe(false);
+    }
+  });
+
+  it('create() rejects each invalid field with its own problem code and writes nothing', async () => {
+    const storage = recordingStorage();
+    const store = createIntentStore({ storage, now: fakeClock().now });
+    const base = { product: 'builds', kind: 'checkout', returnRoute: '/get' } as const;
+    const cases: readonly { input: CreateIntentInput; problem: IntentProblem }[] = [
+      { input: { ...base, product: 'not-a-product' } as unknown as CreateIntentInput, problem: 'bad-product' },
+      { input: { ...base, kind: 'not-a-kind' } as unknown as CreateIntentInput, problem: 'bad-kind' },
+      { input: { ...base, returnRoute: '/not-canonical' }, problem: 'bad-return-route' },
+      { input: { ...base, plan: 'not-a-plan' } as unknown as CreateIntentInput, problem: 'bad-plan' },
+      { input: { ...base, scenario: 'not-a-scenario' }, problem: 'bad-scenario' },
+    ];
+    for (const { input, problem } of cases) {
+      expect(await store.create(input), problem).toEqual({ ok: false, problem });
+    }
+    expect(storage.backing.size, 'a rejected intent is written nowhere').toBe(0);
+  });
+
+  it('the exported predicates accept exactly their allowlists and reject everything else', () => {
+    for (const product of INTENT_PRODUCTS) expect(isIntentProduct(product), product).toBe(true);
+    for (const plan of INTENT_PLANS) expect(isIntentPlan(plan), plan).toBe(true);
+    for (const kind of INTENT_KINDS) expect(isIntentKind(kind), kind).toBe(true);
+    for (const scenario of ['forge-01', 'search-01', 'teams-01', 'designs-01', 'capturd-01', 'vision-01', 'spaces-01']) {
+      expect(isKnownScenario(scenario), scenario).toBe(true);
+    }
+    const rejected: unknown[] = ['nope', 'Builds', '', 7, null, undefined, {}, [], true];
+    for (const bad of rejected) {
+      expect(isIntentProduct(bad), String(bad)).toBe(false);
+      expect(isIntentPlan(bad), String(bad)).toBe(false);
+      expect(isIntentKind(bad), String(bad)).toBe(false);
+      expect(isKnownScenario(bad), String(bad)).toBe(false);
+    }
+  });
+
+  it('save() round-trips a valid record and refuses an invalid one with a problem code', async () => {
+    const storage = recordingStorage();
+    const store = createIntentStore({ storage, now: fakeClock().now });
+    const created = await store.create({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const saved = await store.save({ ...created.intent, plan: 'space' });
+    expect(saved).toMatchObject({ ok: true, durable: true });
+    const loaded = await store.load();
+    expect(loaded.state).toBe('active');
+    if (loaded.state === 'active') expect(loaded.intent.plan).toBe('space');
+    const refused = await store.save({ ...created.intent, product: 'not-a-product' } as unknown as Intent);
+    expect(refused).toEqual({ ok: false, problem: 'bad-product' });
+    expect(storage.backing.get(INTENT_STORAGE_KEY), 'the refused record was not written').toContain('"space"');
+  });
+
+  it('isRfc3339 accepts real instants and refuses impossible dates and malformed shapes', () => {
+    expect(isRfc3339('2026-10-25T12:00:00Z')).toBe(true);
+    expect(isRfc3339('2026-10-25T12:00:00.000Z')).toBe(true);
+    expect(isRfc3339('2026-10-25T14:00:00+02:00')).toBe(true);
+    // 30 February does not exist: Date.parse would silently roll it to March.
+    expect(isRfc3339('2026-02-30T00:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-13-01T00:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-10-25 12:00:00Z')).toBe(false);
+    expect(isRfc3339('2026-10-25T12:00:00')).toBe(false);
+    expect(isRfc3339('not-a-date')).toBe(false);
   });
 });

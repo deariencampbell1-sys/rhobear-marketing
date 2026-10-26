@@ -6,11 +6,18 @@
 // in-memory mirror and the results report `durable: false`, so the destination
 // survives for this tab even when persistence does not.
 //
-// Single-use is a compare-and-set by read-back: the winner writes its record
-// with `consumedAt` plus a fresh random nonce and only trusts the win when the
-// stored nonce is still its own. Two interleaved consumers then cannot both
-// win — the last write wins and the first writer's read-back sees the other
-// nonce — so a checkout or job can never run twice.
+// Single-use is enforced in three layers (W0-06 review r1). First, a per-key
+// promise queue serialises every consume this tab makes, so two consumers can
+// never interleave their read and write at all, whatever the adapter's
+// timing. Second, inside that critical section the stored record is re-read
+// immediately before the winning write and the consume bails to
+// already-consumed if `consumedAt` has appeared — the check that was missing;
+// the nonce read-back stays as the last guard against a rival write that
+// lands between that re-read and ours. Third, when the Web Locks API exists
+// the same critical section takes an exclusive lock that spans tabs, and the
+// consume result reports which guarantee was actually obtained
+// (`exclusive: 'web-locks' | 'in-process'`): without Web Locks the guarantee
+// is this tab only, and the result says so.
 
 import {
   createIntentId,
@@ -39,9 +46,10 @@ export function ttlMsForKind(kind: IntentKind): number {
 /** Behaviour 8: a consumed record is kept only long enough to restore the route. */
 export const CONSUMED_RETENTION_MS = 5 * 60 * 1000;
 
-// The record itself is capped at INTENT_MAX_BYTES (512, enforced by
-// parseIntent); the stored envelope adds bounded, fixed framing (a version and
-// a 22-char nonce), so the store refuses stored text above this ceiling.
+// The record itself is capped at INTENT_MAX_CHARS (512 UTF-16 code units,
+// enforced by parseIntent); the stored envelope adds bounded, fixed framing (a
+// version and a 22-char nonce), so the store refuses stored text above this
+// ceiling.
 export const STORED_MAX_BYTES = 1024;
 
 /**
@@ -88,11 +96,26 @@ export type LoadResult =
   | { state: 'invalid' }
   | { state: 'absent' };
 
-export type ConsumeResult =
+/** Which exclusivity guarantee a consume actually ran under. 'web-locks'
+ * means an exclusive cross-tab Web Lock was held for the critical section;
+ * 'in-process' means only this tab's per-key queue serialised it. A caller
+ * that needs a cross-tab guarantee must check this — never assume it. */
+export type ConsumeExclusivity = 'web-locks' | 'in-process';
+
+/** The consume critical section's result, before the exclusivity actually
+ * obtained is attached to the outcomes that grant or decline the operation. */
+type ConsumeCore =
   | { outcome: 'consumed'; intent: Intent; durable: boolean }
+  | { outcome: 'already-consumed'; returnRoute: string; durable: boolean }
+  | { outcome: 'expired' }
+  | { outcome: 'invalid' }
+  | { outcome: 'absent' };
+
+export type ConsumeResult =
+  | { outcome: 'consumed'; intent: Intent; durable: boolean; exclusive: ConsumeExclusivity }
   // The route is the original one, so the screen can restore the destination
   // without repeating the checkout or job.
-  | { outcome: 'already-consumed'; returnRoute: string; durable: boolean }
+  | { outcome: 'already-consumed'; returnRoute: string; durable: boolean; exclusive: ConsumeExclusivity }
   | { outcome: 'expired' }
   | { outcome: 'invalid' }
   | { outcome: 'absent' };
@@ -115,6 +138,43 @@ export type IntentStoreDeps = {
 // without becoming a field of the validated record itself.
 type Envelope = { v: 1; i: unknown; n?: string };
 const ENVELOPE_VERSION = 1;
+
+// The Web Locks name under which consume's critical section runs. It spans
+// tabs on the same origin; where the API is missing, the per-key queue is the
+// only guard and the result reports 'in-process' (W0-06 review r1).
+const CONSUME_LOCK_NAME = `${INTENT_STORAGE_KEY}#consume`;
+
+function webLockManager(): LockManager | null {
+  if (typeof navigator !== 'undefined' && typeof navigator.locks?.request === 'function') return navigator.locks;
+  return null;
+}
+
+/**
+ * Run `body` as one critical section: under an exclusive cross-tab Web Lock
+ * when the API exists, otherwise directly (the per-key queue still serialises
+ * this tab). Reports which guarantee was obtained. A lock that cannot be
+ * granted at all degrades to the in-process guarantee rather than failing the
+ * consume; a failure inside the body propagates untouched.
+ */
+async function underConsumeLock(
+  body: () => Promise<ConsumeCore>,
+): Promise<{ core: ConsumeCore; exclusive: ConsumeExclusivity }> {
+  const locks = webLockManager();
+  if (locks) {
+    let ran = false;
+    try {
+      const core = await locks.request(CONSUME_LOCK_NAME, { mode: 'exclusive' }, async () => {
+        ran = true;
+        return body();
+      });
+      return { core, exclusive: 'web-locks' };
+    } catch (err) {
+      if (ran) throw err; // the body failed, not the lock
+      return { core: await body(), exclusive: 'in-process' };
+    }
+  }
+  return { core: await body(), exclusive: 'in-process' };
+}
 
 function readEnvelope(text: string): { ok: true; env: Envelope } | { ok: false } {
   if (text.length > STORED_MAX_BYTES) return { ok: false };
@@ -150,15 +210,19 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
   const mirror = new Map<string, string>();
 
   async function readRaw(): Promise<{ text: string | null; durable: boolean }> {
-    let fromStorage: string | null = null;
-    try {
-      fromStorage = await storage.getItem(INTENT_STORAGE_KEY);
-    } catch {
-      fromStorage = null;
-    }
-    if (fromStorage !== null && fromStorage !== undefined) return { text: fromStorage, durable: true };
+    // The mirror holds the most recent write whenever the last setItem
+    // failed, so it outranks whatever storage still answers with (W0-06
+    // review r1): a read-back of a stale stored value must never defeat the
+    // record this tab has just written. While the mirror holds a value the
+    // result is, honestly, not durable.
     const mirrored = mirror.get(INTENT_STORAGE_KEY);
-    return { text: mirrored ?? null, durable: false };
+    if (mirrored !== undefined) return { text: mirrored, durable: false };
+    try {
+      const fromStorage = await storage.getItem(INTENT_STORAGE_KEY);
+      return { text: fromStorage ?? null, durable: true };
+    } catch {
+      return { text: null, durable: false };
+    }
   }
 
   async function writeRaw(text: string): Promise<boolean> {
@@ -253,7 +317,36 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     return { state: 'active', intent, durable };
   }
 
+  // Per-key serialisation of consume (W0-06 review r1): two consumers in this
+  // tab can never interleave their read and write, whatever the adapter's
+  // timing. Web Locks, when present, extends the same exclusion across tabs.
+  const consumeQueues = new Map<string, Promise<unknown>>();
+
+  function enqueuePerKey<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = consumeQueues.get(key) ?? Promise.resolve();
+    const run = previous.then(task, task);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    consumeQueues.set(key, tail);
+    void tail.then(() => {
+      if (consumeQueues.get(key) === tail) consumeQueues.delete(key);
+    });
+    return run;
+  }
+
   async function consume(): Promise<ConsumeResult> {
+    const { core, exclusive } = await enqueuePerKey(INTENT_STORAGE_KEY, () => underConsumeLock(runConsumeBody));
+    if (core.outcome === 'consumed' || core.outcome === 'already-consumed') {
+      return { ...core, exclusive };
+    }
+    return core;
+  }
+
+  /** The consume critical section proper. Runs under the per-key queue and,
+   * when the Web Locks API exists, an exclusive cross-tab lock. */
+  async function runConsumeBody(): Promise<ConsumeCore> {
     const decoded = await decodeStored();
     if (decoded.kind === 'absent') return { outcome: 'absent' };
     if (decoded.kind === 'invalid') return { outcome: 'invalid' };
@@ -264,6 +357,25 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
       return { outcome: 'already-consumed', returnRoute: current.returnRoute, durable: decoded.durable };
     }
     if (Date.parse(current.expiresAt) <= now()) return { outcome: 'expired' };
+
+    // Re-read immediately before the winning write (W0-06 review r1):
+    // `consumedAt` may have appeared since the first read. The nonce only
+    // catches a rival write that lands after ours; this check catches one
+    // that completed before it.
+    const preWrite = await readRaw();
+    if (preWrite.text !== null) {
+      const rival = readEnvelope(preWrite.text);
+      if (rival.ok) {
+        const rivalRecord = parseIntent(rival.env.i);
+        if (rivalRecord.ok && rivalRecord.intent.consumedAt !== undefined) {
+          return {
+            outcome: 'already-consumed',
+            returnRoute: rivalRecord.intent.returnRoute,
+            durable: preWrite.durable,
+          };
+        }
+      }
+    }
 
     // Compare-and-set by read-back (see the module comment).
     const nonce = createIntentId();
