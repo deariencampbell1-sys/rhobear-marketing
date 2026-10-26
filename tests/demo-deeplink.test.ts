@@ -334,3 +334,120 @@ describe('demo captions', () => {
     expect(noted.cues).toHaveLength(1);
   });
 });
+
+// W0-05b-r4 — the last mile: F7 and F8 (from the 07:32:35Z review) on the
+// cue parse. Red first: these tests are committed while the bugs stand.
+describe('demo captions — W0-05b-r4 (Apollo\'s last mile)', () => {
+  const transcriptUrl = `${mediaBase}/transcript.html`;
+
+  it('r4 F7 (behaviour 20): a cue whose identifier line contains --> still parses — the timing line is the one matching the timestamp grammar, and a genuinely bad timing block is still skipped', () => {
+    const raw = [
+      'WEBVTT',
+      '',
+      'intro --> the run',
+      '00:00:08.000 --> 00:00:09.000',
+      'With an identifier.',
+      '',
+      'broken --> block',
+      'no timestamp here',
+      '',
+    ].join('\n');
+    const parsed = parseWebVTT(raw, transcriptUrl);
+    expect(parsed.state).toBe('captions');
+    expect(parsed.cues).toEqual([
+      { startSeconds: 8, endSeconds: 9, text: 'With an identifier.' },
+    ]);
+    // The block with no timestamp-grammar line is still named and skipped.
+    expect(parsed.skipped).toEqual([{ cueIndex: 1, reason: 'bad-timing' }]);
+  });
+
+  it('r4 F8 (behaviour 20): NOTE, STYLE and REGION blocks are not cues — a file with all three plus two good cues parses to exactly two cues and zero skips', () => {
+    const raw = [
+      'WEBVTT',
+      '',
+      'NOTE a reviewer comment --> with an arrow in it',
+      'more comment text',
+      '',
+      'STYLE',
+      '::cue { color: yellow }',
+      '',
+      'REGION',
+      'id:fred',
+      '',
+      '00:00:00.000 --> 00:00:02.500',
+      'Hello.',
+      '',
+      '00:00:03.000 --> 00:00:05.000',
+      'Second cue',
+      '',
+    ].join('\n');
+    const parsed = parseWebVTT(raw, transcriptUrl);
+    expect(parsed.state).toBe('captions');
+    expect(parsed.cues).toEqual([
+      { startSeconds: 0, endSeconds: 2.5, text: 'Hello.' },
+      { startSeconds: 3, endSeconds: 5, text: 'Second cue' },
+    ]);
+    // Non-cue blocks appear neither in cues nor in skipped.
+    expect(parsed.skipped).toEqual([]);
+  });
+
+  it('r4 F8 (behaviour 20): a block that merely starts with NOTE-looking text is judged by its own shape — NOTEPAD with timing is a cue, NOTEPAD without timing is a bad-timing skip', () => {
+    const raw = [
+      'WEBVTT',
+      '',
+      'NOTEPAD --> notes, not a note block',
+      '00:00:01.000 --> 00:00:02.000',
+      'Visible text',
+      '',
+      'NOTE a real comment',
+      '',
+      'NOTEPAD',
+      'no timing at all',
+      '',
+    ].join('\n');
+    const parsed = parseWebVTT(raw, transcriptUrl);
+    expect(parsed.state).toBe('captions');
+    // NOTEPAD is not NOTE: the block is a cue block and parses as its own
+    // shape says — the arrow in its identifier is not its timing line (F7).
+    expect(parsed.cues).toEqual([
+      { startSeconds: 1, endSeconds: 2, text: 'Visible text' },
+    ]);
+    // The real NOTE consumes no cue index: skips are numbered among the
+    // file's cue blocks only.
+    expect(parsed.skipped).toEqual([{ cueIndex: 1, reason: 'bad-timing' }]);
+  });
+
+  it('r4 F8 (behaviour 20): a bare NOTE block is a note even when it carries timing, and a NOTE in the header region is part of the header', () => {
+    // Header region: WEBVTT followed by a NOTE before the first blank line is
+    // header metadata — not a block at all.
+    const headerNote = parseWebVTT(
+      ['WEBVTT', 'NOTE header metadata --> not a block', '', '00:00:00.000 --> 00:00:01.000', 'Hi', ''].join(
+        '\n',
+      ),
+      transcriptUrl,
+    );
+    expect(headerNote.state).toBe('captions');
+    expect(headerNote.cues).toEqual([{ startSeconds: 0, endSeconds: 1, text: 'Hi' }]);
+    expect(headerNote.skipped).toEqual([]);
+
+    // The bare keyword followed by end-of-line starts a note per the WebVTT
+    // grammar — the whole block is a comment, timing line included.
+    const bareNote = parseWebVTT(
+      [
+        'WEBVTT',
+        '',
+        'NOTE',
+        '00:00:00.000 --> 00:00:01.000',
+        'Hidden text',
+        '',
+        '00:00:02.000 --> 00:00:03.000',
+        'Kept',
+        '',
+      ].join('\n'),
+      transcriptUrl,
+    );
+    expect(bareNote.state).toBe('captions');
+    expect(bareNote.cues).toEqual([{ startSeconds: 2, endSeconds: 3, text: 'Kept' }]);
+    expect(bareNote.skipped).toEqual([]);
+  });
+});

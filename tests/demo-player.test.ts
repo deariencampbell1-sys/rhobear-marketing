@@ -11,9 +11,11 @@ import { describe, expect, it } from 'vitest';
 // and proves the machine resolves to the locked footage-pending state.
 import {
   createDemoPlayer,
+  isMediaErrorReason,
   type DemoMediaElement,
   type DemoPlayer,
   type DemoPlayerEvent,
+  type MediaErrorReason,
 } from '../src/clients/demo/player';
 import { createDemoResolver, type DemoPresentation } from '../src/clients/demo/resolve';
 import type { DemoChapter, DemoInteractive, DemoRendition } from '../src/clients/demo/schema';
@@ -151,6 +153,23 @@ async function playerInMediaError(): Promise<{ player: DemoPlayer; media: FakeMe
     resolver: stubResolver({
       [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)] }),
     }),
+    media,
+    reducedMotion: false,
+  });
+  await player.start();
+  player.dispatch({ type: 'play' });
+  player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+  player.dispatch({ type: 'media-error', reason: 'network' });
+  expect(player.snapshot().state).toBe('error');
+  return { player, media };
+}
+
+/** The same, on a single-rendition package: `lower-rendition` has nowhere to go. */
+async function playerInMediaErrorSingle(): Promise<{ player: DemoPlayer; media: FakeMedia }> {
+  const media = fakeMedia();
+  const player = createDemoPlayer({
+    scenarioId: SCENARIO_ID,
+    resolver: stubResolver({ [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42)] }) }),
     media,
     reducedMotion: false,
   });
@@ -1482,5 +1501,428 @@ describe('demo player state machine — W0-05b-r3 (Apollo\'s second review)', ()
     expect(media.calls).toContain('seekTo:42');
     player.dispatch({ type: 'seeked' });
     expect(player.snapshot().state).toBe('playing');
+  });
+});
+
+// W0-05b-r4 — the last mile. Apollo's seven non-blocking findings on the r3
+// head (2026-10-26 09:19Z) plus three findings from the 07:32:35Z review that
+// the r3 round never saw and that are still live in the code. Red first:
+// these tests are committed while the bugs still stand.
+describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
+  it('r4 F1 (D07): a resolve error whose retry lands playable starts a new failure episode — the first media error after it carries no support reference id', async () => {
+    const media = fakeMedia();
+    const resolver = queuedResolver([
+      { state: 'invalid', reason: 'hash-mismatch' },
+      playable(),
+    ]);
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver,
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('error');
+    await player.retry();
+    expect(player.snapshot().state).toBe('poster');
+    player.dispatch({ type: 'play' });
+    // The person's FIRST media failure: no support reference id. The resolve
+    // failure behind them ended when the media became healthy again.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().state).toBe('error');
+    expect(player.snapshot().error?.reason).toBe('decode');
+    expect(player.snapshot().error?.supportReferenceId).toBeNull();
+  });
+
+  it('r4 F1 (D07): two media failures in one episode still produce a support reference id — the reset does not swallow the repeated-failure rule', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)] }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().error?.supportReferenceId).toBeNull();
+    await player.retry();
+    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    expect(player.snapshot().error?.supportReferenceId).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
+  });
+
+  it('r4 F1 (D07): a scenario swap starts a new episode as before — one media error after it carries no support reference id', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    expect(player.snapshot().error?.supportReferenceId).toBeNull();
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    player.dispatch({ type: 'poster-ready' });
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().error?.supportReferenceId).toBeNull();
+  });
+
+  it('r4 F2 (D01): restart() from pending clears the stale swap transition and the error fields — pending restarts as pending', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: footagePending,
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().state).toBe('pending');
+    // The swap away from playing media left its transition behind.
+    expect(player.snapshot().swapTransition).toBe('crossfade');
+    const settled = player.restart();
+    expect(settled.state).toBe('pending');
+    expect(settled.unplayableReason).toBe('footage-pending');
+    expect(settled.swapTransition).toBeNull();
+    expect(settled.error).toBeNull();
+  });
+
+  it('r4 F2 (D01): restart() from revoked clears the stale swap transition and the error fields — revoked restarts as revoked', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: revoked(),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().state).toBe('revoked');
+    expect(player.snapshot().swapTransition).toBe('crossfade');
+    const settled = player.restart();
+    expect(settled.state).toBe('revoked');
+    expect(settled.unplayableReason).toBe('revoked');
+    expect(settled.swapTransition).toBeNull();
+    expect(settled.error).toBeNull();
+  });
+
+  it('r4 F2 (D01): restart() from the transcript sheet over a named no-media state lands on that state — the cleared return target never wedges Close', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: revoked() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'open-transcript' });
+    expect(player.snapshot().state).toBe('transcript');
+    const settled = player.restart();
+    // The named state stands (revoked restarts as revoked); the sheet lands
+    // on it rather than lingering with its return target cleared.
+    expect(settled.state).toBe('revoked');
+    expect(settled.swapTransition).toBeNull();
+    expect(settled.error).toBeNull();
+    // Close is never left with nowhere to go.
+    expect(player.dispatch({ type: 'close-transcript' }).state).toBe('revoked');
+  });
+
+  it('r4 F3: lower-rendition outside state error is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)] }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'lower-rendition' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('playing');
+  });
+
+  it('r4 F3: lower-rendition in error with no smaller rendition is a no-op — the state is unchanged and no media call fires', async () => {
+    const { player, media } = await playerInMediaErrorSingle();
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'lower-rendition' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('error');
+  });
+
+  it('r4 F3 (07:32 gap): lower-rendition when the rendition is already the smallest is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)] }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    player.dispatch({ type: 'lower-rendition' }); // now on the smallest
+    expect(player.snapshot().renditionIndex).toBe(1);
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    expect(player.snapshot().state).toBe('error');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'lower-rendition' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().renditionIndex).toBe(1);
+  });
+
+  it('r4 F3: open-interactive from error is a no-op — the state is unchanged and no media call fires', async () => {
+    const { player, media } = await playerInMediaError();
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'open-interactive' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('error');
+  });
+
+  it('r4 F3: open-interactive from transcript is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'open-transcript' });
+    expect(player.snapshot().state).toBe('transcript');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'open-interactive' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('transcript');
+  });
+
+  it('r4 F3: pause during seeking is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'seek', positionSeconds: 5 });
+    expect(player.snapshot().state).toBe('seeking');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'pause' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('seeking');
+  });
+
+  it('r4 F3: play during seeking is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'seek', positionSeconds: 5 });
+    expect(player.snapshot().state).toBe('seeking');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'play' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('seeking');
+  });
+
+  it('r4 F3: play during buffering is a no-op — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'waiting' });
+    expect(player.snapshot().state).toBe('buffering');
+    const before = player.snapshot();
+    const callsBefore = media.calls.length;
+    expect(player.dispatch({ type: 'play' })).toEqual(before);
+    expect(media.calls.length).toBe(callsBefore);
+    expect(player.snapshot().state).toBe('buffering');
+  });
+
+  it('r4 F3: pause during buffering is allowed by design — it pauses (pinned so no regression flips it either way)', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'waiting' });
+    expect(player.snapshot().state).toBe('buffering');
+    const callsBefore = media.calls.length;
+    player.dispatch({ type: 'pause' });
+    expect(player.snapshot().state).toBe('paused');
+    expect(media.calls.slice(callsBefore)).toEqual(['pause']);
+  });
+
+  it('r4 F3 (07:32 gap): a timeupdate with a non-finite or negative position is rejected — the state is unchanged and no media call fires', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 5 });
+    for (const positionSeconds of [Number.NaN, Number.POSITIVE_INFINITY, -1, -0.5]) {
+      const before = player.snapshot();
+      const callsBefore = media.calls.length;
+      expect(player.dispatch({ type: 'timeupdate', positionSeconds })).toEqual(before);
+      expect(media.calls.length).toBe(callsBefore);
+    }
+    expect(player.snapshot().positionSeconds).toBe(5);
+    expect(player.snapshot().state).toBe('playing');
+  });
+
+  it('r4 F5 (D04): a swap with no old media presents none — switching from pending to a playable scenario declares no crossfade', async () => {
+    // reducedMotion is unaffected: it already forces \'none\' either way.
+    for (const reducedMotion of [false, true]) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({
+          [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+        }),
+        media,
+        reducedMotion,
+      });
+      await player.start();
+      expect(player.snapshot().state).toBe('pending');
+      const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+      expect(settled.state).toBe('poster');
+      expect(settled.swapTransition).toBe('none');
+    }
+  });
+
+  it('r4 F5 (D04): a swap away from playing media still crossfades — through the new poster and onto a named no-poster state', async () => {
+    // Through the new poster.
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(player.dispatch({ type: 'poster-ready' }).swapTransition).toBe('crossfade');
+
+    // And onto a named no-poster state: the old media played until that instant.
+    const otherMedia = fakeMedia();
+    const other = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: footagePending,
+      }),
+      media: otherMedia,
+      reducedMotion: false,
+    });
+    await other.start();
+    other.dispatch({ type: 'play' });
+    const settled = await other.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(settled.state).toBe('pending');
+    expect(settled.swapTransition).toBe('crossfade');
+  });
+
+  it('r4 F6 (D02): a timeupdate past the end clamps to the real duration — positionSeconds never stands beyond it', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 99 });
+    expect(player.snapshot().durationSeconds).toBe(42);
+    expect(player.snapshot().positionSeconds).toBe(42);
+  });
+
+  it('r4 F6 (D02): a timeupdate with no known duration is accepted as it stands — only non-finite and negative are rejected', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: footagePending }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().durationSeconds).toBeNull();
+    player.dispatch({ type: 'timeupdate', positionSeconds: 5 });
+    expect(player.snapshot().positionSeconds).toBe(5);
+  });
+
+  it('r4 F9: isMediaErrorReason accepts every http-<integer> the MediaErrorReason type admits — http-0, http-007, http-1000, http-200 — and refuses non-integers', () => {
+    // The typed array is the type side of the agreement; the guard is the
+    // runtime side. F9: the two must not disagree.
+    const typed: readonly MediaErrorReason[] = [
+      'decode',
+      'network',
+      'http-0',
+      'http-007',
+      'http-1000',
+      'http-200',
+    ];
+    for (const reason of typed) {
+      expect(isMediaErrorReason(reason)).toBe(true);
+    }
+    // The type\'s non-integers are not status codes: refused, as before.
+    expect(isMediaErrorReason('http-1.5')).toBe(false);
+    // Never a reason: refused, as before.
+    expect(isMediaErrorReason('boom')).toBe(false);
+    expect(isMediaErrorReason(null)).toBe(false);
   });
 });
