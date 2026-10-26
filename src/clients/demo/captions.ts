@@ -1,0 +1,163 @@
+// W0-05b: WebVTT presence and parse rules for demo captions (behaviour 20).
+// A WebVTT file is required for a playable package — W0-05a's resolver
+// refuses one without it (`captions-required`), and `isWebVttUrl` states the
+// same rule at the URL level. What this module owns is the defensive parse:
+// a malformed cue is skipped with a named reason, nothing is ever thrown into
+// the UI, and the transcript stays available when captions fail.
+//
+// House style: hand-written parsing, named refusal codes, no schema library,
+// no dependency, no coercion, no logging. The parse is total — every input,
+// hostile or empty, returns a verdict.
+//
+// The parse rules, defensively:
+//   - The body must begin with the `WEBVTT` signature (a leading BOM is
+//     tolerated); anything else is `not-webvtt`.
+//   - Cues are blocks separated by blank lines. A block may carry a cue
+//     identifier line before its timing line; the timing line is
+//     `start --> end` with optional settings after the end timestamp, and
+//     timestamps are `HH:MM:SS.mmm` or `MM:SS.mmm` with spec-shaped fields.
+//   - A block whose timing line is missing or unparseable is skipped as
+//     `bad-timing`; a cue that ends before it starts is skipped as
+//     `end-before-start`; a cue with no text is skipped as `empty-text`.
+//     Every skip names the cue's index among the file's cue blocks.
+//   - Cues that survive keep their wire order and their exact text lines.
+//   - If no cue survives, the verdict is `captions-failed` with reason
+//     `no-cues` (`not-webvtt` when the signature is missing) — and the
+//     transcript URL passed in is reported as still available, because a
+//     captions failure never takes the transcript down with it.
+
+export type WebVttCue = { startSeconds: number; endSeconds: number; text: string };
+
+export type CaptionCueProblem = 'bad-timing' | 'end-before-start' | 'empty-text';
+
+/** A skipped cue, named by its index among the file's cue blocks. */
+export type SkippedCaptionCue = { cueIndex: number; reason: CaptionCueProblem };
+
+export type CaptionsFailureReason = 'not-webvtt' | 'no-cues' | 'unreadable';
+
+export type ParsedCaptions =
+  | {
+      state: 'captions';
+      cues: readonly WebVttCue[];
+      skipped: readonly SkippedCaptionCue[];
+      transcriptAvailable: boolean;
+    }
+  | {
+      state: 'captions-failed';
+      reason: CaptionsFailureReason;
+      cues: readonly WebVttCue[];
+      skipped: readonly SkippedCaptionCue[];
+      transcriptAvailable: boolean;
+    };
+
+/**
+ * Presence at the URL level: a captions URL must name a WebVTT file. The
+ * resolver already refuses a package without one; this states the same rule
+ * for a URL a screen is about to read.
+ */
+export function isWebVttUrl(value: string | null): boolean {
+  if (typeof value !== 'string') return false;
+  try {
+    return new URL(value).pathname.toLowerCase().endsWith('.vtt');
+  } catch {
+    return false;
+  }
+}
+
+const TIMESTAMP_HMS = /^(\d{2,}):([0-5]\d):([0-5]\d)\.(\d{3})$/;
+const TIMESTAMP_MS = /^(\d{1,2}):([0-5]\d)\.(\d{3})$/;
+
+function parseTimestamp(raw: string): number | null {
+  const hms = TIMESTAMP_HMS.exec(raw);
+  if (hms !== null) {
+    return (
+      Number(hms[1]) * 3600 + Number(hms[2]) * 60 + Number(hms[3]) + Number(hms[4]) / 1000
+    );
+  }
+  const ms = TIMESTAMP_MS.exec(raw);
+  if (ms !== null) return Number(ms[1]) * 60 + Number(ms[2]) + Number(ms[3]) / 1000;
+  return null;
+}
+
+/**
+ * Parse one cue block's lines. The timing line is the first line carrying
+ * `-->`; anything before it is the cue identifier; the rest is the cue text.
+ */
+function parseCueBlock(
+  lines: readonly string[],
+): { cue: WebVttCue } | { problem: CaptionCueProblem } {
+  const timingIndex = lines.findIndex((line) => line.includes('-->'));
+  if (timingIndex === -1) return { problem: 'bad-timing' };
+  const timing = lines[timingIndex];
+  const arrow = timing.indexOf('-->');
+  const startSeconds = parseTimestamp(timing.slice(0, arrow).trim());
+  // Settings after the end timestamp (`align:start` and friends) are not
+  // part of the timestamp.
+  const endField = timing.slice(arrow + 3).trim().split(/\s+/)[0] ?? '';
+  const endSeconds = parseTimestamp(endField);
+  if (startSeconds === null || endSeconds === null) return { problem: 'bad-timing' };
+  if (endSeconds < startSeconds) return { problem: 'end-before-start' };
+  const text = lines
+    .slice(timingIndex + 1)
+    .join('\n')
+    .trim();
+  if (text === '') return { problem: 'empty-text' };
+  return { cue: { startSeconds, endSeconds, text } };
+}
+
+export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCaptions {
+  const transcriptAvailable = typeof transcriptUrl === 'string' && transcriptUrl.trim() !== '';
+  try {
+    // One canonical line ending, and a tolerated BOM: hostile whitespace
+    // never changes a verdict.
+    const body = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+    const lines = body.split('\n');
+    const first = lines.find((line) => line.trim() !== '') ?? '';
+    if (!first.startsWith('WEBVTT')) {
+      return {
+        state: 'captions-failed',
+        reason: 'not-webvtt',
+        cues: [],
+        skipped: [],
+        transcriptAvailable,
+      };
+    }
+    // The header runs to the first blank line; everything after is cues.
+    let index = lines.indexOf(first) + 1;
+    while (index < lines.length && lines[index].trim() !== '') index += 1;
+    const blocks: string[][] = [];
+    let block: string[] = [];
+    for (; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.trim() === '') {
+        if (block.length > 0) blocks.push(block);
+        block = [];
+      } else {
+        block.push(line);
+      }
+    }
+    if (block.length > 0) blocks.push(block);
+
+    const cues: WebVttCue[] = [];
+    const skipped: SkippedCaptionCue[] = [];
+    for (let cueIndex = 0; cueIndex < blocks.length; cueIndex += 1) {
+      const parsed = parseCueBlock(blocks[cueIndex]);
+      if ('cue' in parsed) cues.push(parsed.cue);
+      else skipped.push({ cueIndex, reason: parsed.problem });
+    }
+    if (cues.length === 0) {
+      return { state: 'captions-failed', reason: 'no-cues', cues, skipped, transcriptAvailable };
+    }
+    return { state: 'captions', cues, skipped, transcriptAvailable };
+  } catch {
+    // Nothing is ever thrown into the UI: an unreadable body is a named
+    // verdict, and the transcript is still there.
+    return {
+      state: 'captions-failed',
+      reason: 'unreadable',
+      cues: [],
+      skipped: [],
+      transcriptAvailable,
+    };
+  }
+}
