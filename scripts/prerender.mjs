@@ -10,7 +10,11 @@ import { pathToFileURL } from 'node:url';
 import { build } from 'vite';
 
 const root = process.cwd();
-const distDir = path.join(root, 'dist');
+// RHOBEAR_DIST lets a caller prerender into its own output directory, which is
+// what keeps two builds in one working copy from racing on dist/ (the routes
+// test builds into dist-tests-<pid>). Unset means the real `dist/`, so the
+// production build is unchanged.
+const distDir = process.env.RHOBEAR_DIST ? path.resolve(root, process.env.RHOBEAR_DIST) : path.join(root, 'dist');
 const cacheDir = path.join(root, '.cache', 'prerender');
 
 // Bundle the renderer and the route table so Node can import the TSX app.
