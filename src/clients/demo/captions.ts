@@ -87,11 +87,20 @@ export type ParsedCaptions =
  * `https:\\host\x.vtt` is the ordinary absolute https URL it normalises to).
  *
  * r8 F2: the order is structural, so no decoration of the refused shape can
- * win the race to the discrimination. Before any rule runs, the string is
- * read the way a browser's URL parser reads it: leading/trailing C0 controls
- * and spaces are stripped (`' //host/x.vtt'`, `'\t//host/x.vtt'` and
+ * win the race to the discrimination. r9 F1 closed the class — the guard's
+ * third disguise: one ASCII tab or newline INSIDE the string
+ * (`'java\tscript:alert(1)//x.vtt'`, `'/\t/evil.example/x.vtt'`) split the
+ * scheme or the `//` lead and fell to the relative branch while every browser
+ * removed the tab/newline first and read the refused shape — by dropping the
+ * blacklist of decorations entirely. Before any rule runs, the string is
+ * normalised with the URL parser's OWN steps, in the parser's own order
+ * (WHATWG "basic URL parser"): (1) remove all ASCII tab or newline (`\t`,
+ * `\n`, `\r`) from anywhere in the input, (2) remove any leading and trailing
+ * C0 control or space (`' //host/x.vtt'`, `'\t//host/x.vtt'` and
  * `'\u0000//host/x.vtt'` are the same reference as `'//host/x.vtt'` to a
- * browser) and `\` is `/`. Then, on that stripped, normalised value:
+ * browser), (3) `\` is `/` (the parser's backslash-as-slash in special
+ * schemes). Any spelling that survives those three steps is the same URL to
+ * every browser. Then the discrimination, on that normalised value:
  *   1. starts with `//` → refused — a scheme-relative absolute reference,
  *      whatever led into it;
  *   2. has a scheme (`^[a-zA-Z][a-zA-Z0-9+.\-]*:`) → accepted only for
@@ -112,14 +121,17 @@ const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
 
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
-  // r8 F2, before any discrimination: the browser's own reading of the
-  // string. The C0/space decoration is gone before any rule can be skipped
-  // by it (r7's bypass: `' //evil.example/x.vtt'` skipped `startsWith('//')`
-  // and the catch below answered for it), and the backslashes are already
-  // `/`. A Windows-style RELATIVE path (`.\captions.vtt` → `./captions.vtt`)
-  // is still a relative path: the guard refuses scheme-relative absolutes,
-  // not odd relative spellings.
+  // r9 F1, before any discrimination: the URL parser's own steps, in the
+  // parser's own order (WHATWG "basic URL parser") — the normalisation is the
+  // parser's, no longer a blacklist of decorations (r7's and r8's bypasses
+  // were both decorations the strip did not cover): (1) remove all ASCII tab
+  // or newline from ANYWHERE in the input, (2) remove leading/trailing C0
+  // control or space, (3) `\` is `/`. Any spelling that survives these three
+  // steps is the same URL to every browser. A Windows-style RELATIVE path
+  // (`.\captions.vtt` → `./captions.vtt`) is still a relative path: the
+  // guard refuses scheme-relative absolutes, not odd relative spellings.
   const normalised = value
+    .replace(/[\t\n\r]/g, '')
     .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
     .replace(/\\/g, '/');
   // (1) `//host/x.vtt` is neither http(s) nor a relative path — it names

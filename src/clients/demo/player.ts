@@ -131,6 +131,36 @@
 //     - F6: `snapshot()` hands out copies — the error (with its own offers
 //       array) and the current chapter are copied out. A screen that mutates
 //       what it was handed must never corrupt the machine.
+//   - W0-05b-r9 (Apollo's review of the r8 head), one contract fix and three
+//     soundness fixes (the captions URL guard's third disguise, F1, lives in
+//     `./captions.ts`):
+//     - F2: the locked never-throw contract ("nothing is ever thrown into
+//       the UI") covers hand-built presentations too. The guards decide the
+//       SHAPE before they dereference: a missing `interactive` key is
+//       `undefined`, not `null`, and a `sandbox` that is not a string — both
+//       land in the EXISTING `absent` refusal (no new value in the frozen
+//       vocabulary); a `renditions`/`chapters` that is not an array is
+//       treated as empty (the machine degrades, it does not throw), while
+//       the legitimate empty shapes pass through untouched.
+//     - F3: `leave` from `seeking` pauses the media and lands on `paused`,
+//       with `seekReturn` pinned to `paused` — scrub-then-navigate must not
+//       leave the clip's audio playing on an unrelated screen, and the
+//       in-flight `seeked` must never restore `playing` over a paused
+//       element.
+//     - F4: the answer's own identity is checked, not only its freshness —
+//       the invariant above ("`scenarioId` and `presentation` must never
+//       disagree") is enforced against the answer itself. A playable answer
+//       naming a different scenario than the one asked for fails closed to
+//       the resolver's own `footage-pending` answer (r3 F4's vocabulary) in
+//       `start()`, `retry()` and `switchScenario()`.
+//     - F5: a `start()` the in-flight guard turns away is remembered. When
+//       the in-flight answer lands stale and is discarded while the state is
+//       still `resolve` (no switch pending), the dropped caller's slot is
+//       refilled by exactly one fresh `resolve()` — the machine is never
+//       stranded in `resolve` by a dropped call (a screen whose mount effect
+//       fired once would wait forever), and single-flight still holds. A
+//       stale discard with NO dropped caller stays a plain discard (r3 F1's
+//       edge: a later start() still lands).
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -345,6 +375,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   // a second call while one is in flight returns the snapshot unchanged,
   // never a second resolve racing the first (React StrictMode, double-tap).
   let resolving = false;
+  // r9 F5: a `start()` turned away by that guard is recorded here. When the
+  // in-flight answer then lands stale and is discarded while the state is
+  // still `resolve`, the dropped caller's slot is refilled by exactly one
+  // fresh `resolve()` — the machine is never stranded in `resolve` by a
+  // dropped call.
+  let startTurnedAway = false;
   // F1: every in-flight answer (start, retry, switchScenario) captures this
   // counter and the scenario id before its await. A switch or a restart bumps
   // the counter; an answer that lands after the bump is stale and discarded.
@@ -353,10 +389,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   // one `seekTo` on the next `playing`, then never again.
   let resumeSeekPending = false;
 
+  // r9 F2: a hand-built rendition's `chapters` may not be an array — treated
+  // as empty (the machine degrades, it does not throw). The legitimate empty
+  // case (`chapters: []`) passes through untouched.
+  function chaptersOf(rendition: DemoRendition): readonly DemoChapter[] {
+    return Array.isArray(rendition.chapters) ? rendition.chapters : [];
+  }
+
   function activeRenditions(): readonly DemoRendition[] {
-    return presentation !== null && presentation.state === 'playable'
-      ? presentation.media.renditions
-      : [];
+    if (presentation === null || presentation.state !== 'playable') return [];
+    // r9 F2: the same for `media.renditions` — a non-array is empty (the
+    // schema's `empty-renditions` problem's shape passes through untouched).
+    return Array.isArray(presentation.media.renditions) ? presentation.media.renditions : [];
   }
 
   function activeRendition(): DemoRendition | null {
@@ -385,7 +429,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   function currentChapterOf(rendition: DemoRendition | null): DemoChapter | null {
     if (rendition === null) return null;
     let found: DemoChapter | null = null;
-    for (const chapter of rendition.chapters) {
+    for (const chapter of chaptersOf(rendition)) {
       if (chapter.startSeconds <= positionSeconds) {
         if (found === null || chapter.startSeconds > found.startSeconds) found = chapter;
       }
@@ -585,6 +629,25 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   /**
+   * r9 F4: the answer's own identity is checked, not only its freshness —
+   * the header's invariant ("`scenarioId` and `presentation` must never
+   * disagree") is enforced against the answer itself, so a resolver/cache
+   * bug returning B's presentation under A's id is never presented as A. A
+   * playable answer naming a different scenario than the one asked for is
+   * discarded fail-closed: the resolver's own `footage-pending` answer (r3
+   * F4's vocabulary) — never a new value, never a throw.
+   */
+  function answerIdentityOrPending(
+    next: DemoPresentation,
+    askedScenarioId: string,
+  ): DemoPresentation {
+    if (next.state === 'playable' && next.scenarioId !== askedScenarioId) {
+      return { state: 'footage-pending', reason: 'footage-pending' };
+    }
+    return next;
+  }
+
+  /**
    * F4 (owner-flagged): a rejected resolve is the resolver's own fail-closed
    * answer — the exact `footage-pending` presentation `./resolve.ts` returns
    * whenever the package cannot be gotten. The machine invents no new reason
@@ -615,20 +678,44 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   async function start(): Promise<DemoPlayerSnapshot> {
     // r6 F5: every public call clears the swap transition on entry (field doc).
     swapTransition = null;
-    if (state !== 'resolve' || resolving) return snapshot();
+    if (state !== 'resolve' || resolving) {
+      // r9 F5: a start() the in-flight guard turns away is REMEMBERED — the
+      // screen's mount effect may fire exactly once, and a drop with no
+      // record would strand the machine in `resolve` when the in-flight
+      // answer lands stale (see the stale path below).
+      if (resolving && state === 'resolve') startTurnedAway = true;
+      return snapshot();
+    }
     resolving = true;
     const capturedScenarioId = scenarioId;
     const capturedGeneration = generation;
+    let refill = false;
     try {
       const next = await resolveOrFailClosed(scenarioId);
       // F1: a switch or a restart landed while this answer was in flight —
       // applying it would put one scenario's presentation under another's id.
-      if (answerIsStale(capturedScenarioId, capturedGeneration)) return snapshot();
-      applyPresentation(next, true);
-      return snapshot();
+      if (answerIsStale(capturedScenarioId, capturedGeneration)) {
+        // r9 F5: the stale path re-enters the resolve — the discarded slot is
+        // refilled by exactly one fresh `resolve()` — when the state is still
+        // `resolve`, a caller was turned away above (the drop is what made
+        // this slot owed), and no switch is pending (a pending switch lands
+        // and moves the state itself). With no dropped caller the discard
+        // stays a plain discard (r3 F1's edge, unchanged: a later start()
+        // still lands). Single-flight still holds — the refill runs only
+        // after this resolve has settled.
+        refill = startTurnedAway && state === 'resolve' && pendingSwitch === null;
+      } else {
+        // r9 F4: the answer's own identity — a playable answer naming a
+        // different scenario fails closed to the footage-pending answer.
+        applyPresentation(answerIdentityOrPending(next, capturedScenarioId), true);
+      }
     } finally {
       resolving = false;
+      // Whatever this settle did — applied, discarded or refilled — the
+      // turned-away caller's slot is served by it.
+      startTurnedAway = false;
     }
+    return refill ? start() : snapshot();
   }
 
   async function retry(): Promise<DemoPlayerSnapshot> {
@@ -659,7 +746,9 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       const next = await resolveOrFailClosed(scenarioId);
       // F1: the same discipline as start() — a stale answer is discarded.
       if (answerIsStale(capturedScenarioId, capturedGeneration)) return snapshot();
-      applyPresentation(next, true);
+      // r9 F4: the same discipline as start() — the answer's own identity, or
+      // fail closed to the footage-pending answer.
+      applyPresentation(answerIdentityOrPending(next, capturedScenarioId), true);
       return snapshot();
     } finally {
       resolving = false;
@@ -691,14 +780,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     const next = await resolveOrFailClosed(nextScenarioId);
     // A newer switch or a restart may have condemned this one meanwhile (F1).
     if (pendingSwitch !== token || generation !== capturedGeneration) return snapshot();
-    if (next.state === 'playable' && activeRendition() !== null) {
-      token.presentation = next;
+    // r9 F4: the answer's own identity, checked against the id asked for — a
+    // mismatch fails closed to the footage-pending answer and lands on the
+    // picked scenario's `pending`, never the wrong presentation's poster.
+    const checked = answerIdentityOrPending(next, nextScenarioId);
+    if (checked.state === 'playable' && activeRendition() !== null) {
+      token.presentation = checked;
       // The poster phase is settled by the screen (F5/F7): `poster-ready`
       // crossfades through the poster, `poster-error` completes the swap
       // without one — and if the answer landed first, the swap waits for
       // that verdict rather than wedging.
-      if (token.posterReady) performSwap(next, nextScenarioId, true);
-      else if (token.posterFailed) performSwap(next, nextScenarioId, false);
+      if (token.posterReady) performSwap(checked, nextScenarioId, true);
+      else if (token.posterFailed) performSwap(checked, nextScenarioId, false);
       return snapshot();
     }
     // No old media keeps playing through this swap — either nothing plays
@@ -708,7 +801,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // old media there is nothing to fade out of and the new poster has not
     // loaded, so the swap is presented as `none` — a screen must never flash
     // an unloaded poster mid-crossfade.
-    performSwap(next, nextScenarioId, activeRendition() !== null);
+    performSwap(checked, nextScenarioId, activeRendition() !== null);
     return snapshot();
   }
 
@@ -851,7 +944,7 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         // does not exist is never sought to.
         const rendition = activeRendition();
         if (rendition !== null) {
-          const chapter = rendition.chapters.find((c) => c.label === event.label);
+          const chapter = chaptersOf(rendition).find((c) => c.label === event.label);
           if (chapter !== undefined) applySeek(chapter.startSeconds);
         }
         break;
@@ -914,9 +1007,16 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         }
         const interactive =
           presentation !== null && presentation.state === 'playable'
-            ? presentation.media.interactive
+            ? (presentation.media?.interactive ?? null)
             : null;
-        if (interactive === null) {
+        // r9 F2: the shape is decided before it is dereferenced. A hand-built
+        // presentation can omit the key (`undefined`, not `null`) or carry a
+        // `sandbox` that is not a string, and `interactive.sandbox.trim()` on
+        // that threw a TypeError out of dispatch() — the exact class the
+        // guard exists for, and a break of the locked never-throw contract.
+        // Both land in the EXISTING `absent` refusal: no new value in the
+        // frozen vocabulary.
+        if (interactive == null || typeof interactive.sandbox !== 'string') {
           interactiveRefusal = 'absent';
           break;
         }
@@ -1047,7 +1147,13 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       }
       case 'leave': {
         // Leaving briefly: the media stops and the place is kept (S1).
-        if (state === 'playing' || state === 'buffering') {
+        // r9 F3: `seeking` is in the pause set — scrub-then-navigate must
+        // not leave the clip's audio playing on an unrelated screen — and
+        // where the in-flight seek returns is pinned to `paused`, so the
+        // late `seeked` keeps `paused` and never restores `playing` over a
+        // paused element.
+        if (state === 'playing' || state === 'buffering' || state === 'seeking') {
+          seekReturn = 'paused';
           media.pause();
           state = 'paused';
         }
