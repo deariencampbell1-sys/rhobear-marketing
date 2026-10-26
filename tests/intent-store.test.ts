@@ -836,4 +836,157 @@ describe('intent store', () => {
     );
     expect(exclusiveOf(b), 'both answers report the exclusivity they ran under').toBe('in-process');
   });
+
+  it('a superseded intent never resurrects from the sibling adapter: install-then-checkout and checkout-then-install are both gone for a fresh store', async () => {
+    // W0-06-r8 finding 1 (HIGH): create/save/consume write only to the kind's
+    // default adapter and used to leave the key behind in the other one, and
+    // readRaw() falls back through the adapter order — so a fresh tab (empty
+    // sessionStorage) or a browser restart read the leftover record of the
+    // SUPERSEDED intent and resolved it into /get (or a stale consumed →
+    // done) instead of /account. Every successful write must best-effort
+    // remove the key from every other adapter. Both orders are asserted
+    // through a fresh store that shares only the stale record's adapter.
+
+    // Order 1: install (persistent) then checkout (session).
+    const session1 = recordingStorage();
+    const persistent1 = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: session1, localStorage: persistent1 });
+    try {
+      const first = createIntentStore({ now: fakeClock().now });
+      const install = await first.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+      expect(install.ok).toBe(true);
+      const checkout = await first.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans' });
+      expect(checkout.ok, 'the checkout supersedes the install intent').toBe(true);
+      expect(session1.backing.get(INTENT_STORAGE_KEY) ?? '', 'the live record is the checkout one').toContain(
+        '"kind":"checkout"',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // A fresh tab: sessionStorage is empty, localStorage is shared.
+    const freshSession = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: freshSession, localStorage: persistent1 });
+    try {
+      const fresh = createIntentStore({ now: fakeClock().now });
+      expect(await fresh.load(), 'the superseded install record must not resurrect').toEqual({ state: 'absent' });
+      expect(await fresh.consume(), 'the superseded install record must not resurrect').toEqual({ outcome: 'absent' });
+      expect(persistent1.backing.has(INTENT_STORAGE_KEY), 'the sibling adapter was swept').toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Order 2 (the reverse): checkout (session) then install (persistent).
+    const session2 = recordingStorage();
+    const persistent2 = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: session2, localStorage: persistent2 });
+    try {
+      const second = createIntentStore({ now: fakeClock().now });
+      const checkout = await second.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans' });
+      expect(checkout.ok).toBe(true);
+      const install = await second.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+      expect(install.ok, 'the install supersedes the checkout intent').toBe(true);
+      expect(persistent2.backing.get(INTENT_STORAGE_KEY) ?? '', 'the live record is the install one').toContain(
+        '"kind":"install"',
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    // A fresh store whose install adapter is empty and whose session adapter
+    // is shared: it must not see the superseded checkout record.
+    const freshPersistent = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: session2, localStorage: freshPersistent });
+    try {
+      const fresh = createIntentStore({ now: fakeClock().now });
+      expect(await fresh.load(), 'the superseded checkout record must not resurrect').toEqual({ state: 'absent' });
+      expect(session2.backing.has(INTENT_STORAGE_KEY), 'the sibling adapter was swept').toBe(false);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a sibling cleanup that throws never fails the write or escapes the total boundary: both adapters holding records load the checkout, not the install', async () => {
+    // W0-06-r8 edge case: disabled storage at cleanup time — the write
+    // succeeded and the sibling removal throws. The write must survive
+    // untouched, the total boundary must hold (an outcome, never a
+    // rejection), and with both adapters holding records at once in the same
+    // store after an install-then-checkout, the checkout record is the live
+    // one: load() resolves the checkout intent, not the install.
+    const session = recordingStorage();
+    const persistentBacking = new Map<string, string>();
+    const wedgedPersistent: IntentStorage & { backing: Map<string, string> } = {
+      backing: persistentBacking,
+      getItem: (key) => persistentBacking.get(key) ?? null,
+      setItem: (key, value) => {
+        persistentBacking.set(key, value);
+      },
+      removeItem: () => {
+        throw new Error('storage is wedged');
+      },
+    };
+    vi.stubGlobal('window', { sessionStorage: session, localStorage: wedgedPersistent });
+    try {
+      const store = createIntentStore({ now: fakeClock().now });
+      const install = await store.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+      expect(install.ok, 'a cleanup failure never fails the write').toBe(true);
+      const checkout = await store.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans' });
+      expect(checkout.ok, 'a cleanup failure never fails the write').toBe(true);
+      // Both adapters hold records at once: the wedged removal could not sweep.
+      expect(session.backing.has(INTENT_STORAGE_KEY), 'the checkout record is in the session adapter').toBe(true);
+      expect(persistentBacking.has(INTENT_STORAGE_KEY), 'the stale install record survived the failed cleanup').toBe(
+        true,
+      );
+      const loaded = await store.load();
+      expect(loaded.state).toBe('active');
+      if (loaded.state === 'active') {
+        expect(loaded.intent.kind, 'the checkout record is the live one').toBe('checkout');
+        expect(loaded.intent.returnRoute).toBe('/plans');
+      }
+      // The consume path survives the cleanup failure too: an outcome, never a
+      // rejection that escapes the total boundary.
+      await expect(store.consume()).resolves.toMatchObject({ outcome: 'consumed' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an expired record is removed by the consume that reports it expired, under the lock: the storage slot is gone', async () => {
+    // W0-06-r8 finding 3: consume() returned { outcome: 'expired' } without
+    // removing the record, while load() removes it — the module's discipline
+    // is "expired intents do not linger". The removal runs under the consume
+    // lock, like every other mutation.
+    const recording = recordingStorage();
+    const clock = fakeClock();
+    let lockHeld = false;
+    let removedWhileLocked = false;
+    const storage: IntentStorage = {
+      getItem: (key) => recording.getItem(key),
+      setItem: (key, value) => recording.setItem(key, value),
+      removeItem: (key) => {
+        if (lockHeld) removedWhileLocked = true;
+        return recording.removeItem(key);
+      },
+    };
+    const store = createIntentStore({ storage, now: clock.now });
+    await store.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+    clock.advance(DAY_TTL_MS + 1);
+    const fakeLocks = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, body: () => Promise<R> | R): Promise<R> {
+        lockHeld = true;
+        return Promise.resolve(body()).finally(() => {
+          lockHeld = false;
+        });
+      },
+    };
+    vi.stubGlobal('navigator', { locks: fakeLocks });
+    try {
+      expect(await store.consume(), 'the expired consume reports expired').toEqual({ outcome: 'expired' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    expect(recording.backing.has(INTENT_STORAGE_KEY), 'the expired record does not linger in the storage slot').toBe(
+      false,
+    );
+    expect(removedWhileLocked, 'the removal runs under the lock, like every other mutation').toBe(true);
+    expect(await store.load(), 'a second read finds the slot empty').toEqual({ state: 'absent' });
+  });
 });

@@ -1415,4 +1415,58 @@ describe('sign-in state machine', () => {
     expect(empty.machine.snapshot().state, 'an empty id changes nothing').toBe('restored-unverified');
     expect(empty.machine.snapshot().moneyPathConfirmationId).toBeNull();
   });
+
+  it('the already-consumed restore stamps the store\'s returnRoute, not the stale loaded copy: the stored record\'s route wins', async () => {
+    // W0-06-r8 finding 2: the already-consumed branch reported the machine's
+    // local intent.returnRoute and ignored result.returnRoute. When the
+    // stored record diverged from the loaded copy between load and consume,
+    // the returned destination was stale. The store's record is the one that
+    // was actually consumed, so its route wins — the stamped intent and the
+    // destination both come from result.returnRoute, and the divergence is
+    // resolved explicitly and safely (never a throw).
+    const clock = fakeClock();
+    const real = createIntentStore({ storage: memoryIntentStorage(), now: clock.now });
+    const diverging: IntentStore = {
+      ...real,
+      consume: async () => ({
+        outcome: 'already-consumed',
+        returnRoute: '/engines', // the STORED record's route — diverged from the loaded copy
+        durable: true,
+        exclusive: 'in-process',
+      }),
+    };
+    const machine = createSignInMachine({ store: diverging, now: clock.now, providers: { google: true } });
+    await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.outcome).toBe('already-restored');
+    // The two disagree: the stored record's route wins on every surface.
+    expect(restored.snapshot.returnRoute, "the store's route wins, not the stale loaded copy").toBe('/engines');
+    expect(restored.snapshot.destination, "the store's route wins, not the stale loaded copy").toBe('/engines');
+    expect(restored.snapshot.intent?.returnRoute, 'the consumed stamp carries the store\'s route').toBe('/engines');
+    expect(restored.snapshot.intent?.consumedAt, 'still consumed-stamped').toBeTruthy();
+    expect(machine.snapshot().state).toBe('done');
+
+    // The failure mode of a divergence that cannot be trusted is explicit and
+    // safe: a route outside the allowlist is never a destination (the r5
+    // re-check), and nothing throws.
+    const hostile: IntentStore = {
+      ...real,
+      consume: async () => ({
+        outcome: 'already-consumed',
+        returnRoute: 'javascript:evil',
+        durable: true,
+        exclusive: 'in-process',
+      }),
+    };
+    const guarded = createSignInMachine({ store: hostile, now: clock.now, providers: { google: true } });
+    await guarded.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    guarded.continueToMethodSelect();
+    guarded.chooseMethod('google');
+    guarded.sessionApproved();
+    await expect(guarded.restoreDestination()).resolves.toMatchObject({ outcome: 'already-restored' });
+    expect(guarded.snapshot().destination, 'a route outside the allowlist is never a destination').toBeNull();
+  });
 });
