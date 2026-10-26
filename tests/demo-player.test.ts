@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 // and proves the machine resolves to the locked footage-pending state.
 import {
   createDemoPlayer,
+  httpReason,
   isMediaErrorReason,
   type DemoMediaElement,
   type DemoPlayer,
@@ -183,6 +184,17 @@ async function playerInMediaErrorSingle(): Promise<{ player: DemoPlayer; media: 
   player.dispatch({ type: 'media-error', reason: 'network' });
   expect(player.snapshot().state).toBe('error');
   return { player, media };
+}
+
+/**
+ * r10 F3: the type's http arm is built with `httpReason()` and nothing else —
+ * a status this fixture cannot turn into a reason is a broken fixture, and
+ * says so loudly.
+ */
+function mustHttpReason(status: number): MediaErrorReason {
+  const reason = httpReason(status);
+  if (reason === null) throw new Error(`fixture: httpReason(${status}) is null`);
+  return reason;
 }
 
 /** A started, playing player whose package carries one interactive artifact. */
@@ -482,7 +494,7 @@ describe('demo player state machine', () => {
     await player.retry();
     expect(player.snapshot().state).toBe('buffering');
     const callsBefore = media.calls.length;
-    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    player.dispatch({ type: 'media-error', reason: mustHttpReason(503) });
     expect(player.snapshot().state).toBe('error');
     expect(player.snapshot().error?.reason).toBe('http-503');
     expect(player.snapshot().scenarioId).toBe(SCENARIO_ID);
@@ -1566,7 +1578,7 @@ describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
     player.dispatch({ type: 'media-error', reason: 'decode' });
     expect(player.snapshot().error?.supportReferenceId).toBeNull();
     await player.retry();
-    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    player.dispatch({ type: 'media-error', reason: mustHttpReason(503) });
     expect(player.snapshot().error?.supportReferenceId).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
   });
 
@@ -1926,13 +1938,17 @@ describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
     // runtime side. F9: the two must not disagree. r6 F8 narrowed the guard
     // to the canonical renderings and reversed the r4 pin on `http-007` —
     // it is a spelling the type does not canonically produce and is refused
-    // (pinned in the r6 F8 test below).
+    // (pinned in the r6 F8 test below). r10 F3: the http arm is built with
+    // `httpReason()` now — the type's members are what that constructor
+    // returns (the brand is compile-time only; the runtime strings are
+    // unchanged) — and the constructor's accept table and the guard's are
+    // pinned together in the r10 F3 tests below.
     const typed: readonly MediaErrorReason[] = [
       'decode',
       'network',
-      'http-0',
-      'http-1000',
-      'http-200',
+      mustHttpReason(0),
+      mustHttpReason(1000),
+      mustHttpReason(200),
     ];
     for (const reason of typed) {
       expect(isMediaErrorReason(reason)).toBe(true);
@@ -2596,7 +2612,7 @@ describe("demo player state machine — W0-05b-r7 (Apollo's review of the r6 hea
     // episode is over — exactly what it did before this round.
     player.dispatch({ type: 'playing' });
     expect(player.snapshot().state).toBe('playing');
-    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    player.dispatch({ type: 'media-error', reason: mustHttpReason(503) });
     const snapshot = player.snapshot();
     expect(snapshot.state).toBe('error');
     expect(snapshot.error?.reason).toBe('http-503');
@@ -2876,7 +2892,7 @@ describe("demo player state machine — W0-05b-r8 (Apollo's review of the r7 hea
     const first = player.snapshot().error?.supportReferenceId;
     expect(first).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
     // Stable for the whole episode: one reference per failure episode.
-    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    player.dispatch({ type: 'media-error', reason: mustHttpReason(503) });
     expect(player.snapshot().error?.supportReferenceId).toBe(first);
 
     // Playback resumes — the episode is over (r7 F1) — and a second episode
@@ -3207,5 +3223,102 @@ describe("demo player state machine — W0-05b-r9 (Apollo's review of the r8 hea
     expect(settled.scenarioId).toBe(SCENARIO_ID);
     expect(settled.unplayableReason).toBeNull();
     expect(player.snapshot().state).toBe('poster');
+  });
+});
+
+// W0-05b-r10 — Apollo's review of the r9 head (2026-10-26 16:48:29Z). F2 is
+// ANSWERED (the sandbox policy is the locked W0-05a schema's — see the round
+// comment) with the cheap hardening it asked for beside it: the
+// `allow-same-origin` refusal covering decorated spellings, and the
+// verbatim-application contract pinned. F3 is the http reason constructor.
+// These were the red tests for round r10's fix (the F2 spelling table and the
+// F3 tests; F5/F6/F8/F1 live in tests/demo-deeplink.test.ts).
+describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 head)", () => {
+  it('r10 F2 (D05): the allow-same-origin refusal covers the case-normalised and whitespace-padded spellings — no decoration of the refused token survives', async () => {
+    for (const sandbox of [
+      '  ALLOW-SAME-ORIGIN  ',
+      '\tallow-same-origin\n',
+      'allow-scripts   ALLOW-SAME-ORIGIN   allow-forms',
+      'allow-forms \u0000allow-same-origin',
+    ]) {
+      const { player, media } = await playerWithInteractive(sandbox);
+      const callsBefore = media.calls.length;
+      player.dispatch({ type: 'open-interactive' });
+      expect(player.snapshot().state).toBe('playing');
+      expect(player.snapshot().interactiveRefusal).toBe('sandbox-allows-same-origin');
+      expect(player.snapshot().interactiveSandbox).toBeNull();
+      expect(media.calls.length).toBe(callsBefore);
+    }
+  });
+
+  it("r10 F2 (D05): the verbatim-application contract holds — every token the schema allows survives to the sandbox string unchanged (the sandbox policy is the schema's, applied verbatim)", async () => {
+    // `allow-modals`, `allow-popups-to-escape-sandbox` and
+    // `allow-top-navigation` are on the schema's sandbox allow-list by the
+    // board's design (`schema.ts`'s SANDBOX_TOKENS, "the known iframe sandbox
+    // tokens minus `allow-same-origin`"). A player-side refusal of them would
+    // make a schema-valid package render wrongly — the player applies the
+    // validated list verbatim, and this test pins that contract.
+    const sandbox = 'allow-modals allow-popups-to-escape-sandbox allow-top-navigation';
+    const { player } = await playerWithInteractive(sandbox);
+    player.dispatch({ type: 'open-interactive' });
+    const snapshot = player.snapshot();
+    expect(snapshot.state).toBe('interactive');
+    expect(snapshot.interactiveRefusal).toBeNull();
+    expect(snapshot.interactiveSandbox).toBe(sandbox);
+  });
+
+  it('r10 F3 (behaviour 12): httpReason(200) produces a reason the guard accepts — dispatched, the machine errors with the canonical rendering http-200', async () => {
+    const reason = httpReason(200);
+    expect(reason).toBe('http-200');
+    if (reason === null) throw new Error('httpReason(200) must not be null');
+    expect(isMediaErrorReason(reason)).toBe(true);
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'media-error', reason });
+    expect(player.snapshot().state).toBe('error');
+    expect(player.snapshot().error?.reason).toBe('http-200');
+  });
+
+  it('r10 F3 (behaviour 12): httpReason refuses the non-canonical statuses — 1.5, -1 and NaN all return null', () => {
+    expect(httpReason(1.5)).toBeNull();
+    expect(httpReason(-1)).toBeNull();
+    expect(httpReason(Number.NaN)).toBeNull();
+  });
+
+  it("r10 F3 (behaviour 12): the constructor's accept table and the guard's accept table agree — both sides of every value in the pinned table", () => {
+    // Accepted side: the constructor renders the reason and the guard accepts
+    // the rendering. 0 is in the table (the guard accepts `http-0`, so the
+    // constructor must agree), and so are the largest integers whose decimal
+    // rendering is canonical.
+    for (const [status, rendering] of [
+      [0, 'http-0'],
+      [200, 'http-200'],
+      [1000, 'http-1000'],
+      [Number.MAX_SAFE_INTEGER, `http-${Number.MAX_SAFE_INTEGER}`],
+      [2 ** 53, 'http-9007199254740992'],
+    ] as const) {
+      const reason = httpReason(status);
+      expect(reason).toBe(rendering);
+      expect(isMediaErrorReason(rendering)).toBe(true);
+    }
+    // Refused side: the constructor returns null and the guard refuses the
+    // spelling the template would have produced for the same value.
+    for (const [status, spelling] of [
+      [1.5, 'http-1.5'],
+      [-1, 'http--1'],
+      [Number.NaN, 'http-NaN'],
+      [Number.POSITIVE_INFINITY, 'http-Infinity'],
+      [1e21, 'http-1e+21'],
+    ] as const) {
+      expect(httpReason(status)).toBeNull();
+      expect(isMediaErrorReason(spelling)).toBe(false);
+    }
   });
 });

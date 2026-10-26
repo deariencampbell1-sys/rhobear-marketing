@@ -4,7 +4,11 @@ import { describe, expect, it } from 'vitest';
 // `src/clients/demo/deeplink.ts` and `src/clients/demo/captions.ts` existed;
 // it guards those behaviours now. The captions tests live here because the
 // round's file list names exactly two test files.
-import { parseDemoDeepLink, type ParsedDemoDeepLink } from '../src/clients/demo/deeplink';
+import {
+  parseDemoDeepLink,
+  type DemoDeepLinkParts,
+  type ParsedDemoDeepLink,
+} from '../src/clients/demo/deeplink';
 import { isWebVttUrl, parseWebVTT } from '../src/clients/demo/captions';
 import { present } from '../src/clients/demo/resolve';
 import type { DemoPackage } from '../src/clients/demo/schema';
@@ -116,7 +120,15 @@ describe('demo deep links', () => {
         60,
       ),
     ).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: 7 });
-    expect(JSON.stringify(parseDemoDeepLink({ pathname: '/engines/teams-01', search: '?t=42' }, 60))).not.toContain('sekrit');
+    // r10 F8: the old last assertion here proved nothing — the input carried
+    // no 'sekrit' to find. Both facts are pinned now: the location carries
+    // the query's `?t=`-looking key, and the parse still yields exactly no
+    // position from it.
+    const queryKey = { pathname: '/engines/teams-01', search: '?t=42' };
+    expect(queryKey.search).toContain('t=');
+    const queryParsed = parseDemoDeepLink(queryKey, 60);
+    expect(queryParsed).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: null });
+    expect(queryParsed).toHaveProperty('positionSeconds', null);
   });
 });
 
@@ -811,5 +823,85 @@ describe("demo deep links and captions — W0-05b-r9 (Apollo's review of the r8 
     // `//evil.example/x.vtt`.
     expect(isWebVttUrl('\\evil.example/x.vtt')).toBe(true);
     expect(isWebVttUrl('\t\\evil.example/x.vtt')).toBe(true);
+  });
+});
+
+// W0-05b-r10 — Apollo's review of the r9 head (2026-10-26 16:48:29Z). F1 is
+// the untested `new URL` failure branch of isWebVttUrl and the boolean's
+// conflated refusal; F5 pins the duration conjuncts the review called
+// unreachable-by-effect (belt-and-braces — the code stays); F6 is the
+// never-throw shape guard on the parsed location. F8's replacement lives in
+// the query test above. These were the red tests for round r10's fix.
+describe("demo deep links and captions — W0-05b-r10 (Apollo's review of the r9 head)", () => {
+  it("r10 F1 (behaviour 20): 'http://[' throws in new URL after normalisation (pinned) and isWebVttUrl refuses it — false covers 'not a WebVTT URL' and 'unparseable' alike, the caller never learns which", () => {
+    // Proof in the test that this value really throws in `new URL` — the
+    // failure branch under test is the one that runs for it.
+    expect(() => new URL('http://[')).toThrow();
+    expect(() => new URL('http://[/captions.vtt')).toThrow();
+    // ... and the guard's answer for the unparseable spelling is the plain
+    // refusal, even when it ends in .vtt.
+    expect(isWebVttUrl('http://[')).toBe(false);
+    expect(isWebVttUrl('http://[/captions.vtt')).toBe(false);
+    // The boolean conflates two refusals by design: parseable but not
+    // WebVTT, and unparseable — both `false`, indistinguishable to the
+    // caller. (The boolean API stays; this pins what `false` means.)
+    expect(isWebVttUrl('https://x/c.html')).toBe(false);
+    expect(isWebVttUrl('http://[')).toBe(false);
+  });
+
+  it('r10 F5 (behaviour 18): the duration conjuncts are belt-and-braces and pinned — #t=0 against a zero, NaN, infinite or negative duration is positionSeconds: null in every case', () => {
+    for (const mediaDurationSeconds of [
+      0,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -5,
+    ]) {
+      expect(
+        parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=0' }, mediaDurationSeconds),
+      ).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: null });
+    }
+  });
+
+  it('r10 F6 (behaviour 18): the parse decides the location shape before it dereferences — a non-string pathname, a non-string hash and a non-object location never throw, and each malformed half falls back to its empty shape', () => {
+    // The path half's empty shape: no path parts — the `bad-path` refusal,
+    // exactly what an empty path parses to.
+    for (const location of [
+      { pathname: undefined, hash: '#t=42' },
+      { pathname: 42, hash: '#t=42' },
+      {},
+    ]) {
+      expect(() => parseDemoDeepLink(location as unknown as DemoDeepLinkParts, 60)).not.toThrow();
+      expect(parseDemoDeepLink(location as unknown as DemoDeepLinkParts, 60)).toEqual({
+        kind: 'not-found',
+        reason: 'bad-path',
+      });
+    }
+    // The hash half's empty shape: no position. A valid location keeps its
+    // behaviour bit-identical — an absent `hash` has always meant "no
+    // fragment" (the no-fragment pin above), and the explicit undefined,
+    // null and non-string spellings parse to exactly that, never a throw.
+    for (const hash of [undefined, null, 42, {}]) {
+      expect(() =>
+        parseDemoDeepLink(
+          { pathname: '/engines/teams-01', hash } as unknown as DemoDeepLinkParts,
+          60,
+        ),
+      ).not.toThrow();
+      expect(
+        parseDemoDeepLink(
+          { pathname: '/engines/teams-01', hash } as unknown as DemoDeepLinkParts,
+          60,
+        ),
+      ).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: null });
+    }
+    // Not an object at all — whatever the signature admits at runtime: the
+    // empty shape in both halves (no path parts, no position) and no throw.
+    for (const location of [null, undefined, 42, 'engines/teams-01']) {
+      expect(() => parseDemoDeepLink(location as unknown as DemoDeepLinkParts, 60)).not.toThrow();
+      expect(parseDemoDeepLink(location as unknown as DemoDeepLinkParts, 60)).toEqual({
+        kind: 'not-found',
+        reason: 'bad-path',
+      });
+    }
   });
 });
