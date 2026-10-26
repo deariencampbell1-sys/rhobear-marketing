@@ -75,7 +75,9 @@
 //       the new rendition's source (the screen owns sources), so an immediate
 //       `seekTo` would land on the old one. The machine keeps the resume time
 //       itself (D06) and issues exactly one `seekTo` on the next `playing`,
-//       when the screen has swapped the source.
+//       when the screen has swapped the source. r12 F5: the resume time is
+//       CAPTURED when the resume is armed and the seek is to that captured
+//       place — never to whatever the live position reports before it fires.
 //   - F1: `scenarioId` and `presentation` must never disagree. Every async
 //     entry point captures the scenario id (and a generation counter) before
 //     its await and discards an answer that lands after a switch or a restart
@@ -203,6 +205,51 @@
 //       left as it is: no throw, no new refusal value. The guard's state set
 //       is exactly `poster`/`paused` (not widened): `error` and `interactive`
 //       stay the no-ops they are, and `ended` keeps behaviour 14's re-play.
+//   - W0-05b-r12 (Apollo's review of the r11 head, 2026-10-26 19:02:48Z),
+//     one contract hole and two D06/S1 contradictions (the round's two LOWs
+//     — the strict deep-link hash in `./deeplink.ts` and this module's
+//     bounded `httpReason` — live beside their own findings):
+//     - F3: the locked never-throw contract ("nothing is ever thrown into
+//       the UI") covers the `media` key itself. `activeRenditions()`
+//       dereferenced `presentation.media.renditions` with no shape guard —
+//       a hand-built/JSON-decoded playable presentation with `media` absent
+//       (the r9 F2 class) threw a `TypeError` out of `start()` and every
+//       `dispatch()`, while the sibling path has read
+//       `presentation.media?.interactive` since r9 F2, proving `media` may
+//       be missing. The shape is decided before it is dereferenced: an
+//       absent `media` is the empty shape, exactly r9 F2's `renditions`-
+//       absent row — the machine degrades to the no-rendition path and
+//       never throws.
+//     - F4: the null-duration rule, one meaning everywhere (D06/S1: never
+//       lose the person's place). `applyPresentation` reset a preserved
+//       position to 0 when `durationSeconds === null` while `lower-rendition`
+//       kept it — "a null duration is no bound to check against" — and the
+//       r8 F3 comment claimed the one rule for both. The rule is now
+//       `duration !== null && (position < 0 || position >= duration) →
+//       positionSeconds = 0` in BOTH paths: an unknown duration keeps the
+//       place (a retry or deep-link start onto one never loses it), a known
+//       duration still bounds it (outside it the place resets to 0, never
+//       clamped to the end), and a call that never promised to keep the
+//       place — `applyPresentation(next, false)`, the swap's start at the
+//       new scenario's own zero — still starts at zero.
+//     - F5: the one-shot lower-rendition resume seeks to the CAPTURED place,
+//       never the live one (D06/S1). The resume was a bare boolean seeking
+//       `positionSeconds` at fire time, so a `timeupdate` arriving before
+//       `playing` — the screen swapping the source resets it to 0 —
+//       retargeted the resume and lost the kept place; the contract pins no
+//       event order, so the fix cannot depend on one. The place is captured
+//       when the resume is armed (`resumeSeekPosition`) and both consumers —
+//       the `playing` resume and the `retry()` whose seekTo IS the resume
+//       (r5 F3) — seek to the captured value and report it as the position
+//       (the seek is explicit, exactly what `applySeek` does).
+//     - F2: `httpReason()` is bounded to the HTTP status space — the
+//       integers `0 <= status <= 9999`. Beyond it `String(status)` is no
+//       longer injective (`2**53` and `2**53 + 1` are one double and render
+//       one decimal), so two distinct inputs built the same reason — and a
+//       reason that cannot name its input cannot name a failure (D07).
+//       Everything outside the space is `null`; `isMediaErrorReason` — the
+//       runtime guard for untyped strings — is unchanged (r10 F3's
+//       contract: build reasons with `httpReason()`).
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -230,8 +277,9 @@ export type DemoMediaElement = {
 /**
  * The actual reason a media request failed (D07): decode, network,
  * `http-<status>`. r10 F3: build the http arm with `httpReason()` — it is
- * the one constructor, it renders `http-<canonical non-negative integer>` or
- * returns `null`, and the type's http arm is what it returns. The brand is a
+ * the one constructor, it renders `http-<status>` for a status in the HTTP
+ * status space (the integers `0 <= status <= 9999`, r12 F2) or returns
+ * `null`, and the type's http arm is what it returns. The brand is a
  * compile-time construct; the runtime strings are unchanged (`http-0`,
  * `http-200`, `http-1000`). The contract, plainly: build reasons with
  * `httpReason()`; `isMediaErrorReason` — the runtime predicate for untyped
@@ -249,20 +297,33 @@ export type MediaErrorReason = 'decode' | 'network' | HttpMediaErrorReason;
 // which admitted `http-+200`, `http--200` and `http-007`) is gone: those are
 // spellings the wire never renders. r10 F3: this pattern is the single
 // definition of "canonical", shared by the constructor and the guard, so the
-// two accept tables cannot drift apart.
+// two accept tables cannot drift apart. r12 F2: the pattern and the guard
+// are unchanged — the runtime predicate for untyped strings is exactly what
+// it has always been; the constructor adds the HTTP status-space bound
+// (`0 <= status <= 9999`) beside them.
 const HTTP_STATUS_REASON = /^http-(0|[1-9][0-9]*)$/;
 
 /**
  * The one constructor for the http arm (r10 F3): the canonical
- * `http-<non-negative integer>` rendering — exactly what the guard accepts —
- * or `null`. The two accept tables agree by construction: everything this
- * returns passes `isMediaErrorReason`, and its `null` cases (`1.5`, `-1`,
- * `NaN`, `Infinity`, a status whose decimal rendering is not canonical like
- * `1e21` → `1e+21`) are spellings the guard refuses. `http-0` is included:
- * the guard accepts it, so the constructor agrees.
+ * `http-<status>` rendering for a status in the HTTP status space, or
+ * `null`. r12 F2: the input is bounded to the integers `0 <= status <=
+ * 9999` — the smallest named ceiling that covers every status the wire
+ * renders. Beyond it `String(status)` is no longer injective (`2**53` and
+ * `2**53 + 1` are one double and render one decimal), and a reason that
+ * cannot name its input cannot name a failure (D07) — so every status
+ * outside the space is `null`, whatever it would have rendered. Inside it
+ * the rendering is canonical and the two accept tables agree one-way:
+ * everything this returns passes `isMediaErrorReason`, while the `null`
+ * cases are non-integers (`1.5`, `NaN`, `Infinity`), negatives, out-of-space
+ * statuses (`10000`, `2**53`) and statuses whose decimal rendering is not
+ * canonical (`1e21` → `1e+21`). The guard is the runtime predicate for
+ * untyped strings and is deliberately unchanged (r12 F2): it still accepts
+ * every canonical spelling, including one the bounded constructor can no
+ * longer build. `http-0` is included: the guard accepts it, so the
+ * constructor agrees.
  */
 export function httpReason(status: number): HttpMediaErrorReason | null {
-  if (!Number.isInteger(status) || status < 0) return null;
+  if (!Number.isInteger(status) || status < 0 || status > 9999) return null;
   const rendered: string = `http-${String(status)}`;
   return HTTP_STATUS_REASON.test(rendered) ? (rendered as HttpMediaErrorReason) : null;
 }
@@ -593,8 +654,14 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   // the counter; an answer that lands after the bump is stale and discarded.
   let generation = 0;
   // F8: the one-shot resume a lower-rendition switch leaves behind — exactly
-  // one `seekTo` on the next `playing`, then never again.
+  // one `seekTo` on the next `playing`, then never again. r12 F5: the resume
+  // seeks to the place CAPTURED when it was armed (`resumeSeekPosition`),
+  // never to the live position — a `timeupdate` arriving before the resume
+  // fires (the screen swapping the source resets it to 0) must never
+  // retarget it (D06/S1: never lose the person's place). The contract pins
+  // no event order, so the capture — not the order — is the fix.
   let resumeSeekPending = false;
+  let resumeSeekPosition: number | null = null;
 
   // r9 F2: a hand-built rendition's `chapters` may not be an array — treated
   // as empty (the machine degrades, it does not throw). The legitimate empty
@@ -607,7 +674,16 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     if (presentation === null || presentation.state !== 'playable') return [];
     // r9 F2: the same for `media.renditions` — a non-array is empty (the
     // schema's `empty-renditions` problem's shape passes through untouched).
-    return Array.isArray(presentation.media.renditions) ? presentation.media.renditions : [];
+    // r12 F3: the shape guard covers the `media` key itself — the locked
+    // never-throw contract reaches every dereference. A hand-built/JSON-
+    // decoded playable presentation may carry no `media` at all (the sibling
+    // `open-interactive` path has read `presentation.media?.interactive`
+    // since r9 F2): an absent `media` is the empty shape too, exactly r9
+    // F2's `renditions`-absent row — the machine degrades to the
+    // no-rendition path and never throws a TypeError out of `start()` or a
+    // `dispatch()`.
+    const renditions = presentation.media?.renditions;
+    return Array.isArray(renditions) ? renditions : [];
   }
 
   function activeRendition(): DemoRendition | null {
@@ -708,6 +784,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
    * preserved position is re-checked against the real duration and ignored
    * outside it — never clamped to the end (behaviour 18's rule, held here
    * too because a deep-link position can arrive before the package does).
+   * r12 F4: the re-check is against a KNOWN duration only — an unknown
+   * duration (`null`) is no bound to check against and keeps the place, the
+   * one rule shared with `lower-rendition`'s re-check (r8 F3's edge). A call
+   * that never promised to keep the place (`keepPosition = false`, the
+   * swap's start at the new scenario's own zero) is not protected by the
+   * rule and still resets.
    */
   function applyPresentation(next: DemoPresentation, keepPosition: boolean): void {
     presentation = next;
@@ -717,8 +799,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     interactiveSandbox = null;
     interactiveRefusal = null;
     // F8: a new presentation is a new source — a resume flag left by an older
-    // lower-rendition switch is stale and must never fire against it.
+    // lower-rendition switch is stale and must never fire against it (r12
+    // F5: its captured place goes with it).
     resumeSeekPending = false;
+    resumeSeekPosition = null;
     if (!keepPosition) positionSeconds = 0;
     if (next.state === 'playable') {
       // F1 (W0-05b-r4): a failure episode ends when the media is healthy
@@ -735,7 +819,13 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       unplayableReason = null;
       state = 'poster';
       const duration = activeDuration();
-      if (duration === null || positionSeconds < 0 || positionSeconds >= duration) {
+      // r12 F4: the one null-duration rule, everywhere (D06/S1: never lose
+      // the person's place). A KNOWN duration bounds the place — outside it
+      // it resets to 0, never clamped to the end (behaviour 18's rule) —
+      // while an unknown duration is no bound to check against and the place
+      // is kept, exactly like `lower-rendition`'s re-check (r8 F3's edge) and
+      // a `timeupdate` with no known duration (r4 F6).
+      if (duration !== null && (positionSeconds < 0 || positionSeconds >= duration)) {
         positionSeconds = 0;
       }
       if (keepPosition && positionSeconds > 0) media.seekTo(positionSeconds);
@@ -924,9 +1014,16 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       error = null;
       // r5 F3: this seekTo IS the resume. If a lower-rendition switch left
       // the F8 one-shot behind, it is consumed here — or the next `playing`
-      // would fire a second seek for one resume.
+      // would fire a second seek for one resume. r12 F5: it seeks to the
+      // CAPTURED place when one is armed — exactly like the `playing` resume,
+      // never the live position a `timeupdate` may have retargeted — and
+      // reports it as the position (the seek is explicit). With no one-shot
+      // behind it, the target is the position as it always was.
+      const retryResume = resumeSeekPosition ?? positionSeconds;
       resumeSeekPending = false;
-      media.seekTo(positionSeconds);
+      resumeSeekPosition = null;
+      media.seekTo(retryResume);
+      positionSeconds = retryResume;
       media.play();
       state = 'buffering';
       return snapshot();
@@ -1027,8 +1124,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       returnState = null;
       interactiveSandbox = null;
       interactiveRefusal = null;
-      // F8: the resume point no longer exists — the place is zero now.
+      // F8: the resume point no longer exists — the place is zero now (r12
+      // F5: its captured value goes with it).
       resumeSeekPending = false;
+      resumeSeekPosition = null;
       return snapshot();
     }
     // The state itself does not move from a named no-media state —
@@ -1116,10 +1215,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         // on the first `playing` after the screen has loaded the new source,
         // exactly once. The port cannot load a source (it is play/pause/
         // seekTo), so this is the only ordering that lands the seek on the new
-        // rendition rather than the old one.
+        // rendition rather than the old one. r12 F5: the seek goes to the
+        // place captured when the resume was armed — the kept place — and
+        // becomes the position (the seek is explicit). The live
+        // `positionSeconds` may have moved (the screen swapping the source
+        // resets it to 0, and the contract pins no event order); it must
+        // never retarget the resume (D06/S1: never lose the person's place).
         if (resumeSeekPending) {
           resumeSeekPending = false;
-          media.seekTo(positionSeconds);
+          const resume = resumeSeekPosition ?? positionSeconds;
+          resumeSeekPosition = null;
+          media.seekTo(resume);
+          positionSeconds = resume;
         }
         // r7 F1: the `playing` event ALWAYS ends the failure episode — the
         // event means the media is playing, which is D07's "playback ever
@@ -1278,14 +1385,15 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           }
           if (best !== null) {
             // r8 F3: the kept place is re-checked against the NEW rendition's
-            // real duration before the resume is armed — `applyPresentation`'s
-            // rule (`duration === null || position < 0 || position >= duration
-            // → positionSeconds = 0`), so a lower rendition that ends before
+            // real duration before the resume is armed — the one rule
+            // `applyPresentation` shares (r12 F4:
+            // `duration !== null && (position < 0 || position >= duration) →
+            // positionSeconds = 0`), so a lower rendition that ends before
             // the kept place can never resume past its own end (a lower
             // rendition may be shorter — nothing in the schema forbids it).
-            // The rule's first arm stands as pinned (r8's edge): a null
-            // duration is no bound to check against, so the place is kept —
-            // exactly like a `timeupdate` with no known duration (r4 F6).
+            // A null duration is no bound to check against and the place is
+            // kept — r8 F3's edge, exactly like a `timeupdate` with no known
+            // duration (r4 F6).
             const nextDuration: number | null = renditions[best].durationSeconds;
             if (nextDuration !== null && (positionSeconds < 0 || positionSeconds >= nextDuration)) {
               positionSeconds = 0;
@@ -1295,8 +1403,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
             // rendition's source — the screen owns sources — so an immediate
             // seek would land on the old one. The machine keeps the resume
             // time itself (D06) and issues exactly one `seekTo` on the next
-            // `playing`, when the screen has swapped the source.
+            // `playing`, when the screen has swapped the source. r12 F5: the
+            // resume time is CAPTURED here — after the re-check above — and
+            // the seek is to that captured place, whatever the live position
+            // reports before it fires.
             resumeSeekPending = true;
+            resumeSeekPosition = positionSeconds;
             state = 'poster';
             error = null;
           }

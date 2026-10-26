@@ -23,7 +23,10 @@
 //     grammar's (F10: a second `#`, a unit suffix, whitespace beyond the
 //     grammar, an empty value). Either way the parsed link carries the
 //     scenario and the position and nothing else — a smuggled value is never
-//     echoed anywhere.
+//     echoed anywhere. The fragment is read only from a hash that BEGINS with
+//     `#` (r12 F1) — the exact shape a real `Location` carries; a hash
+//     without the prefix is not a fragment at all — no position — and its
+//     contents are never parsed.
 //   - A query string is never read: position comes from the fragment only.
 //     (`?t=42` positions nobody; `?t=99#t=7` positions at 7.)
 //
@@ -61,7 +64,16 @@ const ENGINES_ROUTE = /^\/engines\/([^/]+)$/;
 const FRAGMENT_SECONDS = /^\d+(\.\d{1,3})?$/;
 
 function parseFragmentPosition(hash: string): { position: number | null } | { refused: true } {
-  const raw = hash.startsWith('#') ? hash.slice(1) : hash;
+  // r12 F1: the fragment is read only from a `#`-prefixed hash — the exact
+  // shape a real `Location` carries (its `hash` is always '' or begins with
+  // `'#'`). A hash without the prefix is not this format's fragment at all:
+  // it falls back to the empty shape r10 F6 fixed for a malformed hash half
+  // — no fragment, no position — and its contents are never parsed
+  // (`'t=42'` must never become 42). Unchanged: `'#'` is an empty fragment
+  // (no position), and a `#`-form outside `t=<value>` is still refused as
+  // `bad-fragment`.
+  if (!hash.startsWith('#')) return { position: null };
+  const raw = hash.slice(1);
   if (raw === '') return { position: null };
   if (!raw.startsWith('t=') || /[&;#]/.test(raw)) return { refused: true };
   const value = raw.slice(2);
@@ -81,8 +93,9 @@ export function parseDemoDeepLink(
   // a `pathname` that is not a string, has no path parts at all — the
   // `bad-path` refusal an empty path gets — and a `hash` that is not a
   // string is no fragment — no position — exactly like the absent `hash` a
-  // valid location has always carried. A valid location is bit-identical
-  // through this guard.
+  // valid location has always carried, and exactly like a hash that does not
+  // begin with `#` (r12 F1: no real `Location` produces one). A valid
+  // location is bit-identical through this guard.
   if (parts === null || typeof parts !== 'object') return { kind: 'not-found', reason: 'bad-path' };
   const pathname = typeof parts.pathname === 'string' ? parts.pathname : null;
   if (pathname === null) return { kind: 'not-found', reason: 'bad-path' };
