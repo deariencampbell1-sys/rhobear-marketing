@@ -66,6 +66,7 @@ export const SIGNIN_STATES = Object.freeze([
   'provider-pending',
   'returning',
   'restoring',
+  'restored-unverified',
   'done',
   'denied',
   'canceled',
@@ -79,6 +80,27 @@ export const SIGNIN_STATES = Object.freeze([
   'used',
 ] as const);
 export type SignInState = (typeof SIGNIN_STATES)[number];
+
+/** The exclusivity a restore actually ran under, carried into the snapshot
+ * (W0-06 review r2, finding 3): 'web-locks' — an exclusive cross-tab Web Lock
+ * was held for the consume; 'in-process' — only this tab's queue serialised
+ * it; 'none' — no restore has happened. A screen charging money must treat
+ * 'in-process' on a checkout as unverified. */
+export type RestoreGuarantee = 'web-locks' | 'in-process' | 'none';
+
+/** W0-06 review r2 (finding 6): completeRestore reports which of the three
+ * realities happened, instead of a bare boolean that cannot tell "just
+ * restored" from "already done". */
+export type CompleteRestoreResult = 'restored' | 'already-done' | 'not-restoring';
+
+/** W0-06 review r2 (finding 6): restoreDestination reports the outcome too —
+ * a wrong-state call is 'not-restoring', never a silently returned snapshot.
+ * A call from the right state whose record has vanished (expired, absent,
+ * invalid) also reports 'not-restoring': nothing was restored. */
+export type RestoreDestinationResult =
+  | { outcome: 'restored'; snapshot: SignInSnapshot }
+  | { outcome: 'already-restored'; snapshot: SignInSnapshot }
+  | { outcome: 'not-restoring'; snapshot: SignInSnapshot };
 
 /**
  * The only states a magic-link event may arrive from: while the machine is
@@ -123,6 +145,10 @@ export type SignInSnapshot = {
   linkedByEmail: boolean;
   recovery: readonly RecoveryOption[] | null;
   copy: string | null;
+  /** W0-06 review r2 (finding 3): the exclusivity the last restore actually
+   * ran under. A caller cannot tell a cross-tab single-use guarantee from a
+   * same-tab one without this. */
+  restoreGuarantee: RestoreGuarantee;
 };
 
 export type SignInMachine = {
@@ -143,10 +169,12 @@ export type SignInMachine = {
   channelConflict(): boolean;
   /** The provider reported an approved session; session proof is L2's. */
   sessionApproved(): boolean;
-  /** Consume the intent exactly once and move to restoring. */
-  restoreDestination(): Promise<SignInSnapshot>;
-  /** restoring → done; calling it again never restores twice. */
-  completeRestore(): boolean;
+  /** Consume the intent exactly once and move to restoring. Reports which
+   * of the three realities happened (W0-06 review r2, finding 6). */
+  restoreDestination(): Promise<RestoreDestinationResult>;
+  /** restoring → done; the result says whether it restored, was already
+   * done, or was called from a state where nothing is being restored. */
+  completeRestore(): CompleteRestoreResult;
   requestMagicLink(email: string): boolean;
   onMagicLinkEvent(event: MagicLinkEvent): boolean;
   remainingCooldownSeconds(): number;
@@ -171,6 +199,9 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   let purchasesPreserved: boolean | null = null;
   let copy: string | null = null;
   let cooldownUntil = 0;
+  // W0-06 review r2 (finding 3): the exclusivity of the last restore, so the
+  // screen can tell a cross-tab guarantee from a same-tab one.
+  let restoreGuarantee: RestoreGuarantee = 'none';
 
   function snapshot(): SignInSnapshot {
     let destination: string | null;
@@ -194,6 +225,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       linkedByEmail: false,
       recovery,
       copy,
+      restoreGuarantee,
     };
   }
 
@@ -214,6 +246,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       recovery = null;
       purchasesPreserved = null;
       copy = null;
+      restoreGuarantee = 'none'; // nothing has been restored for a fresh intent
     } else {
       // The whole intent was rejected (bad route, bad product, …): there is
       // no fallback destination and nothing to restore later.
@@ -232,6 +265,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       claimedSuccess = false;
       recovery = null;
       purchasesPreserved = null;
+      restoreGuarantee = 'none';
     } else if (loaded.state === 'consumed') {
       // Restore-once: the route is reported again but nothing re-runs — a
       // consumed intent can never restart a checkout or a job.
@@ -323,34 +357,59 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     });
   }
 
-  async function restoreDestination(): Promise<SignInSnapshot> {
-    if (state !== 'returning' || !intent) return snapshot();
+  async function restoreDestination(): Promise<RestoreDestinationResult> {
+    if (state !== 'returning' || !intent) {
+      // W0-06 review r2 (finding 6): a wrong-state call is reported, not
+      // silently absorbed — the screen sees not-restoring.
+      return { outcome: 'not-restoring', snapshot: snapshot() };
+    }
     const result: ConsumeResult = await store.consume();
     if (result.outcome === 'consumed') {
       intent = result.intent;
-      state = 'restoring';
+      restoreGuarantee = result.exclusive;
+      if (intent.kind === 'checkout' && result.exclusive === 'in-process') {
+        // W0-06 review r2 (finding 3): the consume ran without an exclusive
+        // cross-tab Web Lock, so single-use is only this tab's promise. A
+        // checkout must not present itself as plainly restored: the screen
+        // has to re-confirm through L2's money path before anything is
+        // charged.
+        state = 'restored-unverified';
+      } else {
+        // A checkout under web-locks, or any non-checkout kind on the weaker
+        // guarantee: install, demo and account restores may complete on
+        // 'in-process' because the worst case there is a repeated
+        // navigation, not a repeated charge (W0-06 review r2, finding 3).
+        state = 'restoring';
+      }
+      return { outcome: 'restored', snapshot: snapshot() };
     } else if (result.outcome === 'already-consumed') {
       // Someone already restored this intent (a second tab, a reload): report
       // the original route once more and never re-run the operation.
       state = 'done';
+      return { outcome: 'already-restored', snapshot: snapshot() };
     } else if (result.outcome === 'expired') {
       intent = null;
+      restoreGuarantee = 'none';
       state = 'expired';
+      return { outcome: 'not-restoring', snapshot: snapshot() };
     } else {
-      // absent or invalid: the account home.
+      // absent or invalid: the account home. Nothing was restored.
       intent = null;
+      restoreGuarantee = 'none';
       state = 'no-intent';
+      return { outcome: 'not-restoring', snapshot: snapshot() };
     }
-    return snapshot();
   }
 
-  function completeRestore(): boolean {
+  function completeRestore(): CompleteRestoreResult {
     if (state === 'restoring') {
       state = 'done';
-      return true;
+      return 'restored';
     }
-    // restoring → done happens once; a second call stays done.
-    return state === 'done';
+    if (state === 'done') return 'already-done'; // restoring → done happens once
+    // 'restored-unverified' deliberately does NOT complete here: the screen
+    // must re-confirm through L2's money path first (W0-06 review r2, finding 3).
+    return 'not-restoring';
   }
 
   function requestMagicLink(email: string): boolean {

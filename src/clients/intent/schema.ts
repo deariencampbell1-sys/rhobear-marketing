@@ -12,15 +12,17 @@
 
 import { engineScenarios } from '../../data/engines';
 
-// COUPLING, DELIBERATE AND LOAD-BEARING (W0-06 review r1): the scenario
-// allowlist below is derived live from the frozen engines registry in
-// src/data/engines.ts — one source of truth, no hand-copied second list. The
-// price of that is visible here: renaming or removing a scenario id there
-// silently turns every stored intent carrying the old id into
-// bad-scenario → invalid, and the person loses their place. A rename is
-// therefore a migration, not an edit — tests/intent-schema.test.ts pins
-// every id by name so the break lands in a test with a named message, not in
-// someone's sign-in.
+// W0-06 review r2 (finding 8): this import is deliberate and load-bearing —
+// the scenario allowlist below is DERIVED live from the frozen engines
+// registry in src/data/engines.ts (one source of truth, no hand-copied second
+// list), and it is a hand-copied list that would drift. The coupling is
+// proven, not merely commented: tests/intent-schema.test.ts asserts the
+// allowlist equals the registry's scenario ids exactly. The price is visible
+// here: renaming or removing a scenario id there silently turns every stored
+// intent carrying the old id into bad-scenario → invalid, and the person
+// loses their place. A rename is therefore a migration, not an edit — the
+// pinned test turns the break into a named failure, not into someone's
+// sign-in.
 
 /** The only return routes an intent may carry. Anything else is rejected. */
 export const CANONICAL_RETURN_ROUTES = Object.freeze([
@@ -57,9 +59,12 @@ export type IntentPlan = (typeof INTENT_PLANS)[number];
 export const INTENT_KINDS = Object.freeze(['checkout', 'install', 'demo', 'account'] as const);
 export type IntentKind = (typeof INTENT_KINDS)[number];
 
-// The scenario allowlist is derived from the frozen engines registry (W0-02b)
-// rather than a second hand-copied list that could drift from it.
-const scenarioIdSet: ReadonlySet<string> = new Set(engineScenarios.map((s) => s.scenarioId));
+// The allowlist itself, exported so the derivation can be proven equal to
+// the registry (W0-06 review r2, finding 8) — never a hand-copied copy.
+export const INTENT_SCENARIOS: readonly string[] = Object.freeze(
+  engineScenarios.map((s) => s.scenarioId),
+);
+const scenarioIdSet: ReadonlySet<string> = new Set(INTENT_SCENARIOS);
 
 export type Intent = {
   id: string; // opaque, ≥ 128 bits of crypto entropy, URL-safe
@@ -186,7 +191,7 @@ export function createIntentId(): string {
  * The only place a stored intent record becomes trustworthy. Rejects the whole
  * record on any problem (behaviour 2: no silent fallback to '/'), rebuilds it
  * from the allowlist (behaviour 3: unknown keys stripped) and enforces the
- * 512-byte serialised cap (behaviour 4).
+ * 512-code-unit serialised cap (behaviour 4).
  */
 export function parseIntent(raw: unknown): ParsedIntent {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {

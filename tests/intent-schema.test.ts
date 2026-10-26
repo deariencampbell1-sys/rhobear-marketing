@@ -7,11 +7,14 @@ import {
   CANONICAL_RETURN_ROUTES,
   INTENT_KEYS,
   INTENT_MAX_CHARS,
+  INTENT_SCENARIOS,
   createIntentId,
   isCanonicalReturnRoute,
   isKnownScenario,
   parseIntent,
+  type IntentProblem,
 } from '../src/clients/intent/schema';
+import { INTENT_STORAGE_KEY, createIntentStore } from '../src/clients/intent/store';
 
 function goodRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -112,7 +115,7 @@ describe('intent schema', () => {
     }
   });
 
-  it('a serialised intent over 512 bytes is rejected, not stored or passed through', () => {
+  it('a serialised intent over 512 UTF-16 code units is rejected, not stored or passed through', () => {
     expect(INTENT_MAX_CHARS).toBe(512);
     // A worst-case legitimate record (longest plan, a scenario, a consumed
     // stamp) still serialises under the cap.
@@ -175,5 +178,68 @@ describe('intent schema', () => {
       parseIntent(goodRecord({ createdAt: '2026-10-25T13:00:00.000Z', expiresAt: '2026-10-25T12:00:00.000Z' })),
     ).toEqual({ ok: false, problem: 'bad-expires-at' });
     expect(parseIntent(goodRecord()).ok).toBe(true);
+  });
+
+  it('every parseIntent guard is pinned: a valid envelope with one corrupted field is invalid, one case per problem code', async () => {
+    // parseIntent is the only gate between devtools (or any same-origin
+    // script) and a stored record, so every rejection branch must have a
+    // failing case: a regression in any single guard turns something red
+    // with a named code (W0-06 review r2, finding 1).
+    const cases: readonly { problem: IntentProblem; corrupt?: Record<string, unknown>; raw?: unknown }[] = [
+      // The seven branches no earlier test exercised.
+      { problem: 'bad-id', corrupt: { id: 'too-short' } },
+      { problem: 'bad-product', corrupt: { product: 'not-a-product' } },
+      { problem: 'bad-plan', corrupt: { plan: 'not-a-plan' } },
+      { problem: 'bad-kind', corrupt: { kind: 'not-a-kind' } },
+      { problem: 'bad-scenario', corrupt: { scenario: 'not-a-scenario' } },
+      { problem: 'bad-created-at', corrupt: { createdAt: 'not-a-date' } },
+      { problem: 'bad-consumed-at', corrupt: { consumedAt: 'not-a-date' } },
+      // The four branches the earlier tests already exercised, in the same table.
+      { problem: 'bad-return-route', corrupt: { returnRoute: '/not-canonical' } },
+      { problem: 'bad-expires-at', corrupt: { expiresAt: '2026-10-25T11:00:00.000Z' } }, // before createdAt
+      { problem: 'too-large', corrupt: { id: 'A'.repeat(600) } }, // still URL-safe, so too-large fires, not bad-id
+      { problem: 'not-an-object', raw: 'just a string' },
+    ];
+    // One case per problem code, all eleven, none repeated, none missing.
+    const allProblems: IntentProblem[] = [
+      'not-an-object',
+      'bad-id',
+      'bad-product',
+      'bad-plan',
+      'bad-scenario',
+      'bad-return-route',
+      'bad-kind',
+      'bad-created-at',
+      'bad-expires-at',
+      'bad-consumed-at',
+      'too-large',
+    ];
+    expect([...new Set(cases.map((c) => c.problem))].sort()).toEqual([...allProblems].sort());
+    for (const { problem, corrupt, raw } of cases) {
+      const candidate = raw !== undefined ? raw : { ...goodRecord(), ...corrupt };
+      expect(parseIntent(candidate), problem).toEqual({ ok: false, problem });
+      // The same corruption through the store: a seeded valid envelope with
+      // one field rewritten by "devtools" must load as invalid, never active.
+      const envelope = JSON.stringify({ v: 1, i: candidate });
+      const store = createIntentStore({
+        storage: {
+          getItem: (key) => (key === INTENT_STORAGE_KEY ? envelope : null),
+          setItem: () => undefined,
+          removeItem: () => undefined,
+        },
+        now: () => Date.parse('2026-10-25T12:00:00Z'),
+      });
+      expect(await store.load(), `${problem} loads as invalid through the store`).toEqual({ state: 'invalid' });
+    }
+  });
+
+  it('the intent scenario allowlist equals the engines registry ids exactly — the registry import is the point', () => {
+    // W0-06 review r2 (finding 8): the derivation is kept, but the coupling
+    // must be proven, not merely commented. A hand-copied second list — or
+    // any drift between the allowlist and the registry — breaks this test,
+    // not a person's sign-in.
+    expect([...INTENT_SCENARIOS]).toEqual(engineScenarios.map((s) => s.scenarioId));
+    // No duplicate id either: the allowlist is exactly the registry's list.
+    expect(new Set(INTENT_SCENARIOS).size).toBe(INTENT_SCENARIOS.length);
   });
 });

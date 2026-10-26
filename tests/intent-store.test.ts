@@ -21,7 +21,7 @@ import {
   CONSUMED_RETENTION_MS,
   DAY_TTL_MS,
   INTENT_STORAGE_KEY,
-  STORED_MAX_BYTES,
+  STORED_MAX_CHARS,
   createIntentStore,
   memoryIntentStorage,
   ttlMsForKind,
@@ -221,10 +221,13 @@ describe('intent store', () => {
     });
     expect(await envelopeOnly.load()).toEqual({ state: 'invalid' });
     const oversized = createIntentStore({
-      storage: seededStorage({ [INTENT_STORAGE_KEY]: 'x'.repeat(STORED_MAX_BYTES + 1) }),
+      storage: seededStorage({ [INTENT_STORAGE_KEY]: 'x'.repeat(STORED_MAX_CHARS + 1) }),
       now: fakeClock().now,
     });
     expect(await oversized.load()).toEqual({ state: 'invalid' });
+    // W0-06 review r2 (finding 5): the cap is enforced in UTF-16 code units,
+    // and the exported constant's name says which unit it is.
+    expect(STORED_MAX_CHARS, 'the stored-envelope cap is measured in code units').toBe(1024);
   });
 
   it('a second consume restores the route without repeating the checkout', async () => {
@@ -298,8 +301,114 @@ describe('intent store', () => {
     const again = await store.consume();
     expect(again.outcome).toBe('already-consumed');
     if (again.outcome === 'already-consumed') expect(again.returnRoute).toBe('/get');
-    // And clearing never throws either.
-    await expect(store.clear()).resolves.toBeUndefined();
+    // And clearing reports honestly what it achieved: here the removal
+    // itself throws, so only the mirror tombstone could be laid (finding 2).
+    await expect(store.clear()).resolves.toEqual({ cleared: 'mirror-only' });
+  });
+
+  it('a removeItem that throws: clear() reports it honestly, load() is absent and the cleared record never resurrects', async () => {
+    // A cleared intent whose storage removeItem fails must not resurrect on
+    // the next load or consume (W0-06 review r2, finding 2): the mirror keeps
+    // an absent tombstone so reads never fall back to the stale stored record.
+    const staleLive = {
+      v: 1,
+      i: {
+        id: 'q83N-vxK2mPp0QeR5sT8uAw',
+        product: 'forge',
+        plan: 'shell',
+        returnRoute: '/plans',
+        kind: 'checkout',
+        createdAt: '2026-10-25T12:00:00.000Z',
+        expiresAt: '2026-10-25T13:00:00.000Z',
+      },
+    };
+    const backing = new Map([[INTENT_STORAGE_KEY, JSON.stringify(staleLive)]]);
+    const store = createIntentStore({
+      storage: {
+        getItem: async (key) => backing.get(key) ?? null,
+        setItem: async (key, value) => {
+          backing.set(key, value);
+        },
+        removeItem: async () => {
+          throw new Error('storage is wedged');
+        },
+      },
+      now: fakeClock().now,
+    });
+    expect((await store.load()).state, 'precondition: the stale stored record is live').toBe('active');
+    // clear() reports the failure honestly instead of pretending.
+    await expect(store.clear()).resolves.toEqual({ cleared: 'mirror-only' });
+    // The record is absent — never the old one, however many reads.
+    expect(await store.load()).toEqual({ state: 'absent' });
+    expect(await store.load()).toEqual({ state: 'absent' });
+    expect(await store.consume()).toEqual({ outcome: 'absent' });
+    // The stale bytes are still on disk — it is the tombstone that keeps
+    // them invisible.
+    expect(backing.get(INTENT_STORAGE_KEY)).toBeTruthy();
+  });
+
+  it('an install intent lands in the persistent default (localStorage) and a checkout intent in the session default', async () => {
+    // The PR claims install intents survive a browser restart, so the default
+    // for kind 'install' must be persistent storage, not sessionStorage
+    // (W0-06 review r2, finding 4). A fake window exposes both adapters.
+    const session = recordingStorage();
+    const persistent = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: session, localStorage: persistent });
+    try {
+      // No injected adapter: the defaults decide where each kind lives.
+      const store = createIntentStore();
+      const install = await store.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+      expect(install.ok).toBe(true);
+      expect(
+        persistent.backing.get(INTENT_STORAGE_KEY) ?? '',
+        'the install intent lands in the persistent adapter',
+      ).toContain('"kind":"install"');
+      expect(session.backing.has(INTENT_STORAGE_KEY), 'the session adapter must not hold the install intent').toBe(false);
+      expect((await store.load()).state).toBe('active');
+
+      // A restart: a new default store reads the install intent back from the
+      // persistent adapter — the survival claim is actually true.
+      const restarted = createIntentStore();
+      const afterRestart = await restarted.load();
+      expect(afterRestart.state).toBe('active');
+      if (afterRestart.state === 'active') expect(afterRestart.intent.kind).toBe('install');
+
+      const checkoutStore = createIntentStore();
+      const checkout = await checkoutStore.create({ product: 'forge', kind: 'checkout', returnRoute: '/plans' });
+      expect(checkout.ok).toBe(true);
+      expect(session.backing.get(INTENT_STORAGE_KEY) ?? '', 'the checkout intent lands in the session adapter').toContain(
+        '"kind":"checkout"',
+      );
+      expect((await checkoutStore.load()).state).toBe('active');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a store whose crypto.getRandomValues is unavailable returns an outcome from consume(), never a rejection', async () => {
+    // The module promises nothing here throws into the UI (W0-06 review r2,
+    // finding 7): a body failure — createIntentId when crypto.getRandomValues
+    // is absent — becomes the outcome `invalid` instead of a rejection.
+    const record = {
+      id: 'q83N-vxK2mPp0QeR5sT8uAw',
+      product: 'forge',
+      plan: 'shell',
+      returnRoute: '/plans',
+      kind: 'checkout',
+      createdAt: '2026-10-25T12:00:00.000Z',
+      expiresAt: '2026-10-25T13:00:00.000Z',
+    };
+    const store = createIntentStore({
+      storage: seededStorage({ [INTENT_STORAGE_KEY]: JSON.stringify({ v: 1, i: record }) }),
+      now: fakeClock().now,
+    });
+    vi.stubGlobal('crypto', {}); // getRandomValues absent
+    try {
+      const result = await store.consume();
+      expect(result.outcome, 'an outcome, not a rejection').toBe('invalid');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it('two consumers with asymmetric latency: A settles entirely before B writes, exactly one wins', async () => {

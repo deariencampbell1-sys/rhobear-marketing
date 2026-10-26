@@ -1,7 +1,7 @@
 // W0-06 behaviours 10–15: the sign-in state machine, method availability from
 // configuration, the magic-link states, denied/canceled/offline/conflict,
 // restore-once and back navigation. Injected storage and injected clock only.
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   ACCOUNT_HOME_ROUTE,
   SIGNIN_PROVIDERS,
@@ -42,6 +42,31 @@ function setup(providers: SignInProviderConfig, storage: IntentStorage = memoryI
   return { machine, clock, store };
 }
 
+/** A passthrough exclusive lock manager: the Web Locks API is present, so a
+ * consume obtains the real cross-tab guarantee. */
+function stubWebLocks(): void {
+  vi.stubGlobal('navigator', {
+    locks: {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, body: () => Promise<R> | R): Promise<R> {
+        return Promise.resolve(body());
+      },
+    },
+  });
+}
+
+/** Two "tabs" over one backing map: independent adapters, shared bytes. */
+function backedStorage(backing: Map<string, string>): IntentStorage {
+  return {
+    getItem: async (key) => backing.get(key) ?? null,
+    setItem: async (key, value) => {
+      backing.set(key, value);
+    },
+    removeItem: async (key) => {
+      backing.delete(key);
+    },
+  };
+}
+
 describe('sign-in state machine', () => {
   it('sign-in walks idle through method-select, provider-pending, returning, restoring and done, with the branch states defined', async () => {
     const { machine } = setup({ google: true });
@@ -61,9 +86,13 @@ describe('sign-in state machine', () => {
     expect(machine.snapshot().state).toBe('provider-pending');
     expect(machine.sessionApproved()).toBe(true);
     expect(machine.snapshot().state).toBe('returning');
+    stubWebLocks(); // the happy path below is the fully-guaranteed restore
     const restoring = await machine.restoreDestination();
-    expect(restoring.state).toBe('restoring');
-    expect(machine.completeRestore()).toBe(true);
+    vi.unstubAllGlobals();
+    expect(restoring.outcome).toBe('restored');
+    expect(restoring.snapshot.state).toBe('restoring');
+    expect(restoring.snapshot.restoreGuarantee).toBe('web-locks');
+    expect(machine.completeRestore()).toBe('restored');
     expect(machine.snapshot().state).toBe('done');
     expect(machine.snapshot().returnRoute).toBe('/plans');
     // Every branch state the board names exists on the machine (the magic-link
@@ -168,7 +197,9 @@ describe('sign-in state machine', () => {
     done.machine.continueToMethodSelect();
     done.machine.chooseMethod('email');
     done.machine.sessionApproved();
+    stubWebLocks(); // this walk ends in a fully-guaranteed restore
     await done.machine.restoreDestination();
+    vi.unstubAllGlobals();
     done.machine.completeRestore();
     expect(done.machine.snapshot().state).toBe('done');
     for (const event of events) {
@@ -333,5 +364,153 @@ describe('sign-in state machine', () => {
     const stillThere = await restarted.beginWithStoredIntent();
     expect(stillThere.state).toBe('intent-loaded');
     expect(stillThere.returnRoute).toBe('/get');
+  });
+
+  it('a checkout restored on the weaker in-process guarantee reports restored-unverified, not a done checkout', async () => {
+    // W0-06 review r2 (finding 3): no navigator.locks in this environment, so
+    // single-use is only this tab's promise — the machine must not present a
+    // checkout as restored without saying so.
+    const { machine } = setup({ google: true });
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.outcome).toBe('restored');
+    expect(restored.snapshot.state).toBe('restored-unverified');
+    expect(restored.snapshot.restoreGuarantee).toBe('in-process');
+    // The screen must re-confirm with L2's money path before charging: the
+    // machine refuses to complete the restore itself.
+    expect(machine.completeRestore()).toBe('not-restoring');
+    expect(machine.snapshot().state).toBe('restored-unverified');
+  });
+
+  it('with navigator.locks present a checkout restore completes normally and reports web-locks', async () => {
+    stubWebLocks();
+    try {
+      const { machine } = setup({ google: true });
+      await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+      machine.continueToMethodSelect();
+      machine.chooseMethod('google');
+      machine.sessionApproved();
+      const restored = await machine.restoreDestination();
+      expect(restored.outcome).toBe('restored');
+      expect(restored.snapshot.state).toBe('restoring');
+      expect(restored.snapshot.restoreGuarantee).toBe('web-locks');
+      expect(machine.completeRestore()).toBe('restored');
+      expect(machine.snapshot().state).toBe('done');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an install restore may complete on the in-process guarantee: the worst case is a repeated navigation, not a repeated charge', async () => {
+    // W0-06 review r2 (finding 3): install, demo and account restores complete
+    // on the weaker guarantee on purpose.
+    const { machine } = setup({ google: true });
+    await machine.armIntent({ product: 'builds', kind: 'install', returnRoute: '/get' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.outcome).toBe('restored');
+    expect(restored.snapshot.state).toBe('restoring');
+    expect(restored.snapshot.restoreGuarantee).toBe('in-process');
+    expect(machine.completeRestore()).toBe('restored');
+    expect(machine.snapshot().state).toBe('done');
+  });
+
+  it('without navigator.locks, two machines over one backing: exactly one restores, the other reports already-restored', async () => {
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    const machineA = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    await machineA.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    const machineB = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    expect((await machineB.beginWithStoredIntent()).state).toBe('intent-loaded');
+    for (const m of [machineA, machineB]) {
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+    }
+    const [ra, rb] = await Promise.all([machineA.restoreDestination(), machineB.restoreDestination()]);
+    const restored = [ra, rb].filter((r) => r.outcome === 'restored');
+    const losers = [ra, rb].filter((r) => r.outcome === 'already-restored');
+    expect(restored, 'exactly one machine may restore').toHaveLength(1);
+    expect(losers, 'the other reports already-restored, never a second run').toHaveLength(1);
+    expect(losers[0].snapshot.state).toBe('done');
+    expect(losers[0].snapshot.returnRoute).toBe('/reviews');
+    expect(
+      restored[0].snapshot.restoreGuarantee,
+      'no web locks here: the weaker guarantee is reported honestly',
+    ).toBe('in-process');
+  });
+
+  it('completeRestore reports restored, already-done or not-restoring — one arm per reality', async () => {
+    // W0-06 review r2 (finding 6): a discriminated result, not a bare boolean
+    // that cannot tell "just restored" from "already done".
+    const { machine } = setup({ google: true });
+    expect(machine.completeRestore(), 'nothing is being restored from idle').toBe('not-restoring');
+    await machine.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    await machine.restoreDestination();
+    expect(machine.completeRestore()).toBe('restored');
+    expect(machine.completeRestore(), 'a second call stays done and says so').toBe('already-done');
+    expect(machine.snapshot().state).toBe('done');
+  });
+
+  it('restoreDestination reports restored, already-restored or not-restoring instead of silently returning a snapshot', async () => {
+    // W0-06 review r2 (finding 6): a wrong-state call is reported, not absorbed.
+    const { machine } = setup({ google: true });
+    const wrong = await machine.restoreDestination();
+    expect(wrong.outcome).toBe('not-restoring');
+    expect(wrong.snapshot.state).toBe('idle');
+
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.outcome).toBe('restored');
+    expect(restored.snapshot.state).toBe('restored-unverified'); // in-process + checkout
+    expect(machine.completeRestore()).toBe('not-restoring'); // must be re-confirmed first
+
+    // already-restored: the record was consumed elsewhere while this machine
+    // was still in returning.
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    const m1 = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    await m1.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    m1.continueToMethodSelect();
+    m1.chooseMethod('google');
+    m1.sessionApproved();
+    const m2 = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    expect((await m2.beginWithStoredIntent()).state).toBe('intent-loaded');
+    m2.continueToMethodSelect();
+    m2.chooseMethod('google');
+    m2.sessionApproved();
+    const consumedElsewhere = await m2.restoreDestination();
+    expect(consumedElsewhere.outcome).toBe('restored');
+    const already = await m1.restoreDestination();
+    expect(already.outcome).toBe('already-restored');
+    expect(already.snapshot.state).toBe('done');
+    expect(already.snapshot.returnRoute).toBe('/reviews');
   });
 });

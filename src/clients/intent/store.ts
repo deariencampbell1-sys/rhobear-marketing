@@ -18,6 +18,24 @@
 // consume result reports which guarantee was actually obtained
 // (`exclusive: 'web-locks' | 'in-process'`): without Web Locks the guarantee
 // is this tab only, and the result says so.
+//
+// Defaults per kind (W0-06 review r2, finding 4): an install intent is
+// written to the PERSISTENT adapter — localStorage when a window exists —
+// because the PR's claim is that an install intent survives a browser
+// restart, and sessionStorage dies with the tab. Every other kind uses
+// sessionStorage. An injected adapter is honoured first and used for every
+// kind. Reads probe the last-written adapter first, then the other, so a
+// restarted tab finds the record wherever it lives.
+//
+// Clearing reports what actually happened (W0-06 review r2, finding 2): when
+// the storage removal fails, the mirror keeps an `absent` tombstone so reads
+// never fall back to the stale stored record — a cleared intent cannot
+// resurrect — and clear() returns which of the two happened.
+//
+// The consume body is wrapped (W0-06 review r2, finding 7): a failure inside
+// the critical section — for example createIntentId when
+// globalThis.crypto.getRandomValues is absent — becomes the outcome
+// `invalid`, never a rejection into the UI.
 
 import {
   createIntentId,
@@ -49,8 +67,10 @@ export const CONSUMED_RETENTION_MS = 5 * 60 * 1000;
 // The record itself is capped at INTENT_MAX_CHARS (512 UTF-16 code units,
 // enforced by parseIntent); the stored envelope adds bounded, fixed framing (a
 // version and a 22-char nonce), so the store refuses stored text above this
-// ceiling.
-export const STORED_MAX_BYTES = 1024;
+// ceiling. Like INTENT_MAX_CHARS it is enforced against `.length` — UTF-16
+// code units, not bytes — so the name says which unit it is (W0-06 review
+// r2, finding 5).
+export const STORED_MAX_CHARS = 1024;
 
 /**
  * The storage adapter contract — a subset of the DOM Storage interface, with
@@ -120,12 +140,18 @@ export type ConsumeResult =
   | { outcome: 'invalid' }
   | { outcome: 'absent' };
 
+/** What clear() actually achieved (W0-06 review r2, finding 2). 'storage':
+ * the stored record is gone. 'mirror-only': the storage removal failed, so
+ * the mirror now holds an absent tombstone — reads report absent and the
+ * stale stored record can never resurrect. */
+export type ClearResult = { cleared: 'storage' | 'mirror-only' };
+
 export type IntentStore = {
   create(input: CreateIntentInput): Promise<CreateResult>;
   save(record: Intent): Promise<CreateResult>;
   load(): Promise<LoadResult>;
   consume(): Promise<ConsumeResult>;
-  clear(): Promise<void>;
+  clear(): Promise<ClearResult>;
 };
 
 export type IntentStoreDeps = {
@@ -168,8 +194,12 @@ async function underConsumeLock(
         return body();
       });
       return { core, exclusive: 'web-locks' };
-    } catch (err) {
-      if (ran) throw err; // the body failed, not the lock
+    } catch {
+      if (ran) {
+        // Unreachable while the body is wrapped (finding 7), kept as a
+        // guard: even a body failure must not reject — it becomes `invalid`.
+        return { core: { outcome: 'invalid' }, exclusive: 'web-locks' };
+      }
       return { core: await body(), exclusive: 'in-process' };
     }
   }
@@ -177,7 +207,7 @@ async function underConsumeLock(
 }
 
 function readEnvelope(text: string): { ok: true; env: Envelope } | { ok: false } {
-  if (text.length > STORED_MAX_BYTES) return { ok: false };
+  if (text.length > STORED_MAX_CHARS) return { ok: false };
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -192,42 +222,73 @@ function readEnvelope(text: string): { ok: true; env: Envelope } | { ok: false }
   return { ok: true, env: { v: 1, i: raw.i, ...(raw.n !== undefined ? { n: raw.n } : {}) } };
 }
 
-function defaultStorage(): IntentStorage {
+function windowStorage(which: 'session' | 'persistent'): IntentStorage | null {
   try {
-    if (typeof window !== 'undefined' && window.sessionStorage) return window.sessionStorage;
+    if (typeof window === 'undefined') return null;
+    const found = which === 'persistent' ? window.localStorage : window.sessionStorage;
+    return found ?? null;
   } catch {
-    // Accessing sessionStorage can itself throw in some privacy modes.
+    // Accessing storage can itself throw in some privacy modes.
+    return null;
   }
-  return memoryIntentStorage();
 }
 
 export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
-  const storage = deps.storage ?? defaultStorage();
+  // W0-06 review r2 (finding 4): the default adapter depends on the intent's
+  // kind — install intents go to the persistent adapter (localStorage when a
+  // window exists) so they survive a browser restart; every other kind goes
+  // to sessionStorage, which dies with the tab. An injected adapter is
+  // honoured first and used for every kind.
+  const injected = deps.storage ?? null;
+  const sessionDefault = injected ?? windowStorage('session') ?? memoryIntentStorage();
+  const persistentDefault = injected ?? windowStorage('persistent') ?? sessionDefault;
+  const adapters: readonly IntentStorage[] =
+    sessionDefault === persistentDefault ? [sessionDefault] : [sessionDefault, persistentDefault];
+  // The adapter the newest write went to; reads probe it first.
+  let holder: IntentStorage | null = null;
   const now = deps.now ?? (() => Date.now());
   // The mirror is written on every failed storage write and consulted on
   // every read that storage cannot answer. It is what makes private mode
   // survivable: the intent works for this tab and reports durable: false.
-  const mirror = new Map<string, string>();
+  // A `null` entry is a tombstone (W0-06 review r2, finding 2): the storage
+  // removal failed, so reads must report absent instead of falling back to
+  // the stale stored record.
+  const mirror = new Map<string, string | null>();
 
-  async function readRaw(): Promise<{ text: string | null; durable: boolean }> {
+  /** The default adapter for a kind (finding 4): install intents must
+   * survive a browser restart, so their default is the persistent adapter;
+   * every other kind dies with the tab on purpose. */
+  function adapterDefaultFor(kind: IntentKind): IntentStorage {
+    return kind === 'install' ? persistentDefault : sessionDefault;
+  }
+
+  async function readRaw(): Promise<{ text: string | null; durable: boolean; from: IntentStorage | null }> {
     // The mirror holds the most recent write whenever the last setItem
     // failed, so it outranks whatever storage still answers with (W0-06
     // review r1): a read-back of a stale stored value must never defeat the
-    // record this tab has just written. While the mirror holds a value the
-    // result is, honestly, not durable.
+    // record this tab has just written. A tombstone (null) reports absent
+    // for the same reason (W0-06 review r2, finding 2). While the mirror
+    // answers, the result is, honestly, not durable.
     const mirrored = mirror.get(INTENT_STORAGE_KEY);
-    if (mirrored !== undefined) return { text: mirrored, durable: false };
-    try {
-      const fromStorage = await storage.getItem(INTENT_STORAGE_KEY);
-      return { text: fromStorage ?? null, durable: true };
-    } catch {
-      return { text: null, durable: false };
+    if (mirrored !== undefined) return { text: mirrored, durable: false, from: null };
+    // Probe the last-written adapter first, then the others, so a restarted
+    // tab finds an install record in persistent storage and every other
+    // record in the session adapter (W0-06 review r2, finding 4).
+    const order = holder ? [holder, ...adapters.filter((a) => a !== holder)] : adapters;
+    for (const adapter of order) {
+      try {
+        const text = await adapter.getItem(INTENT_STORAGE_KEY);
+        if (text !== null) return { text, durable: true, from: adapter };
+      } catch {
+        // A failing adapter is skipped, like a failing write degrades.
+      }
     }
+    return { text: null, durable: false, from: null };
   }
 
-  async function writeRaw(text: string): Promise<boolean> {
+  async function writeRaw(text: string, adapter: IntentStorage): Promise<boolean> {
     try {
-      await storage.setItem(INTENT_STORAGE_KEY, text);
+      await adapter.setItem(INTENT_STORAGE_KEY, text);
       mirror.delete(INTENT_STORAGE_KEY);
       return true;
     } catch {
@@ -236,36 +297,51 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     }
   }
 
-  async function removeRaw(): Promise<void> {
-    try {
-      await storage.removeItem(INTENT_STORAGE_KEY);
-    } catch {
-      // Clearing must never throw into the UI.
+  async function removeRaw(): Promise<ClearResult> {
+    let removed = true;
+    for (const adapter of adapters) {
+      try {
+        await adapter.removeItem(INTENT_STORAGE_KEY);
+      } catch {
+        removed = false;
+      }
     }
-    mirror.delete(INTENT_STORAGE_KEY);
+    if (removed) {
+      mirror.delete(INTENT_STORAGE_KEY);
+      return { cleared: 'storage' };
+    }
+    // The storage removal failed: the stale stored record is still there.
+    // Keep an absent tombstone in the mirror so reads report absent instead
+    // of resurrecting the record the person cleared (W0-06 review r2, finding 2).
+    mirror.set(INTENT_STORAGE_KEY, null);
+    return { cleared: 'mirror-only' };
   }
 
   type Decoded =
     | { kind: 'absent' }
     | { kind: 'invalid' }
-    | { kind: 'record'; intent: Intent; durable: boolean };
+    | { kind: 'record'; intent: Intent; durable: boolean; from: IntentStorage | null };
 
   async function decodeStored(): Promise<Decoded> {
-    const { text, durable } = await readRaw();
+    const { text, durable, from } = await readRaw();
     if (text === null) return { kind: 'absent' };
     const envelope = readEnvelope(text);
     if (!envelope.ok) return { kind: 'invalid' };
     const parsed = parseIntent(envelope.env.i);
     if (!parsed.ok) return { kind: 'invalid' };
-    return { kind: 'record', intent: parsed.intent, durable };
+    return { kind: 'record', intent: parsed.intent, durable, from };
   }
 
   async function persist(record: Intent): Promise<CreateResult> {
     const checked = parseIntent(record);
     if (!checked.ok) return { ok: false, problem: checked.problem };
     const text = JSON.stringify({ v: ENVELOPE_VERSION, i: checked.intent } satisfies Envelope);
-    if (text.length > STORED_MAX_BYTES) return { ok: false, problem: 'too-large' };
-    const durable = await writeRaw(text);
+    if (text.length > STORED_MAX_CHARS) return { ok: false, problem: 'too-large' };
+    // The kind decides the default adapter (finding 4); the store remembers
+    // it as the holder so reads find the record again.
+    const adapter = injected ?? adapterDefaultFor(record.kind);
+    holder = adapter;
+    const durable = await writeRaw(text, adapter);
     return { ok: true, intent: checked.intent, durable };
   }
 
@@ -344,13 +420,17 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     return core;
   }
 
-  /** The consume critical section proper. Runs under the per-key queue and,
-   * when the Web Locks API exists, an exclusive cross-tab lock. */
-  async function runConsumeBody(): Promise<ConsumeCore> {
+  /** The consume critical section's inner logic. Runs under the per-key
+   * queue and, when the Web Locks API exists, an exclusive cross-tab lock. */
+  async function runConsumeBodyInner(): Promise<ConsumeCore> {
     const decoded = await decodeStored();
     if (decoded.kind === 'absent') return { outcome: 'absent' };
     if (decoded.kind === 'invalid') return { outcome: 'invalid' };
     const current = decoded.intent;
+    // The consumed stamp is written back to the adapter the record actually
+    // came from (W0-06 review r2, finding 4): marking it consumed elsewhere
+    // would leave the original record unconsumed.
+    const target = decoded.from ?? adapterDefaultFor(current.kind);
     // A consumed record never re-runs: the caller gets the original route so
     // the screen can restore the destination without repeating the checkout.
     if (current.consumedAt !== undefined) {
@@ -380,7 +460,8 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     // Compare-and-set by read-back (see the module comment).
     const nonce = createIntentId();
     const wonRecord: Intent = { ...current, consumedAt: new Date(now()).toISOString() };
-    await writeRaw(JSON.stringify({ v: ENVELOPE_VERSION, i: wonRecord, n: nonce } satisfies Envelope));
+    await writeRaw(JSON.stringify({ v: ENVELOPE_VERSION, i: wonRecord, n: nonce } satisfies Envelope), target);
+    holder = target;
     const confirm = await readRaw();
     if (confirm.text === null) {
       // The confirming read failed: grant nothing, re-run nothing.
@@ -402,8 +483,21 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     };
   }
 
-  async function clear(): Promise<void> {
-    await removeRaw();
+  /** W0-06 review r2 (finding 7): nothing here throws into the UI, and that
+   * includes the body itself. Any failure inside the critical section —
+   * createIntentId when globalThis.crypto.getRandomValues is absent, a
+   * hostile adapter — becomes the outcome `invalid` instead of a rejection,
+   * keeping the total-function contract. */
+  async function runConsumeBody(): Promise<ConsumeCore> {
+    try {
+      return await runConsumeBodyInner();
+    } catch {
+      return { outcome: 'invalid' };
+    }
+  }
+
+  async function clear(): Promise<ClearResult> {
+    return removeRaw();
   }
 
   return { create, save, load, consume, clear };
