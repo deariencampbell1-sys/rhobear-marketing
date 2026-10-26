@@ -55,6 +55,30 @@
 //     sandbox attribute canonicalised the way `./schema.ts` normalises the
 //     wire value — lowercased, single-space tokens, never a mixed-case
 //     string — and the machine itself fetches nothing and spends nothing.
+//   - W0-05b-r3 (Apollo's 2nd review), two owner-flagged decisions on paths
+//     the board's happy path never reaches — flagged for the owner, stated
+//     here so they are not invented elsewhere:
+//     - F4: a rejected resolve is the resolver's own fail-closed answer — the
+//       exact `footage-pending` presentation `./resolve.ts` returns whenever
+//       the package cannot be gotten (mirror missing, cache empty, body not
+//       fetched). The rejection is caught and mapped to that answer, then
+//       handled by the same paths (applyPresentation for start/retry,
+//       performSwap for a switch). No new reason value is invented and no
+//       rejection ever propagates to the UI.
+//     - F5: the machine must never wedge. A failed poster load is the
+//       screen's to know — one screen event, `poster-error`, mirrors
+//       `poster-ready`: the pending swap completes anyway and is presented
+//       without the crossfade (`swapTransition: 'none'` — there is no poster
+//       to fade through). Unsolicited, the event is ignored.
+//     - F8: `lower-rendition` never seeks immediately. The port cannot load
+//       the new rendition's source (the screen owns sources), so an immediate
+//       `seekTo` would land on the old one. The machine keeps the resume time
+//       itself (D06) and issues exactly one `seekTo` on the next `playing`,
+//       when the screen has swapped the source.
+//   - F1: `scenarioId` and `presentation` must never disagree. Every async
+//     entry point captures the scenario id (and a generation counter) before
+//     its await and discards an answer that lands after a switch or a restart
+//     moved the world — the answer is stale and is never applied.
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -67,7 +91,7 @@
 //     hand-built presentations — exactly what behaviour 15 asks the player
 //     itself to check.
 
-import { isScenarioId, type DemoChapter, type DemoRendition } from './schema';
+import { isScenarioId, KNOWN_SCENARIO_IDS, type DemoChapter, type DemoRendition } from './schema';
 import type { DemoPresentation, InvalidReason } from './resolve';
 // The https rule is the release client's, as `./schema.ts` already uses it.
 import { isHttpsUrl } from '../release/schema';
@@ -165,6 +189,10 @@ export type DemoPlayerEvent =
   | { type: 'lower-rendition' }
   | { type: 'ended' }
   | { type: 'poster-ready' }
+  // F5: the poster surface is the screen's — this is the screen saying its
+  // poster image failed. The pending swap completes anyway, without the
+  // crossfade (there is no poster to fade through); unsolicited, ignored.
+  | { type: 'poster-error' }
   | { type: 'leave' }
   | { type: 'return' };
 
@@ -226,11 +254,22 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     scenarioId: string;
     presentation: DemoPresentation | null;
     posterReady: boolean;
+    // F5, mirroring posterReady: the screen's poster image failed before the
+    // answer landed. The poster settles once — whichever verdict arrives
+    // first decides — and a failed one completes the swap with no crossfade.
+    posterFailed: boolean;
   } | null = null;
   // An in-flight resolve (start) or re-resolve (retry): one call at a time —
   // a second call while one is in flight returns the snapshot unchanged,
   // never a second resolve racing the first (React StrictMode, double-tap).
   let resolving = false;
+  // F1: every in-flight answer (start, retry, switchScenario) captures this
+  // counter and the scenario id before its await. A switch or a restart bumps
+  // the counter; an answer that lands after the bump is stale and discarded.
+  let generation = 0;
+  // F8: the one-shot resume a lower-rendition switch leaves behind — exactly
+  // one `seekTo` on the next `playing`, then never again.
+  let resumeSeekPending = false;
 
   function activeRenditions(): readonly DemoRendition[] {
     return presentation !== null && presentation.state === 'playable'
@@ -320,6 +359,9 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     returnState = null;
     interactiveSandbox = null;
     interactiveRefusal = null;
+    // F8: a new presentation is a new source — a resume flag left by an older
+    // lower-rendition switch is stale and must never fire against it.
+    resumeSeekPending = false;
     if (!keepPosition) positionSeconds = 0;
     if (next.state === 'playable') {
       unplayableReason = null;
@@ -355,6 +397,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
 
   function applySeek(target: number): void {
     const duration = activeDuration();
+    // F11 — two controls, two rules. A scrub can reach the end and stop
+    // there, so this bound is `0 <= t <= duration`. A deep link starts a clip
+    // — a start at the very end is meaningless — so its fragment bound is
+    // `0 <= t < duration` (`./deeplink.ts`). The two rules are deliberate.
     if (duration === null || !Number.isFinite(target) || target < 0 || target > duration) return;
     if (state === 'transcript' || state === 'interactive') {
       // A chapter link from the transcript sheet seeks the real media while
@@ -371,22 +417,29 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       state === 'ended' ||
       state === 'seeking'
     ) {
-      seekReturn = state === 'playing' || state === 'buffering' ? 'playing' : 'paused';
+      // F2: where the scrub returns to is captured on the way in. A second
+      // seek while already seeking must not re-capture: the state is
+      // 'seeking' now, and the clobber would send a scrub that started during
+      // playback back to 'paused' — the UI would lie until the next tap.
+      if (state !== 'seeking') {
+        seekReturn = state === 'playing' || state === 'buffering' ? 'playing' : 'paused';
+      }
       media.seekTo(target);
       positionSeconds = target;
       state = 'seeking';
     }
   }
 
-  function performSwap(next: DemoPresentation, swapScenarioId: string): void {
+  function performSwap(next: DemoPresentation, swapScenarioId: string, crossfade: boolean): void {
     // The old media plays until this instant; the swap is one step (no blank
-    // frame), and under reduced motion it is presented without the board's
-    // crossfade — the reduced-motion input, applied in the machine. From a
-    // state with no media there is nothing to pause: the null port is never
-    // touched.
+    // frame). It is presented with the board's crossfade only when a real
+    // poster stood ready to fade through (F5: a swap completed by a failed
+    // poster has none) and motion is not reduced — the reduced-motion input,
+    // applied in the machine. From a state with no media there is nothing to
+    // pause: the null port is never touched.
     if (activeRendition() !== null) media.pause();
     pendingSwitch = null;
-    swapTransition = reducedMotion ? 'none' : 'crossfade';
+    swapTransition = crossfade && !reducedMotion ? 'crossfade' : 'none';
     errorCount = 0;
     supportReferenceId = null;
     scenarioId = swapScenarioId;
@@ -413,11 +466,44 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     };
   }
 
+  /**
+   * F4 (owner-flagged): a rejected resolve is the resolver's own fail-closed
+   * answer — the exact `footage-pending` presentation `./resolve.ts` returns
+   * whenever the package cannot be gotten. The machine invents no new reason
+   * value, and no rejection ever propagates to the UI.
+   */
+  async function resolveOrFailClosed(id: string): Promise<DemoPresentation> {
+    try {
+      return await config.resolver.resolve(id);
+    } catch {
+      return { state: 'footage-pending', reason: 'footage-pending' };
+    }
+  }
+
+  /**
+   * F1: an answer is stale when the world moved while it was in flight: a
+   * switch landed (the scenario id changed), a restart landed (the generation
+   * changed), or a switch is in flight (a pending switch condemns a plain
+   * start). A stale answer is discarded and never applied.
+   */
+  function answerIsStale(capturedScenarioId: string, capturedGeneration: number): boolean {
+    return (
+      scenarioId !== capturedScenarioId ||
+      generation !== capturedGeneration ||
+      pendingSwitch !== null
+    );
+  }
+
   async function start(): Promise<DemoPlayerSnapshot> {
     if (state !== 'resolve' || resolving) return snapshot();
     resolving = true;
+    const capturedScenarioId = scenarioId;
+    const capturedGeneration = generation;
     try {
-      const next = await config.resolver.resolve(scenarioId);
+      const next = await resolveOrFailClosed(scenarioId);
+      // F1: a switch or a restart landed while this answer was in flight —
+      // applying it would put one scenario's presentation under another's id.
+      if (answerIsStale(capturedScenarioId, capturedGeneration)) return snapshot();
       applyPresentation(next, true);
       return snapshot();
     } finally {
@@ -441,8 +527,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       return snapshot();
     }
     resolving = true;
+    const capturedScenarioId = scenarioId;
+    const capturedGeneration = generation;
     try {
-      const next = await config.resolver.resolve(scenarioId);
+      const next = await resolveOrFailClosed(scenarioId);
+      // F1: the same discipline as start() — a stale answer is discarded.
+      if (answerIsStale(capturedScenarioId, capturedGeneration)) return snapshot();
       applyPresentation(next, true);
       return snapshot();
     } finally {
@@ -453,30 +543,51 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   async function switchScenario(nextScenarioId: string): Promise<DemoPlayerSnapshot> {
     // A person can always pick another scenario (behaviour 13): the picker
     // works from every state — pending, revoked and resolve-error included —
-    // so only a scenario id the board does not have is refused.
-    if (!isScenarioId(nextScenarioId)) return snapshot();
+    // so only a scenario id the board does not have is refused (F3): the
+    // shape, and then the board's own ids. An invented scenario id must
+    // never reach the snapshot.
+    if (!isScenarioId(nextScenarioId) || !KNOWN_SCENARIO_IDS.includes(nextScenarioId)) {
+      return snapshot();
+    }
+    // F1: this switch condemns every in-flight answer; its own answer is
+    // condemned by anything later — a second switch, or a restart.
+    generation += 1;
+    const capturedGeneration = generation;
     const token = {
       scenarioId: nextScenarioId,
       presentation: null as DemoPresentation | null,
       posterReady: false,
+      posterFailed: false,
     };
     pendingSwitch = token;
-    const next = await config.resolver.resolve(nextScenarioId);
-    // A newer switch or a restart may have condemned this one meanwhile.
-    if (pendingSwitch !== token) return snapshot();
+    const next = await resolveOrFailClosed(nextScenarioId);
+    // A newer switch or a restart may have condemned this one meanwhile (F1).
+    if (pendingSwitch !== token || generation !== capturedGeneration) return snapshot();
     if (next.state === 'playable' && activeRendition() !== null) {
       token.presentation = next;
-      if (token.posterReady) performSwap(next, nextScenarioId);
+      // The poster phase is settled by the screen (F5/F7): `poster-ready`
+      // crossfades through the poster, `poster-error` completes the swap
+      // without one — and if the answer landed first, the swap waits for
+      // that verdict rather than wedging.
+      if (token.posterReady) performSwap(next, nextScenarioId, true);
+      else if (token.posterFailed) performSwap(next, nextScenarioId, false);
       return snapshot();
     }
     // No old media keeps playing through this swap — either nothing plays
     // yet, or the new answer has no poster to wait for — so the swap lands
     // directly: on the new poster, or on the answer's named state.
-    performSwap(next, nextScenarioId);
+    performSwap(next, nextScenarioId, true);
     return snapshot();
   }
 
   function restart(): DemoPlayerSnapshot {
+    // Restart lands (F1): every in-flight answer is stale from here, and an
+    // in-flight switch this restart abandons leaves nothing dangling behind
+    // it. restart() is the only reset of the person's place (S1), so it is
+    // also the only thing that can condemn the answer of a resolve that was
+    // asked for before it.
+    generation += 1;
+    pendingSwitch = null;
     if (activeRendition() !== null) {
       media.pause();
       media.seekTo(0);
@@ -488,7 +599,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       returnState = null;
       interactiveSandbox = null;
       interactiveRefusal = null;
-      pendingSwitch = null;
+      // F8: the resume point no longer exists — the place is zero now.
+      resumeSeekPending = false;
       // A swap that is history: a screen must never re-apply its animation.
       swapTransition = null;
     }
@@ -534,6 +646,15 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         break;
       }
       case 'playing': {
+        // F8: the resume a lower-rendition switch left behind is issued now —
+        // on the first `playing` after the screen has loaded the new source,
+        // exactly once. The port cannot load a source (it is play/pause/
+        // seekTo), so this is the only ordering that lands the seek on the new
+        // rendition rather than the old one.
+        if (resumeSeekPending) {
+          resumeSeekPending = false;
+          media.seekTo(positionSeconds);
+        }
         if (state === 'buffering') {
           state = 'playing';
           // Playback resumed: the failure episode is over.
@@ -660,7 +781,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           }
           if (best !== null) {
             renditionIndex = best;
-            media.seekTo(positionSeconds);
+            // F8 (owner-flagged): no seekTo here. The port cannot load the new
+            // rendition's source — the screen owns sources — so an immediate
+            // seek would land on the old one. The machine keeps the resume
+            // time itself (D06) and issues exactly one `seekTo` on the next
+            // `playing`, when the screen has swapped the source.
+            resumeSeekPending = true;
             state = 'poster';
             error = null;
           }
@@ -676,10 +802,24 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         break;
       }
       case 'poster-ready': {
-        if (pendingSwitch !== null) {
+        if (pendingSwitch !== null && !pendingSwitch.posterFailed) {
           pendingSwitch.posterReady = true;
           if (pendingSwitch.presentation !== null) {
-            performSwap(pendingSwitch.presentation, pendingSwitch.scenarioId);
+            performSwap(pendingSwitch.presentation, pendingSwitch.scenarioId, true);
+          }
+        }
+        break;
+      }
+      case 'poster-error': {
+        // F5 (owner-flagged): the machine must never wedge. The screen's
+        // poster failed — there is no poster to fade through — so the pending
+        // swap completes anyway and is presented without the crossfade. With
+        // no pending swap (one already settled, or none was ever pending) the
+        // event is ignored.
+        if (pendingSwitch !== null && !pendingSwitch.posterReady) {
+          pendingSwitch.posterFailed = true;
+          if (pendingSwitch.presentation !== null) {
+            performSwap(pendingSwitch.presentation, pendingSwitch.scenarioId, false);
           }
         }
         break;

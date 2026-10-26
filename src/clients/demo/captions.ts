@@ -55,7 +55,9 @@ export type ParsedCaptions =
 /**
  * Presence at the URL level: a captions URL must name a WebVTT file, wherever
  * it points. The resolver already refuses a package without one; this states
- * the same rule for a URL a screen is about to read — absolute or relative.
+ * the same rule for a URL a screen is about to read — http(s) or relative
+ * (F9: the scheme is part of the rule — a `javascript:` or `data:` URL is
+ * never captions, whatever its path ends in).
  */
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
@@ -65,7 +67,9 @@ export function isWebVttUrl(value: string | null): boolean {
   // or `#` by hand, and only then checked.
   let path = value;
   try {
-    path = new URL(value).pathname;
+    const url = new URL(value);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    path = url.pathname;
   } catch {
     const cut = path.search(/[?#]/);
     if (cut !== -1) path = path.slice(0, cut);
