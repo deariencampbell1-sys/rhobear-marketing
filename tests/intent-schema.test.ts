@@ -7,14 +7,23 @@ import {
   CANONICAL_RETURN_ROUTES,
   INTENT_KEYS,
   INTENT_MAX_CHARS,
-  INTENT_SCENARIOS,
   createIntentId,
   isCanonicalReturnRoute,
   isKnownScenario,
+  isRfc3339,
   parseIntent,
   type IntentProblem,
 } from '../src/clients/intent/schema';
+import { INTENT_SCENARIOS } from '../src/clients/intent/scenarios';
 import { INTENT_STORAGE_KEY, createIntentStore } from '../src/clients/intent/store';
+
+/** The raw intent-client sources, read exactly as the bundler sees them: the
+ * source-level boundary assertions need the text, not the module. */
+const intentClientSources = import.meta.glob('../src/clients/intent/*.ts', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
 
 function goodRecord(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -139,10 +148,12 @@ describe('intent schema', () => {
   });
 
   it('renaming a scenario id in engines.ts breaks this test, not a stored intent', () => {
-    // The scenario allowlist is derived live from the frozen engines registry
-    // (one source of truth) — which makes a rename silent at runtime: every
-    // stored intent carrying the old id becomes bad-scenario → invalid and
-    // the person loses their place. This list is pinned BY NAME so the break
+    // The scenario allowlist is a literal list (its own home,
+    // src/clients/intent/scenarios.ts — W0-06 review r5, finding 6) kept
+    // equal to the frozen engines registry by test — which makes a rename
+    // silent at runtime unless it is migrated deliberately: every stored
+    // intent carrying the old id becomes bad-scenario → invalid and the
+    // person loses their place. This list is pinned BY NAME so the break
     // lands here, with a named message, before it lands on anyone.
     const pinned = ['capturd-01', 'designs-01', 'forge-01', 'search-01', 'spaces-01', 'teams-01', 'vision-01'];
     const live = engineScenarios.map((s) => s.scenarioId).sort();
@@ -273,7 +284,6 @@ describe('intent schema', () => {
     expect((await beyond.store.load()).state, 'a future consumedAt must not keep the record as consumed').not.toBe(
       'consumed',
     );
-
     // The bounded case: a stamp in the clock's future but inside
     // [createdAt, expiresAt] reaches retention on the injected clock —
     // dropped at five minutes past its stamp, not kept forever.
@@ -284,13 +294,92 @@ describe('intent schema', () => {
     expect(skew.backing.has(INTENT_STORAGE_KEY), 'dropped by retention').toBe(false);
   });
 
-  it('the intent scenario allowlist equals the engines registry ids exactly — the registry import is the point', () => {
-    // W0-06 review r2 (finding 8): the derivation is kept, but the coupling
-    // must be proven, not merely commented. A hand-copied second list — or
-    // any drift between the allowlist and the registry — breaks this test,
-    // not a person's sign-in.
-    expect([...INTENT_SCENARIOS]).toEqual(engineScenarios.map((s) => s.scenarioId));
-    // No duplicate id either: the allowlist is exactly the registry's list.
-    expect(new Set(INTENT_SCENARIOS).size).toBe(INTENT_SCENARIOS.length);
+  it('the scenario allowlist is a literal list that the registry still matches', () => {
+    // W0-06 review r5 (finding 6): the runtime client must not import the
+    // engines registry at module load — every front-door consumer of the
+    // intent client pulled src/data/engines.ts into its bundle for a short
+    // allowlist and inherited its init-time failure modes. The list is a
+    // literal in src/clients/intent/scenarios.ts and the drift guard lives
+    // HERE, where the registry may be imported. Both directions are named: a
+    // rename in the registry must be migrated deliberately — in scenarios.ts,
+    // in the same change — never edited silently into someone's sign-in.
+    const registryIds = engineScenarios.map((s) => s.scenarioId);
+    for (const id of INTENT_SCENARIOS) {
+      expect(
+        registryIds,
+        `scenarios.ts names ${id} but the registry does not — a rename in the registry must be migrated deliberately`,
+      ).toContain(id);
+    }
+    for (const id of registryIds) {
+      expect(
+        INTENT_SCENARIOS,
+        `the registry names ${id} but scenarios.ts does not — a rename in the registry must be migrated deliberately`,
+      ).toContain(id);
+    }
+    expect(new Set(INTENT_SCENARIOS).size, 'no duplicate id').toBe(INTENT_SCENARIOS.length);
+
+    // The boundary is source-level: the runtime client keeps its own literal
+    // and never imports the data module — neither the schema nor the list.
+    const registryImport = /(?:from\s+|import\s*\(\s*|import\s+)['"][^'"]*data\/engines['"]/;
+    expect(
+      intentClientSources['../src/clients/intent/schema.ts'],
+      'schema.ts must not import the data module at all',
+    ).not.toMatch(registryImport);
+    expect(
+      intentClientSources['../src/clients/intent/scenarios.ts'],
+      'scenarios.ts is a literal list — it names the registry as its source but never imports it',
+    ).not.toMatch(registryImport);
+  });
+
+  it('isRfc3339 accepts a well-formed instant in a low year and still refuses an impossible date', () => {
+    // W0-06 review r5 (finding 7): Date.UTC(year, …) maps a year below 100 to
+    // 1900 + year, so a well-formed early instant was refused. The calendar
+    // probe is built with new Date(0) and setUTCFullYear, which takes the
+    // year literally.
+    expect(isRfc3339('0042-03-15T10:30:00Z')).toBe(true);
+    expect(isRfc3339('0000-01-01T00:00:00Z')).toBe(true);
+    expect(isRfc3339('0099-12-31T23:59:59+00:00')).toBe(true);
+    // Impossible dates are refused in low years too.
+    expect(isRfc3339('0042-02-30T00:00:00Z'), '30 February does not exist in year 42 either').toBe(false);
+    expect(isRfc3339('0042-13-01T00:00:00Z')).toBe(false);
+  });
+
+  it("the parsed record's keys are exactly INTENT_KEYS", () => {
+    // W0-06 review r5 (finding 8): parseIntent rebuilt the record field by
+    // field and never read INTENT_KEYS — the constant was documentation and
+    // the two could drift with no compile error. The rebuild is now DRIVEN by
+    // the constant (each key mapped from the validated values): the accepted
+    // record's keys are exactly INTENT_KEYS, and a key outside it is refused
+    // entry — it never reaches the record.
+    const full = parseIntent(goodRecord({ consumedAt: '2026-10-25T12:30:00.000Z' }));
+    expect(full.ok).toBe(true);
+    if (full.ok) {
+      expect(Object.keys(full.intent), 'the accepted record key set is the constant').toEqual([
+        ...INTENT_KEYS,
+      ]);
+      expect(full.intent.consumedAt).toBe('2026-10-25T12:30:00.000Z');
+    }
+    // A record with no optional fields carries exactly the declared keys too.
+    const minimal = parseIntent({
+      id: 'q83N-vxK2mPp0QeR5sT8uAw',
+      product: 'builds',
+      returnRoute: '/builds',
+      kind: 'install',
+      createdAt: '2026-10-25T12:00:00.000Z',
+      expiresAt: '2026-10-26T12:00:00.000Z',
+    });
+    expect(minimal.ok).toBe(true);
+    if (minimal.ok) {
+      expect(Object.keys(minimal.intent), 'no key outside the constant, and none missing').toEqual([
+        ...INTENT_KEYS,
+      ]);
+    }
+    // A record with an extra key: the extra key is refused entry — the parsed
+    // record's keys are exactly the constant, never one more.
+    const extra = parseIntent(goodRecord({ token: 'tok_secret', plan: 'shell' }));
+    expect(extra.ok).toBe(true);
+    if (extra.ok) {
+      expect(Object.keys(extra.intent), 'the extra key is refused entry').toEqual([...INTENT_KEYS]);
+    }
   });
 });

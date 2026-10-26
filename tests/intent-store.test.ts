@@ -807,4 +807,33 @@ describe('intent store', () => {
     expect(await wedged.load()).toEqual({ state: 'absent' }); // the tombstone keeps it invisible
     expect(backing.get(INTENT_STORAGE_KEY), 'the stale bytes are still on disk').toBeTruthy();
   });
+
+  it('two concurrent consumes on one store interleave by design: one consumed and one already-consumed — the interleaving the sign-in gate is built on', async () => {
+    // W0-06 review r5 (finding 1): when two restores race, the store answers
+    // one consumed and one already-consumed — by design, and the sign-in
+    // machine's checkout money gate is built on exactly this interleaving.
+    // The second caller must never get a second run, and both answers report
+    // the exclusivity the consume actually ran under.
+    const clock = fakeClock();
+    const store = createIntentStore({ storage: memoryIntentStorage(), now: clock.now });
+    const created = await store.create({
+      product: 'forge',
+      kind: 'checkout',
+      returnRoute: '/plans',
+      plan: 'shell',
+    });
+    expect(created.ok).toBe(true);
+
+    const [a, b] = await Promise.all([store.consume(), store.consume()]);
+    expect([a.outcome, b.outcome].sort(), 'exactly one consume wins the race').toEqual([
+      'already-consumed',
+      'consumed',
+    ]);
+    const exclusiveOf = (r: ConsumeResult) =>
+      r.outcome === 'consumed' || r.outcome === 'already-consumed' ? r.exclusive : null;
+    expect(exclusiveOf(a), 'no web locks in this test: the weaker guarantee is reported honestly').toBe(
+      'in-process',
+    );
+    expect(exclusiveOf(b), 'both answers report the exclusivity they ran under').toBe('in-process');
+  });
 });
