@@ -12,6 +12,16 @@
 
 import { engineScenarios } from '../../data/engines';
 
+// COUPLING, DELIBERATE AND LOAD-BEARING (W0-06 review r1): the scenario
+// allowlist below is derived live from the frozen engines registry in
+// src/data/engines.ts — one source of truth, no hand-copied second list. The
+// price of that is visible here: renaming or removing a scenario id there
+// silently turns every stored intent carrying the old id into
+// bad-scenario → invalid, and the person loses their place. A rename is
+// therefore a migration, not an edit — tests/intent-schema.test.ts pins
+// every id by name so the break lands in a test with a named message, not in
+// someone's sign-in.
+
 /** The only return routes an intent may carry. Anything else is rejected. */
 export const CANONICAL_RETURN_ROUTES = Object.freeze([
   '/',
@@ -80,8 +90,10 @@ export const INTENT_KEYS = Object.freeze([
   'consumedAt',
 ] as const);
 
-/** Behaviour 4: the serialised record is capped at 512 bytes. */
-export const INTENT_MAX_BYTES = 512;
+/** Behaviour 4: the serialised record is capped at 512 UTF-16 code units —
+ * JSON.stringify().length counts code units, not UTF-8 bytes, and this
+ * constant's name says which unit is enforced. */
+export const INTENT_MAX_CHARS = 512;
 
 export type IntentProblem =
   | 'not-an-object'
@@ -220,6 +232,12 @@ export function parseIntent(raw: unknown): ParsedIntent {
   }
   const expiresAt = rec.expiresAt;
 
+  // An expiresAt not strictly after createdAt is a self-contradicting record
+  // (expired before it existed): refused with bad-expires-at (W0-06 review r1).
+  if (Date.parse(expiresAt) <= Date.parse(createdAt)) {
+    return { ok: false, problem: 'bad-expires-at' };
+  }
+
   let consumedAt: string | undefined;
   if (rec.consumedAt !== undefined) {
     if (typeof rec.consumedAt !== 'string' || !isRfc3339(rec.consumedAt)) {
@@ -243,7 +261,7 @@ export function parseIntent(raw: unknown): ParsedIntent {
     ...(consumedAt !== undefined ? { consumedAt } : {}),
   };
 
-  if (JSON.stringify(intent).length > INTENT_MAX_BYTES) {
+  if (JSON.stringify(intent).length > INTENT_MAX_CHARS) {
     return { ok: false, problem: 'too-large' };
   }
   return { ok: true, intent };

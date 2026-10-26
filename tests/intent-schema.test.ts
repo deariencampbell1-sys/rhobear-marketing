@@ -2,12 +2,14 @@
 // credential-free rule and the 512-byte cap. Hand-written validation in the
 // house style of src/clients/money/schema.ts — no zod anywhere.
 import { describe, expect, it } from 'vitest';
+import { engineScenarios } from '../src/data/engines';
 import {
   CANONICAL_RETURN_ROUTES,
   INTENT_KEYS,
-  INTENT_MAX_BYTES,
+  INTENT_MAX_CHARS,
   createIntentId,
   isCanonicalReturnRoute,
+  isKnownScenario,
   parseIntent,
 } from '../src/clients/intent/schema';
 
@@ -111,7 +113,7 @@ describe('intent schema', () => {
   });
 
   it('a serialised intent over 512 bytes is rejected, not stored or passed through', () => {
-    expect(INTENT_MAX_BYTES).toBe(512);
+    expect(INTENT_MAX_CHARS).toBe(512);
     // A worst-case legitimate record (longest plan, a scenario, a consumed
     // stamp) still serialises under the cap.
     const worst = parseIntent(
@@ -125,11 +127,53 @@ describe('intent schema', () => {
     );
     expect(worst.ok).toBe(true);
     if (worst.ok) {
-      expect(JSON.stringify(worst.intent).length).toBeLessThanOrEqual(INTENT_MAX_BYTES);
+      expect(JSON.stringify(worst.intent).length).toBeLessThanOrEqual(INTENT_MAX_CHARS);
     }
     // And a record that would not fit — here an over-long id that is otherwise
     // URL-safe — is refused with an explicit problem instead of being accepted.
     const oversized = parseIntent(goodRecord({ id: 'A'.repeat(600) }));
     expect(oversized).toEqual({ ok: false, problem: 'too-large' });
+  });
+
+  it('renaming a scenario id in engines.ts breaks this test, not a stored intent', () => {
+    // The scenario allowlist is derived live from the frozen engines registry
+    // (one source of truth) — which makes a rename silent at runtime: every
+    // stored intent carrying the old id becomes bad-scenario → invalid and
+    // the person loses their place. This list is pinned BY NAME so the break
+    // lands here, with a named message, before it lands on anyone.
+    const pinned = ['capturd-01', 'designs-01', 'forge-01', 'search-01', 'spaces-01', 'teams-01', 'vision-01'];
+    const live = engineScenarios.map((s) => s.scenarioId).sort();
+    expect(
+      live,
+      'a scenario id changed in src/data/engines.ts: stored intents carrying the old id would all fail as bad-scenario → invalid and the person loses their place — migrate deliberately, then re-pin this list',
+    ).toEqual(pinned);
+    // The derived allowlist admits exactly the registry's ids, and nothing else.
+    for (const id of pinned) {
+      expect(isKnownScenario(id), id).toBe(true);
+      expect(parseIntent(goodRecord({ scenario: id })).ok, id).toBe(true);
+    }
+    expect(isKnownScenario('gone-01')).toBe(false);
+  });
+
+  it('the cap is measured in UTF-16 code units and a record that expires before it was created is refused', () => {
+    // The unit is the UTF-16 code unit (JSON.stringify().length); the
+    // constant's name says which unit is enforced.
+    expect(INTENT_MAX_CHARS).toBe(512);
+    const baseRecord = goodRecord();
+    const baseLength = JSON.stringify(baseRecord).length;
+    const baseIdLength = (baseRecord.id as string).length;
+    const fitsExactly = baseIdLength + (INTENT_MAX_CHARS - baseLength);
+    expect(parseIntent(goodRecord({ id: 'A'.repeat(fitsExactly) })).ok).toBe(true);
+    expect(parseIntent(goodRecord({ id: 'A'.repeat(fitsExactly + 1) }))).toEqual({ ok: false, problem: 'too-large' });
+
+    // expiresAt must be strictly after createdAt: a record expired before it
+    // existed is refused, not silently accepted.
+    expect(
+      parseIntent(goodRecord({ createdAt: '2026-10-25T13:00:00.000Z', expiresAt: '2026-10-25T13:00:00.000Z' })),
+    ).toEqual({ ok: false, problem: 'bad-expires-at' });
+    expect(
+      parseIntent(goodRecord({ createdAt: '2026-10-25T13:00:00.000Z', expiresAt: '2026-10-25T12:00:00.000Z' })),
+    ).toEqual({ ok: false, problem: 'bad-expires-at' });
+    expect(parseIntent(goodRecord()).ok).toBe(true);
   });
 });
