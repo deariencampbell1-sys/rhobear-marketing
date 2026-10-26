@@ -68,8 +68,10 @@ describe('demo deep links', () => {
     });
     // Every number the grammar allows but the media duration does not is
     // ignored the same way: no position, no refusal. (A value outside the
-    // grammar is bad-fragment — F10's rule, pinned in its own test below.)
-    for (const hash of ['#t=-5', '#t=12', '#t=60']) {
+    // grammar is bad-fragment — F10's rule, pinned in its own test below.
+    // r6 F7 moved the signed literal `#t=-5` out of the grammar entirely —
+    // it is bad-fragment now, pinned in the r6 F7 grammar table.)
+    for (const hash of ['#t=12', '#t=60']) {
       expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 12)).toEqual({
         kind: 'player',
         scenarioId: 'teams-01',
@@ -152,7 +154,7 @@ describe('demo deep links and captions — W0-05b-r3 (Apollo\'s second review)',
         reason: 'bad-fragment',
       });
     }
-    // The grammar: an optional sign, digits, at most three decimals.
+    // The grammar (unsigned since r6 F7): digits, at most three decimals.
     // #t=42, #t=42.5 and #t=0 stay valid.
     for (const [hash, position] of [
       ['#t=42', 42],
@@ -475,6 +477,65 @@ describe('demo captions — W0-05b-r5 (Apollo\'s review of the r4 head)', () => 
       expect(parsed.skipped).toEqual([]);
       // A captions failure never takes the transcript down with it.
       expect(parsed.transcriptAvailable).toBe(true);
+    }
+  });
+});
+
+// W0-05b-r6 — Apollo's review of the r5 head (2026-10-26 11:10:58Z): F6 (a
+// protocol-relative `//host/x.vtt` is not a relative path) and F7 (the
+// fragment grammar is unsigned — the r3 grammar's sign extension is gone).
+// These were the red tests for round r6's fix; they guard the regressions.
+describe("demo deep links and captions — W0-05b-r6 (Apollo's review of the r5 head)", () => {
+  it('r6 F6 (behaviour 20): isWebVttUrl rejects a scheme-relative // reference — a leading // is neither http(s) nor a relative path', () => {
+    // A leading `//` is a scheme-relative absolute reference: the scheme rule
+    // applies to it, and it names another host's captions.
+    expect(isWebVttUrl('//evil.example/x.vtt')).toBe(false);
+    expect(isWebVttUrl('//evil.example/x.vtt?token=abc')).toBe(false);
+    expect(isWebVttUrl('//captions.vtt')).toBe(false);
+    // The rest of the rule stands: http(s) and the front door's own relative
+    // captions are accepted exactly as before.
+    expect(isWebVttUrl('/captions.vtt')).toBe(true);
+    expect(isWebVttUrl('captions.vtt')).toBe(true);
+    expect(isWebVttUrl('https://x/c.vtt')).toBe(true);
+    expect(isWebVttUrl('http://x/c.vtt')).toBe(true);
+  });
+
+  it('r6 F7 (behaviour 18): the t= grammar is unsigned — the pinned grammar table', () => {
+    // A signed literal is outside the grammar entirely: `#t=+42`, `#t=-5`
+    // and `#t=+0` are bad-fragment. This deliberately reverses the r3 pin
+    // that had `#t=-5` ignored — a signed literal is not our format now.
+    for (const hash of ['#t=+42', '#t=-5', '#t=+0', '#t=-0']) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'not-found',
+        reason: 'bad-fragment',
+      });
+    }
+    // Unsigned literals stay valid: the number, at most three decimals.
+    for (const [hash, position] of [
+      ['#t=42', 42],
+      ['#t=0', 0],
+      ['#t=42.5', 42.5],
+      ['#t=42.500', 42.5],
+    ] as const) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'player',
+        scenarioId: 'teams-01',
+        positionSeconds: position,
+      });
+    }
+    // The three-decimal rule is untouched: a fourth decimal is bad-fragment.
+    expect(
+      parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=42.5000' }, 60),
+    ).toEqual({ kind: 'not-found', reason: 'bad-fragment' });
+    // An out-of-range unsigned value stays ignored — the locked rule is
+    // untouched: the link opens the player at no position, never clamped to
+    // the end, never an error page.
+    for (const hash of ['#t=60', '#t=99']) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'player',
+        scenarioId: 'teams-01',
+        positionSeconds: null,
+      });
     }
   });
 });

@@ -18,6 +18,7 @@ import {
   type MediaErrorReason,
 } from '../src/clients/demo/player';
 import { createDemoResolver, type DemoPresentation } from '../src/clients/demo/resolve';
+import { parseDemoDeepLink } from '../src/clients/demo/deeplink';
 import type { DemoChapter, DemoInteractive, DemoRendition } from '../src/clients/demo/schema';
 
 const PACKAGE_REVISION = 'rev-2026-10-25-1';
@@ -1245,8 +1246,15 @@ describe('demo player state machine — W0-05b-r3 (Apollo\'s second review)', ()
     expect(settled.pendingSwitchTo).toBeNull();
     // The old media played until this instant — a real swap, not a half one.
     expect(media.calls).toContain('pause');
-    // Nothing dangles: an unsolicited poster-ready afterwards changes nothing.
-    expect(player.dispatch({ type: 'poster-ready' })).toEqual(settled);
+    // Nothing dangles: an unsolicited poster-ready afterwards changes
+    // nothing — r6 F5's field lifecycle aside: the swap transition is non-null
+    // exactly in the snapshot returned by the call that performed the swap,
+    // so this later dispatch's snapshot carries null where the swap's carried
+    // the transition.
+    expect(player.dispatch({ type: 'poster-ready' })).toEqual({
+      ...settled,
+      swapTransition: null,
+    });
   });
 
   it('r3 F5 (behaviour 13): poster-error completes a pending swap anyway — the new scenario applies and the swap is presented without the crossfade', async () => {
@@ -1270,8 +1278,13 @@ describe('demo player state machine — W0-05b-r3 (Apollo\'s second review)', ()
     expect(settled.scenarioId).toBe(SWITCHED_SCENARIO_ID);
     expect(settled.swapTransition).toBe('none');
     expect(settled.pendingSwitchTo).toBeNull();
-    // After the swap completed, a poster-error is ignored.
-    expect(player.dispatch({ type: 'poster-error' })).toEqual(settled);
+    // After the swap completed, a poster-error is ignored — r6 F5's field
+    // lifecycle aside: the very next dispatch's snapshot carries a null swap
+    // transition where the swap's own carried 'none'.
+    expect(player.dispatch({ type: 'poster-error' })).toEqual({
+      ...settled,
+      swapTransition: null,
+    });
   });
 
   it('r3 F5 (behaviour 13): an unsolicited poster-error with no pending swap changes nothing', async () => {
@@ -1905,14 +1918,16 @@ describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
     expect(player.snapshot().positionSeconds).toBe(5);
   });
 
-  it('r4 F9: isMediaErrorReason accepts every http-<integer> the MediaErrorReason type admits — http-0, http-007, http-1000, http-200 — and refuses non-integers', () => {
+  it('r4 F9 (narrowed by r6 F8): isMediaErrorReason accepts the canonical http-<status> members of the MediaErrorReason type — http-0, http-1000, http-200 — and refuses non-integers', () => {
     // The typed array is the type side of the agreement; the guard is the
-    // runtime side. F9: the two must not disagree.
+    // runtime side. F9: the two must not disagree. r6 F8 narrowed the guard
+    // to the canonical renderings and reversed the r4 pin on `http-007` —
+    // it is a spelling the type does not canonically produce and is refused
+    // (pinned in the r6 F8 test below).
     const typed: readonly MediaErrorReason[] = [
       'decode',
       'network',
       'http-0',
-      'http-007',
       'http-1000',
       'http-200',
     ];
@@ -2081,6 +2096,445 @@ describe("demo player state machine — W0-05b-r5 (Apollo's review of the r4 hea
       const callsBefore = media.calls.length;
       expect(player.dispatch({ type: 'open-interactive' })).toEqual(before);
       expect(media.calls.length).toBe(callsBefore);
+    }
+  });
+});
+
+// W0-05b-r6 — Apollo's review of the r5 head (2026-10-26 11:10:58Z): F1–F8.
+// F1 (the merge blocker) pins the headline feature's integration point end
+// to end — `config.positionSeconds` → the initial-position guard →
+// `applyPresentation`'s `seekTo(positionSeconds)`. F2 and F4 carry the two
+// owner-flagged decisions stated in the task: the transcript/interactive
+// sheets are reachable from `buffering` and `seeking` with the `playing`
+// rule (paused media, `paused` return — never into a transient state), and a
+// media error cancels a pending switch (an error is the person's reality).
+// F5 pins the swap transition's lifecycle; F3, F8 pin what was permitted or
+// widened but never tested. These were the red tests for round r6's fix;
+// they guard the regressions now.
+describe("demo player state machine — W0-05b-r6 (Apollo's review of the r5 head)", () => {
+  it("r6 F1 (D03/S1): a player constructed with a deep-link position lands the playable resolve at the person's place — media.seekTo(<position>) fires and positionSeconds is preserved", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+      positionSeconds: 30,
+    });
+    const settled = await player.start();
+    expect(settled.state).toBe('poster');
+    expect(settled.scenarioId).toBe(SCENARIO_ID);
+    // The headline feature's seek: the machine restores the place on the
+    // real media element and the snapshot keeps it.
+    expect(media.calls).toContain('seekTo:30');
+    expect(settled.positionSeconds).toBe(30);
+    expect(settled.durationSeconds).toBe(42);
+    // The chapter at that place is derived from media time, as ever.
+    expect(settled.currentChapter?.label).toBe('The run');
+
+    // The initial-position guard refuses anything that is not a finite
+    // non-negative position: no seek, no preserved place — zero.
+    for (const positionSeconds of [Number.NaN, Number.POSITIVE_INFINITY, -5]) {
+      const guardedMedia = fakeMedia();
+      const guarded = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+        media: guardedMedia,
+        reducedMotion: false,
+        positionSeconds,
+      });
+      const landed = await guarded.start();
+      expect(landed.positionSeconds).toBe(0);
+      expect(guardedMedia.calls).toEqual([]);
+    }
+  });
+
+  it("r6 F1 (behaviour 18 edge): a deep-link position out of range for the real duration is reset to 0 — never clamped to the end (the 'never clamped' rule, pinned on the player side)", async () => {
+    // The re-check happens when the package is real: the position is ignored
+    // outside 0 <= t < duration — at the duration and beyond it alike. It is
+    // never clamped to the end and never an error state.
+    for (const positionSeconds of [42, 50]) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+        media,
+        reducedMotion: false,
+        positionSeconds,
+      });
+      const settled = await player.start();
+      expect(settled.state).toBe('poster');
+      expect(settled.positionSeconds).toBe(0);
+      expect(media.calls).not.toContain('seekTo:42');
+      expect(media.calls).not.toContain('seekTo:50');
+    }
+  });
+
+  it('r6 F1 (behaviour 18→D03): the deep-link position flows end to end through the real parse — parseDemoDeepLink output → config.positionSeconds → the seek', async () => {
+    // Nothing is re-typed by hand: the parse's own output constructs the
+    // player. The link opens at 30 s on a 42 s package.
+    const parsed = parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=30' }, 42);
+    expect(parsed.kind).toBe('player');
+    const link = parsed.kind === 'player' ? parsed : { scenarioId: SCENARIO_ID, positionSeconds: 30 };
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: link.scenarioId,
+      resolver: stubResolver({ [link.scenarioId]: playable({ scenarioId: link.scenarioId }) }),
+      media,
+      reducedMotion: false,
+      positionSeconds: link.positionSeconds ?? undefined,
+    });
+    const settled = await player.start();
+    expect(settled.state).toBe('poster');
+    expect(settled.scenarioId).toBe('teams-01');
+    expect(media.calls).toContain('seekTo:30');
+    expect(settled.positionSeconds).toBe(30);
+
+    // A fragment the parse ignores (out of range for the duration) reaches
+    // the player with no position at all: zero, and nothing seeks.
+    const ignored = parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=50' }, 42);
+    expect(ignored).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: null });
+    const ignoredLink = ignored.kind === 'player' ? ignored : { scenarioId: SCENARIO_ID, positionSeconds: 50 };
+    const ignoredMedia = fakeMedia();
+    const ignoredPlayer = createDemoPlayer({
+      scenarioId: ignoredLink.scenarioId,
+      resolver: stubResolver({ [ignoredLink.scenarioId]: playable() }),
+      media: ignoredMedia,
+      reducedMotion: false,
+      positionSeconds: ignoredLink.positionSeconds ?? undefined,
+    });
+    const ignoredSettled = await ignoredPlayer.start();
+    expect(ignoredSettled.positionSeconds).toBe(0);
+    expect(ignoredMedia.calls).toEqual([]);
+  });
+
+  it('r6 F1 (D03/S1): with keepPosition from a retry the kept place is re-checked against the real duration — preserved inside it (and sought), reset to 0 outside it', async () => {
+    // Inside: while a resolve has failed there is no duration to check
+    // against, so media time stands (r4 F6's rule) — the place is the
+    // person's whatever the machine is showing. The retry's playable landing
+    // re-checks the kept position against the real duration and seeks it.
+    const insideMedia = fakeMedia();
+    const inside = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: queuedResolver([{ state: 'invalid', reason: 'hash-mismatch' }, playable()]),
+      media: insideMedia,
+      reducedMotion: false,
+    });
+    await inside.start();
+    expect(inside.snapshot().state).toBe('error');
+    inside.dispatch({ type: 'timeupdate', positionSeconds: 30 });
+    const settled = await inside.retry();
+    expect(settled.state).toBe('poster');
+    expect(insideMedia.calls).toContain('seekTo:30');
+    expect(settled.positionSeconds).toBe(30);
+    expect(settled.durationSeconds).toBe(42);
+
+    // Outside the real duration the kept place is reset to 0 — the same
+    // 'never clamped to the end' rule the deep link is held to.
+    const outsideMedia = fakeMedia();
+    const outside = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: queuedResolver([{ state: 'invalid', reason: 'hash-mismatch' }, playable()]),
+      media: outsideMedia,
+      reducedMotion: false,
+    });
+    await outside.start();
+    outside.dispatch({ type: 'timeupdate', positionSeconds: 50 });
+    const landed = await outside.retry();
+    expect(landed.state).toBe('poster');
+    expect(landed.positionSeconds).toBe(0);
+    expect(outsideMedia.calls).not.toContain('seekTo:50');
+  });
+
+  it('r6 F2 (behaviour 8): open-transcript from buffering pauses the media and the sheet closes to paused — never back into the transient state', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'waiting' });
+    expect(player.snapshot().state).toBe('buffering');
+    const mark = media.calls.length;
+    const opened = player.dispatch({ type: 'open-transcript' });
+    expect(opened.state).toBe('transcript');
+    // The same rule as from playing: the media is paused.
+    expect(media.calls.slice(mark)).toEqual(['pause']);
+    // returnState resolves to paused: the person resumes with one tap and
+    // never lands back in buffering.
+    expect(player.dispatch({ type: 'close-transcript' }).state).toBe('paused');
+  });
+
+  it('r6 F2 (behaviour 8): open-transcript from seeking pauses the media and closes to paused; the in-flight seeked that lands while the sheet is open changes nothing', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'seek', positionSeconds: 5 });
+    expect(player.snapshot().state).toBe('seeking');
+    const mark = media.calls.length;
+    const opened = player.dispatch({ type: 'open-transcript' });
+    expect(opened.state).toBe('transcript');
+    expect(media.calls.slice(mark)).toEqual(['pause']);
+    // The in-flight seeked lands while the sheet is open: the sheet state is
+    // not the machine's to move — nothing changes.
+    const before = player.snapshot();
+    expect(player.dispatch({ type: 'seeked' })).toEqual(before);
+    expect(player.snapshot()).toEqual(before);
+    expect(player.dispatch({ type: 'close-transcript' }).state).toBe('paused');
+  });
+
+  it('r6 F2 (D05): open-interactive from buffering pauses the media and the sheet closes to paused — not to buffering', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'waiting' });
+    expect(player.snapshot().state).toBe('buffering');
+    const mark = media.calls.length;
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveSandbox).toBe('allow-scripts');
+    expect(media.calls.slice(mark)).toEqual(['pause']);
+    // The buffering-opened sheet returns to paused, never back to buffering.
+    expect(player.dispatch({ type: 'close-interactive' }).state).toBe('paused');
+  });
+
+  it('r6 F2 (D05): open-interactive from seeking pauses the media and closes to paused; the in-flight seeked that lands while the sheet is open changes nothing', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'seek', positionSeconds: 5 });
+    expect(player.snapshot().state).toBe('seeking');
+    const mark = media.calls.length;
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(media.calls.slice(mark)).toEqual(['pause']);
+    const before = player.snapshot();
+    expect(player.dispatch({ type: 'seeked' })).toEqual(before);
+    expect(player.snapshot()).toEqual(before);
+    expect(player.dispatch({ type: 'close-interactive' }).state).toBe('paused');
+  });
+
+  it('r6 F3 (D05): open-interactive from ended is permitted — close returns to ended and the media is untouched', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'ended' });
+    expect(player.snapshot().state).toBe('ended');
+    expect(player.snapshot().positionSeconds).toBe(42);
+    const mark = media.calls.length;
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveSandbox).toBe('allow-scripts');
+    const closed = player.dispatch({ type: 'close-interactive' });
+    expect(closed.state).toBe('ended');
+    // The media is untouched through the whole round trip: ended stays ended,
+    // nothing paused, nothing sought, nothing played.
+    expect(closed.positionSeconds).toBe(42);
+    expect(media.calls.slice(mark)).toEqual([]);
+  });
+
+  it('r6 F4 (behaviour 13): a media error on the old scenario cancels the pending switch — pendingSwitchTo goes null and a late poster-ready does not swap', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 6 });
+    // The switch's answer has landed and waits for the poster verdict.
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBe(SWITCHED_SCENARIO_ID);
+
+    // The old media fails: an error is the person's reality and cancels the
+    // switch they may no longer expect. No half-state: the pending target is
+    // null, and the cancellation is no swap — no transition of its own.
+    const cancelled = player.dispatch({ type: 'media-error', reason: 'network' });
+    expect(cancelled.state).toBe('error');
+    expect(cancelled.scenarioId).toBe(SCENARIO_ID);
+    expect(cancelled.positionSeconds).toBe(6);
+    expect(cancelled.pendingSwitchTo).toBeNull();
+    expect(cancelled.swapTransition).toBeNull();
+
+    // A late poster-ready must not swap them to a scenario they may no
+    // longer expect: the snapshot is unchanged.
+    const before = player.snapshot();
+    expect(player.dispatch({ type: 'poster-ready' })).toEqual(before);
+    expect(player.snapshot().scenarioId).toBe(SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+  });
+
+  it('r6 F4 (behaviour 13): the cancelled switch leaves no half-state — its own answer landing later is stale and changes nothing', async () => {
+    const media = fakeMedia();
+    const answer = deferred<DemoPresentation>();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: {
+        resolve: (scenarioId: string): Promise<DemoPresentation> =>
+          scenarioId === SCENARIO_ID ? Promise.resolve(playable()) : answer.promise,
+      },
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 6 });
+    const switching = player.switchScenario(SWITCHED_SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBe(SWITCHED_SCENARIO_ID);
+    const cancelled = player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(cancelled.state).toBe('error');
+    expect(cancelled.pendingSwitchTo).toBeNull();
+    expect(cancelled.swapTransition).toBeNull();
+
+    // The switch's own answer lands after the cancellation: stale — the
+    // world moved — and discarded. Nothing swaps, nothing dangles.
+    answer.resolve(playable({ scenarioId: SWITCHED_SCENARIO_ID }));
+    const after = await switching;
+    expect(after).toEqual(cancelled);
+    expect(player.snapshot().scenarioId).toBe(SCENARIO_ID);
+    expect(player.snapshot().pendingSwitchTo).toBeNull();
+  });
+
+  it("r6 F4 (behaviour 13): a switch whose own resolve lands invalid or superseded completes into the error state with pendingSwitchTo null — the switch's own error is not cancelling itself", async () => {
+    const deadAnswers: readonly DemoPresentation[] = [
+      { state: 'invalid', reason: 'hash-mismatch' },
+      { state: 'superseded', reason: 'superseded' },
+    ];
+    for (const dead of deadAnswers) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({
+          [SCENARIO_ID]: playable(),
+          [SWITCHED_SCENARIO_ID]: dead,
+        }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      player.dispatch({ type: 'play' });
+      const settled = await player.switchScenario(SWITCHED_SCENARIO_ID);
+      // The swap completed — onto the answer's named error state. The error
+      // the switch itself carried did not cancel the switch it belongs to.
+      expect(settled.state).toBe('error');
+      expect(settled.scenarioId).toBe(SWITCHED_SCENARIO_ID);
+      expect(settled.pendingSwitchTo).toBeNull();
+      expect(settled.error?.reason).toBe(dead.state === 'invalid' ? dead.reason : 'superseded');
+      expect(settled.swapTransition).toBe('crossfade');
+    }
+  });
+
+  it("r6 F5 (D04): the swap transition is non-null exactly in the snapshot returned by the call that performed the swap — the very next dispatch's snapshot carries null", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    const swapped = player.dispatch({ type: 'poster-ready' });
+    expect(swapped.swapTransition).toBe('crossfade');
+    // The very next dispatch carries null: a screen keying its animation off
+    // this field never re-applies it on an unrelated render.
+    const next = player.dispatch({ type: 'timeupdate', positionSeconds: 1 });
+    expect(next.swapTransition).toBeNull();
+  });
+
+  it('r6 F5 (D04): every public call clears the swap transition on entry — start, retry, switchScenario and restart each return null after a swap', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    // One completed swap standing: its own dispatch carried the transition.
+    const freshSwap = async (to: string): Promise<void> => {
+      await player.switchScenario(to);
+      const swapped = player.dispatch({ type: 'poster-ready' });
+      expect(swapped.swapTransition).toBe('crossfade');
+    };
+    await freshSwap(SWITCHED_SCENARIO_ID);
+    expect((await player.start()).swapTransition).toBeNull();
+    await freshSwap(SCENARIO_ID);
+    expect((await player.retry()).swapTransition).toBeNull();
+    await freshSwap(SCENARIO_ID);
+    expect(player.restart().swapTransition).toBeNull();
+    await freshSwap(SWITCHED_SCENARIO_ID);
+    const switched = await player.switchScenario(SCENARIO_ID);
+    expect(switched.swapTransition).toBeNull();
+  });
+
+  it("r6 F5 (D04): the reduced-motion path still returns 'none' on the swap and null after", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: playable({ scenarioId: SWITCHED_SCENARIO_ID }),
+      }),
+      media,
+      reducedMotion: true,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    const swapped = player.dispatch({ type: 'poster-ready' });
+    expect(swapped.swapTransition).toBe('none');
+    expect(player.dispatch({ type: 'timeupdate', positionSeconds: 1 }).swapTransition).toBeNull();
+  });
+
+  it('r6 F8 (behaviour 12): isMediaErrorReason accepts exactly the canonical renderings for non-negative integers — http-0, http-200, http-1000 — and refuses http-+200, http--200, http-007 and http-', () => {
+    for (const reason of ['decode', 'network', 'http-0', 'http-200', 'http-1000'] as const) {
+      expect(isMediaErrorReason(reason)).toBe(true);
+    }
+    // Signed spellings, leading zeros and an empty number are spellings the
+    // type does not canonically produce: never a reason.
+    for (const reason of ['http-+200', 'http--200', 'http-007', 'http-', 'http-1.5', 'boom']) {
+      expect(isMediaErrorReason(reason)).toBe(false);
     }
   });
 });
