@@ -30,10 +30,29 @@
 // invalid network body marks the entry for purge and is never written — a
 // corrupt or hostile update must not leave stale approved media playable.
 // `put` clears the mark, so a freshly approved package plays again.
+//
+// The publication gates run before `put`: a body refused for
+// `captions-required` or `approval-incomplete` can never play, so it is never
+// written and its verdict marks the entry for purge — `put` must never clear
+// the mark for a package that can never play. A named non-playable state
+// (pending, superseded, revoked) keeps its record — the small entry that lets
+// an offline screen keep saying why playback stopped — and condemns the media
+// the same way.
+//
+// A mirror's answers are not all alike: only 404/410 mean "nothing published"
+// (footage-pending, and the cached entry is condemned); every other status —
+// 5xx, 429, a bare 304 — is `unreachable` and falls through to the cache
+// exactly as a timeout does.
+//
+// Fail-closed is total: `resolve()` never rejects. Any throw while hashing,
+// canonicalizing or parsing a body — a body nested past CANONICAL_MAX_DEPTH,
+// an absent or throwing `crypto.subtle`, a canonical form that explodes —
+// becomes the `unhashable` refusal, and nothing is cached.
 
-import { isHttpsUrl, isRfc3339 } from '../release/schema';
+import { isHttpsUrl } from '../release/schema';
 import {
   isRecord,
+  isRfc3339,
   isScenarioId,
   parseDemoPackage,
   type DemoInteractive,
@@ -49,7 +68,15 @@ const HEX64 = /^[0-9a-f]{64}$/;
 /** Default deadline for one bounded mirror request, in milliseconds. */
 const DEFAULT_FETCH_TIMEOUT_MS = 10_000;
 
-/** SHA-256 over UTF-8 bytes, via the platform's Web Crypto (no node: imports). */
+/** The locked footage-pending presentation: the one answer for "nothing plays". */
+const footagePending: DemoPresentation = { state: 'footage-pending', reason: 'footage-pending' };
+
+/**
+ * SHA-256 over UTF-8 bytes, via the platform's Web Crypto (no node: imports).
+ * An absent or throwing `crypto.subtle` — a non-secure context, some SSR
+ * runtimes — surfaces as a throw here, and the verification boundary turns
+ * that throw into a refusal.
+ */
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   let hex = '';
@@ -62,13 +89,24 @@ async function sha256Hex(text: string): Promise<string> {
  * lexicographically at every level, arrays in their wire order, and scalars
  * serialized as `JSON.stringify` writes them — for finite numbers that is the
  * shortest round-trip form, so `1e3` and `1000` hash the same. This removes
- * the digest's accidental dependence on key order and number spelling.
+ * the digest's accidental dependence on key order and number spelling. The
+ * recursion is capped at CANONICAL_MAX_DEPTH: a body nested past the cap is
+ * unhashable and refused, never walked to the stack's end.
  */
-function canonicalJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+const CANONICAL_MAX_DEPTH = 64;
+
+function canonicalJson(value: unknown, depth = 0): string {
+  if (depth > CANONICAL_MAX_DEPTH) {
+    throw new RangeError('demo body nested past the canonical depth cap');
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => canonicalJson(item, depth + 1)).join(',')}]`;
+  }
   if (isRecord(value)) {
     const keys = Object.keys(value).sort();
-    return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
+    return `{${keys
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key], depth + 1)}`)
+      .join(',')}}`;
   }
   const scalar = JSON.stringify(value);
   return scalar === undefined ? 'null' : scalar;
@@ -80,7 +118,11 @@ export type InvalidReason =
   | 'hash-mismatch'
   | 'captions-required'
   | 'approval-incomplete'
-  | 'scenario-mismatch';
+  | 'scenario-mismatch'
+  // A body that cannot be hashed or verified at all: nested past the
+  // canonical depth cap, or a runtime without a usable `crypto.subtle`. A
+  // refusal, never a rejection.
+  | 'unhashable';
 
 /** The media an approved package may hand a player. */
 export type DemoMedia = {
@@ -113,7 +155,6 @@ export type DemoPresentation =
   | { state: 'invalid'; reason: InvalidReason };
 
 export type CachedDemo = {
-  package: DemoPackage;
   /** The raw body exactly as fetched, so a cache read re-verifies the hash. */
   rawText: string;
   fetchedAt: number;
@@ -121,7 +162,7 @@ export type CachedDemo = {
 
 export type DemoCache = {
   get(scenarioId: string): CachedDemo | undefined;
-  /** Stores a verified entry — and clears any purge mark: a fresh approved package plays again. */
+  /** Stores an entry that passed the publication gates — and clears any purge mark: a fresh approved package plays again. */
   put(scenarioId: string, entry: CachedDemo): void;
   /** Marks the entry's cached media for deletion; the host performs the purge. */
   markForPurge(scenarioId: string): void;
@@ -150,6 +191,67 @@ export function createMemoryDemoCache(): DemoCache {
     },
     isMarkedForPurge: (scenarioId) => purged.has(scenarioId),
   };
+}
+
+/**
+ * The presentation builder: a pure function of the package and the entry it
+ * arrived with (source, fetchedAt). It renders the state and touches no cache
+ * — the purge marks live in `resolve()`, the only place that observes a
+ * verdict.
+ */
+export function present(
+  pkg: DemoPackage,
+  source: 'network' | 'cache',
+  fetchedAt: number,
+): DemoPresentation {
+  switch (pkg.publicationState) {
+    case 'pending':
+      // Footage pending is the honest state for the whole front door today:
+      // nothing plays until an approved package exists.
+      return footagePending;
+    case 'superseded':
+      // A superseded package plays only as labelled historical proof and
+      // never under the old URL. Nothing in the package tells the front door
+      // which surface is the labelled one, so the presentation carries no
+      // media at all — a named state a screen can render, and nothing to play.
+      return { state: 'superseded', reason: 'superseded' };
+    case 'revoked':
+      // Playback stops and the transcript stays readable. Whatever the host
+      // cached for this scenario is marked for purge by the resolve() path
+      // that observes this state — never here.
+      return {
+        state: 'revoked',
+        reason: 'revoked',
+        transcriptUrl: pkg.transcriptUrl,
+        purgeCached: true,
+      };
+    case 'approved': {
+      if (pkg.captionsUrl === null || pkg.transcriptUrl === null) {
+        // Half-rendered accessibility is not accessibility: captions and the
+        // transcript ship together or the package does not play.
+        return { state: 'invalid', reason: 'captions-required' };
+      }
+      if (
+        pkg.approval.watchedComplete !== true ||
+        pkg.approval.approvedBy === '' ||
+        !isRfc3339(pkg.approval.approvedAt)
+      ) {
+        return { state: 'invalid', reason: 'approval-incomplete' };
+      }
+      return {
+        state: 'playable',
+        scenarioId: pkg.scenarioId,
+        packageRevision: pkg.packageRevision,
+        sourceRevision: pkg.sourceRevision,
+        contentHash: pkg.contentHash,
+        source,
+        fetchedAt,
+        media: { renditions: pkg.renditions, posterUrl: pkg.posterUrl, interactive: pkg.interactive },
+        captionsUrl: pkg.captionsUrl,
+        transcriptUrl: pkg.transcriptUrl,
+      };
+    }
+  }
 }
 
 /** The one request shape this client makes; injectable for tests and SSR. */
@@ -208,7 +310,6 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
     config.fetchTimeoutMs > 0
       ? config.fetchTimeoutMs
       : DEFAULT_FETCH_TIMEOUT_MS;
-  const footagePending: DemoPresentation = { state: 'footage-pending', reason: 'footage-pending' };
 
   type FetchOutcome =
     | { kind: 'unreachable' }
@@ -233,7 +334,12 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
       const response = await fetchImpl(`${mirrorUrl}/demos/${scenarioId}.json`, {
         signal: controller.signal,
       });
-      if (!response.ok) return { kind: 'no-body' };
+      // Only 404/410 mean "nothing published". Every other status — a 5xx, a
+      // 429, a bare 304 — is a transient mirror problem: `unreachable`, which
+      // falls through to the cache exactly as a timeout does. One transient
+      // mirror error must not take an approved, already-cached demo dark.
+      if (response.status === 404 || response.status === 410) return { kind: 'no-body' };
+      if (response.status < 200 || response.status >= 300) return { kind: 'unreachable' };
       return { kind: 'body', rawText: await response.text() };
     })();
     try {
@@ -279,72 +385,66 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
     return { package: parsed.package };
   }
 
-  function present(pkg: DemoPackage, source: 'network' | 'cache', fetchedAt: number): DemoPresentation {
-    switch (pkg.publicationState) {
-      case 'pending':
-        // Footage pending is the honest state for the whole front door today:
-        // nothing plays until an approved package exists.
-        return footagePending;
-      case 'superseded':
-        // A superseded package plays only as labelled historical proof and
-        // never under the old URL. Nothing in the package tells the front door
-        // which surface is the labelled one, so the presentation carries no
-        // media at all — a named state a screen can render, and nothing to play.
-        return { state: 'superseded', reason: 'superseded' };
-      case 'revoked':
-        // Playback stops, the transcript stays readable, and whatever the host
-        // cached for this scenario is marked for purge.
-        cache.markForPurge(pkg.scenarioId);
-        return {
-          state: 'revoked',
-          reason: 'revoked',
-          transcriptUrl: pkg.transcriptUrl,
-          purgeCached: true,
-        };
-      case 'approved': {
-        if (pkg.captionsUrl === null || pkg.transcriptUrl === null) {
-          // Half-rendered accessibility is not accessibility: captions and the
-          // transcript ship together or the package does not play.
-          return { state: 'invalid', reason: 'captions-required' };
-        }
-        if (
-          pkg.approval.watchedComplete !== true ||
-          pkg.approval.approvedBy === '' ||
-          !isRfc3339(pkg.approval.approvedAt)
-        ) {
-          return { state: 'invalid', reason: 'approval-incomplete' };
-        }
-        return {
-          state: 'playable',
-          scenarioId: pkg.scenarioId,
-          packageRevision: pkg.packageRevision,
-          sourceRevision: pkg.sourceRevision,
-          contentHash: pkg.contentHash,
-          source,
-          fetchedAt,
-          media: { renditions: pkg.renditions, posterUrl: pkg.posterUrl, interactive: pkg.interactive },
-          captionsUrl: pkg.captionsUrl,
-          transcriptUrl: pkg.transcriptUrl,
-        };
-      }
+  /**
+   * verified() behind a total failure boundary: hashing, canonicalization and
+   * parsing must never reject at the front door. Any throw — a body nested
+   * past the canonical depth cap, an absent or throwing `crypto.subtle`, a
+   * canonical form that explodes — becomes the `unhashable` refusal.
+   */
+  async function verifiedOrRefused(
+    rawText: string,
+    scenarioId: string,
+  ): Promise<{ package: DemoPackage } | { problem: InvalidReason }> {
+    try {
+      return await verified(rawText, scenarioId);
+    } catch {
+      return { problem: 'unhashable' };
     }
   }
 
   /**
-   * present() plus the purge gate: a marked scenario's cached media is
-   * condemned, so it never presents playable media — a corrupt update cannot
-   * leave stale approved media playable while the host deletes the files.
+   * The cache policy, applied only after the presentation gates have run. A
+   * refused body is never stored and condemns whatever is cached; a playable
+   * package is stored and re-arms playback via `put`; a named non-playable
+   * state stores its record — so an offline screen can keep saying why
+   * playback stopped — and condemns the media: `put` first, because `put`
+   * clears the mark, then the mark, so the condemnation survives.
    */
-  function presentChecked(
-    pkg: DemoPackage,
-    source: 'network' | 'cache',
-    fetchedAt: number,
-    scenarioId: string,
-  ): DemoPresentation {
-    const presentation = present(pkg, source, fetchedAt);
-    if (presentation.state === 'playable' && cache.isMarkedForPurge(scenarioId)) {
-      return footagePending;
+  function finishNetwork(pkg: DemoPackage, rawText: string, scenarioId: string): DemoPresentation {
+    const fetchedAt = now();
+    const presentation = present(pkg, 'network', fetchedAt);
+    if (presentation.state === 'invalid') {
+      // The publication gates refused this body: it can never play, so it is
+      // never written — and it condemns any existing entry.
+      cache.markForPurge(scenarioId);
+      return presentation;
     }
+    cache.put(scenarioId, { rawText, fetchedAt });
+    if (presentation.state !== 'playable') cache.markForPurge(scenarioId);
+    return presentation;
+  }
+
+  /** The offline branch: the cache, re-verified and re-gated like any fetch. */
+  async function readCache(entry: CachedDemo, scenarioId: string): Promise<DemoPresentation> {
+    const cached = await verifiedOrRefused(entry.rawText, scenarioId);
+    if ('problem' in cached) {
+      // An entry that no longer verifies — written by an older version, or
+      // corrupted since — is condemned, not thrown at the screen.
+      cache.markForPurge(scenarioId);
+      return { state: 'invalid', reason: cached.problem };
+    }
+    const presentation = present(cached.package, 'cache', entry.fetchedAt);
+    if (presentation.state === 'invalid') {
+      cache.markForPurge(scenarioId);
+      return presentation;
+    }
+    if (presentation.state === 'playable') {
+      // A marked entry's media is condemned: it never presents playable media.
+      return cache.isMarkedForPurge(scenarioId) ? footagePending : presentation;
+    }
+    // Revoked — and every named non-playable state — is observed here too:
+    // the purge mark lands on a resolve() path, never inside present().
+    cache.markForPurge(scenarioId);
     return presentation;
   }
 
@@ -355,7 +455,11 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
     if (!isScenarioId(scenarioId) || mirrorUrl === null) return footagePending;
     const outcome = await fetchBounded(scenarioId);
     if (outcome.kind === 'no-body') {
-      // The mirror answered: nothing is published for this scenario today.
+      // Only 404/410 land here: the mirror answers that nothing is published
+      // for this scenario today — footage-pending, and whatever was cached is
+      // condemned, because the mirror has withdrawn the package and its media
+      // may no longer play.
+      cache.markForPurge(scenarioId);
       return footagePending;
     }
     const rawText = outcome.kind === 'body' ? outcome.rawText : null;
@@ -363,11 +467,9 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
       // Offline or past the deadline: fall through to the cache.
       const entry = cache.get(scenarioId);
       if (entry === undefined) return footagePending;
-      const cached = await verified(entry.rawText, scenarioId);
-      if ('problem' in cached) return { state: 'invalid', reason: cached.problem };
-      return presentChecked(cached.package, 'cache', entry.fetchedAt, scenarioId);
+      return readCache(entry, scenarioId);
     }
-    const verdict = await verified(rawText, scenarioId);
+    const verdict = await verifiedOrRefused(rawText, scenarioId);
     if ('problem' in verdict) {
       // Rule: an invalid network body condemns whatever this scenario had
       // cached and is never written itself — a corrupt or hostile update must
@@ -377,9 +479,7 @@ export function createDemoResolver(config: DemoResolverConfig = {}) {
       cache.markForPurge(scenarioId);
       return { state: 'invalid', reason: verdict.problem };
     }
-    const entry: CachedDemo = { package: verdict.package, rawText, fetchedAt: now() };
-    cache.put(scenarioId, entry);
-    return presentChecked(verdict.package, 'network', entry.fetchedAt, scenarioId);
+    return finishNetwork(verdict.package, rawText, scenarioId);
   }
 
   return { resolve };

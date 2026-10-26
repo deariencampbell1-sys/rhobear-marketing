@@ -18,8 +18,18 @@
 //     key order and number spelling cannot change the digest. It is corruption
 //     detection, not a signature: the mirror host is the trust anchor.
 //   - Every URL in a package must be https, carry no credentials, carry no
-//     signed/expiring query parameter, and contain the package revision in its
-//     path — that anchoring is what makes a URL immutable.
+//     query and no fragment at all (an immutable link has neither, and a
+//     denylist of parameter names is a promise to keep it complete forever),
+//     and contain the package revision as a whole path segment — that
+//     anchoring is what makes a URL immutable.
+//   - A package revision has one shape: `rev-` plus a non-empty run of
+//     alphanumerics, dots and dashes — the publisher's stamp, as in
+//     `rev-2026-10-25-1`. That format is assumed (L8c's publisher is the one
+//     this front door has seen); if it ever stamps differently,
+//     `PACKAGE_REVISION_PATTERN` is the single place to change.
+//   - `interactive.sandbox` is an allow-list of known sandbox tokens,
+//     normalized to a single-space token list; `allow-same-origin` is refused
+//     outright. W0-05b applies it verbatim as an iframe sandbox attribute.
 
 import { isRfc3339, isHttpsUrl } from '../release/schema';
 // The board names the scenarios; this client imports them rather than
@@ -39,6 +49,33 @@ export const PUBLICATION_STATES: readonly PublicationState[] = [
 
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
+// The revision shape (see the header): `rev-` plus a non-empty run of
+// alphanumerics, dots and dashes. A revision validated only as non-empty —
+// 's', '1', 'demos' — matches almost any media path, so the shape is enforced
+// wherever a revision is taken from a body.
+const PACKAGE_REVISION_PATTERN = /^rev-[A-Za-z0-9._-]+$/;
+
+// The sandbox tokens a package may name: the known iframe sandbox tokens
+// minus `allow-same-origin`, which is refused outright — beside
+// `allow-scripts` it would let the framed page act as the front-door origin
+// and escape the sandbox entirely. An allow-list, never a denylist: a token
+// that is not here is `bad-interactive`.
+const SANDBOX_TOKENS: readonly string[] = [
+  'allow-downloads',
+  'allow-downloads-without-user-activation',
+  'allow-forms',
+  'allow-modals',
+  'allow-orientation-lock',
+  'allow-pointer-lock',
+  'allow-popups',
+  'allow-popups-to-escape-sandbox',
+  'allow-presentation',
+  'allow-scripts',
+  'allow-storage-access-by-user-activation',
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-top-navigation-to-custom-protocols',
+];
 
 export type DemoChapter = { label: string; startSeconds: number };
 
@@ -51,7 +88,11 @@ export type DemoRendition = {
   chapters: readonly DemoChapter[];
 };
 
-export type DemoInteractive = { url: string; sandbox: string };
+export type DemoInteractive = {
+  url: string;
+  /** The normalized, single-space token list from the sandbox allow-list. */
+  sandbox: string;
+};
 
 export type DemoEvidence = {
   inputs: readonly string[];
@@ -112,7 +153,11 @@ export type DemoProblem =
   | 'bad-interactive'
   | 'bad-evidence'
   | 'bad-approval'
-  | 'bad-content-hash';
+  | 'bad-content-hash'
+  // The registry's refusal for a valid-shaped scenario id the board's table
+  // does not name (`parseScenarioRegistry` returns it); it sits in this table
+  // because the demo surface's refusal codes are one set.
+  | 'unknown-scenario';
 
 export type ParsedDemoPackage = { package: DemoPackage } | { problem: DemoProblem };
 
@@ -127,9 +172,9 @@ export function isScenarioId(value: string): boolean {
 
 /**
  * The immutability gate every package URL must pass: https (and no smuggled
- * credentials, via the release client's rule), no signed or expiring query
- * parameter — a cached link would break and an access grant would leak — and a
- * path anchored to the package revision.
+ * credentials, via the release client's rule), no query and no fragment at
+ * all — a cached signed link would break and an access grant would leak — and
+ * a path anchored to the package revision as a whole segment.
  */
 export function isImmutableHttpsUrl(value: string, packageRevision: string): boolean {
   if (!isHttpsUrl(value)) return false;
@@ -139,6 +184,8 @@ export function isImmutableHttpsUrl(value: string, packageRevision: string): boo
   } catch {
     return false;
   }
+  // The signed/expiring parameter shapes, named as documentation of the
+  // class: any of these condemns the URL outright.
   for (const name of url.searchParams.keys()) {
     const lower = name.toLowerCase();
     if (lower.startsWith('x-amz-')) return false;
@@ -146,7 +193,16 @@ export function isImmutableHttpsUrl(value: string, packageRevision: string): boo
       return false;
     }
   }
-  return url.pathname.includes(packageRevision);
+  // …and an immutable link carries no query and no fragment at all. An
+  // allow-list of parameter names would be a promise to keep it complete
+  // forever — GCS signs with X-Goog-Signature/X-Goog-Expires, CloudFront with
+  // Policy and Key-Pair-Id, Azure SAS with se/sp — and url.searchParams never
+  // even sees a fragment, where #token=… would hide.
+  if (url.search !== '' || url.hash !== '') return false;
+  // The revision is anchored as a whole path segment: a substring match — the
+  // revision inside a longer segment — is not a promise that the bytes under
+  // this URL are the ones that were verified.
+  return url.pathname.split('/').includes(packageRevision);
 }
 
 // One isRecord for the whole demo surface: `./resolve.ts` imports this copy.
@@ -262,7 +318,12 @@ export function parseDemoPackage(raw: unknown): ParsedDemoPackage {
   }
   const scenarioId = scenarioIdRaw.trim();
   if (!nonEmptyString(raw.engineOrProduct)) return { problem: 'bad-engine-or-product' };
-  if (!nonEmptyString(raw.packageRevision)) return { problem: 'bad-package-revision' };
+  if (
+    typeof raw.packageRevision !== 'string' ||
+    !PACKAGE_REVISION_PATTERN.test(raw.packageRevision.trim())
+  ) {
+    return { problem: 'bad-package-revision' };
+  }
   const packageRevision = raw.packageRevision.trim();
   if (!nonEmptyString(raw.sourceApp)) return { problem: 'bad-source-app' };
   const sourceRevisionRaw = raw.sourceRevision;
@@ -312,8 +373,16 @@ export function parseDemoPackage(raw: unknown): ParsedDemoPackage {
     if (typeof candidate.url !== 'string' || !isImmutableHttpsUrl(candidate.url, packageRevision)) {
       return { problem: 'bad-interactive' };
     }
-    if (!nonEmptyString(candidate.sandbox)) return { problem: 'bad-interactive' };
-    interactive = { url: candidate.url, sandbox: candidate.sandbox.trim() };
+    if (typeof candidate.sandbox !== 'string') return { problem: 'bad-interactive' };
+    // Split on any whitespace — tabs and repeated spaces are just spacing.
+    const sandboxTokens = candidate.sandbox.trim().split(/\s+/);
+    if (sandboxTokens[0] === '') return { problem: 'bad-interactive' };
+    for (const token of sandboxTokens) {
+      if (!(SANDBOX_TOKENS as readonly string[]).includes(token)) {
+        return { problem: 'bad-interactive' };
+      }
+    }
+    interactive = { url: candidate.url, sandbox: sandboxTokens.join(' ') };
   }
 
   const evidence = parseEvidence(raw.evidence);
@@ -360,7 +429,7 @@ export function parseDemoPackage(raw: unknown): ParsedDemoPackage {
   };
 }
 
-/** The board's scenario ids, imported from the engines data — the registry names these and no others. */
+/** The board's scenario ids, imported from the engines data — the registry names these and no others, and `parseScenarioRegistry` enforces it: any other id is `unknown-scenario`. */
 export const KNOWN_SCENARIO_IDS: readonly string[] = Object.freeze(
   engines.flatMap((engine) => [...engine.scenarioIds]),
 );
@@ -376,13 +445,15 @@ export type ScenarioRegistryRow = {
 
 export type ScenarioRegistry = readonly ScenarioRegistryRow[];
 
-export type RegistryProblem = 'not-an-array' | 'bad-row' | 'duplicate-scenario';
+export type RegistryProblem = 'not-an-array' | 'bad-row' | 'duplicate-scenario' | 'unknown-scenario';
 
 /**
  * The /engines index input, validated. A registry row the board does not know
  * would name an invented scenario, so the id must pass the same shape guard a
- * deep link does; titles and alt text must be present because a screen renders
- * them and poster alt text is not optional.
+ * deep link does and must name a scenario the board knows — anything else is
+ * `unknown-scenario`, the drift the table above exists to stop; titles and alt
+ * text must be present because a screen renders them and poster alt text is
+ * not optional.
  */
 export function parseScenarioRegistry(
   raw: unknown,
@@ -397,6 +468,9 @@ export function parseScenarioRegistry(
       return { problem: 'bad-row' };
     }
     const id = scenarioId.trim();
+    // KNOWN_SCENARIO_IDS is enforced, not merely documented: the registry
+    // names the board's scenarios and no others.
+    if (!KNOWN_SCENARIO_IDS.includes(id)) return { problem: 'unknown-scenario' };
     if (
       !nonEmptyString(item.engine) ||
       !nonEmptyString(item.title) ||
