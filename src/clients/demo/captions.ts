@@ -7,7 +7,9 @@
 //
 // House style: hand-written parsing, named refusal codes, no schema library,
 // no dependency, no coercion, no logging. The parse is total — every input,
-// hostile or empty, returns a verdict.
+// hostile or empty, returns a verdict. r8 F5: an untrusted SHAPE is decided
+// by a guard before the parse, and the pure parse runs without a blanket
+// catch — a future bug in the parse is ours to see, never a fake `unreadable`.
 //
 // The parse rules, defensively:
 //   - The body must begin with the `WEBVTT` signature — the word followed by
@@ -83,28 +85,66 @@ export type ParsedCaptions =
  * slip past the `//` rule; and cross-origin http(s) is accepted as it always
  * has been (a URL names WebVTT wherever it points — pinned, so
  * `https:\\host\x.vtt` is the ordinary absolute https URL it normalises to).
+ *
+ * r8 F2: the order is structural, so no decoration of the refused shape can
+ * win the race to the discrimination. Before any rule runs, the string is
+ * read the way a browser's URL parser reads it: leading/trailing C0 controls
+ * and spaces are stripped (`' //host/x.vtt'`, `'\t//host/x.vtt'` and
+ * `'\u0000//host/x.vtt'` are the same reference as `'//host/x.vtt'` to a
+ * browser) and `\` is `/`. Then, on that stripped, normalised value:
+ *   1. starts with `//` → refused — a scheme-relative absolute reference,
+ *      whatever led into it;
+ *   2. has a scheme (`^[a-zA-Z][a-zA-Z0-9+.\-]*:`) → accepted only for
+ *      `http:`/`https:`, case-insensitive — and `C:/captions.vtt` is refused
+ *      with the rest: an opaque scheme-like prefix is not a relative path;
+ *   3. otherwise → relative — the front door's own captions — accepted.
+ * The `.vtt` path rule then reads the URL's own path: an absolute http(s) URL
+ * is parsed so a query or fragment can never forge the suffix; a relative one
+ * is cut at `?` or `#` by hand. A single leading `\` is one `/` to a browser
+ * (`\captions.vtt` resolves same-origin, as `/captions.vtt`) — it is a
+ * relative path like the pinned `'/captions.vtt'`, not a scheme-relative
+ * disguise (that takes two or more leading backslashes, or a `/` among them).
  */
+// r8 F2: the scheme grammar, run only on the stripped, normalised value —
+// exactly what makes a string an absolute reference rather than one of the
+// front door's own relative captions.
+const SCHEME_PREFIX = /^[a-zA-Z][a-zA-Z0-9+.\-]*:/;
+
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
-  // r7 F2: a browser reads `\` as `/` before it resolves, so the guard does
-  // too — one normalisation at the entry, and every rule below sees the
-  // browser's own reading of the string. A Windows-style RELATIVE path
-  // (`.\captions.vtt` → `./captions.vtt`) is still a relative path: the
-  // guard refuses scheme-relative absolutes, not odd relative spellings.
-  const normalised = value.replace(/\\/g, '/');
-  // r6 F6: `//host/x.vtt` is neither http(s) nor a relative path — it names
+  // r8 F2, before any discrimination: the browser's own reading of the
+  // string. The C0/space decoration is gone before any rule can be skipped
+  // by it (r7's bypass: `' //evil.example/x.vtt'` skipped `startsWith('//')`
+  // and the catch below answered for it), and the backslashes are already
+  // `/`. A Windows-style RELATIVE path (`.\captions.vtt` → `./captions.vtt`)
+  // is still a relative path: the guard refuses scheme-relative absolutes,
+  // not odd relative spellings.
+  const normalised = value
+    .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, '')
+    .replace(/\\/g, '/');
+  // (1) `//host/x.vtt` is neither http(s) nor a relative path — it names
   // another host and is refused before any parsing can wave it through.
   if (normalised.startsWith('//')) return false;
-  // The extension is a rule about the path, not about absolute URLs: an
-  // absolute URL is parsed so a query or fragment can never forge the
-  // suffix; a relative one — the front door's own captions — is cut at `?`
-  // or `#` by hand, and only then checked.
   let path = normalised;
-  try {
-    const url = new URL(normalised);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
-    path = url.pathname;
-  } catch {
+  const scheme = SCHEME_PREFIX.exec(normalised);
+  if (scheme !== null) {
+    // (2) The scheme is part of the rule (F9): only http(s) is ever captions,
+    // whatever its casing. Anything else — `javascript:`, `data:`, or an
+    // opaque scheme-like prefix such as `C:` — is not a relative path and
+    // never one of the front door's own captions.
+    const protocol = scheme[0].slice(0, -1).toLowerCase();
+    if (protocol !== 'http' && protocol !== 'https') return false;
+    // The extension is a rule about the path: the URL is parsed so a query or
+    // fragment can never forge the suffix. A scheme-shaped value that parses
+    // to nothing names no file and is refused.
+    try {
+      path = new URL(normalised).pathname;
+    } catch {
+      return false;
+    }
+  } else {
+    // (3) A relative one — the front door's own captions — is cut at `?` or
+    // `#` by hand, and only then checked.
     const cut = path.search(/[?#]/);
     if (cut !== -1) path = path.slice(0, cut);
   }
@@ -180,58 +220,14 @@ function parseCueBlock(
 
 export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCaptions {
   const transcriptAvailable = typeof transcriptUrl === 'string' && transcriptUrl.trim() !== '';
-  try {
-    // One canonical line ending, and a tolerated BOM: hostile whitespace
-    // never changes a verdict.
-    const body = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
-    const lines = body.split('\n');
-    const first = lines.find((line) => line.trim() !== '') ?? '';
-    // The signature is the word WEBVTT and nothing longer: a line that merely
-    // starts with those letters (`WEBVTTX`) is not a WebVTT header.
-    if (!/^WEBVTT(\s|$)/.test(first)) {
-      return {
-        state: 'captions-failed',
-        reason: 'not-webvtt',
-        cues: [],
-        skipped: [],
-        transcriptAvailable,
-      };
-    }
-    // The header runs to the first blank line; everything after is cues.
-    let index = lines.indexOf(first) + 1;
-    while (index < lines.length && lines[index].trim() !== '') index += 1;
-    const blocks: string[][] = [];
-    let block: string[] = [];
-    for (; index < lines.length; index += 1) {
-      const line = lines[index];
-      if (line.trim() === '') {
-        if (block.length > 0) blocks.push(block);
-        block = [];
-      } else {
-        block.push(line);
-      }
-    }
-    if (block.length > 0) blocks.push(block);
-
-    // F8: NOTE, STYLE and REGION blocks are not cues — they appear neither
-    // in `cues` nor in `skipped`, and the skip indices below number the
-    // file's cue blocks only.
-    const cueBlocks = blocks.filter((block) => !NON_CUE_BLOCK.test(block[0] ?? ''));
-
-    const cues: WebVttCue[] = [];
-    const skipped: SkippedCaptionCue[] = [];
-    for (let cueIndex = 0; cueIndex < cueBlocks.length; cueIndex += 1) {
-      const parsed = parseCueBlock(cueBlocks[cueIndex]);
-      if ('cue' in parsed) cues.push(parsed.cue);
-      else skipped.push({ cueIndex, reason: parsed.problem });
-    }
-    if (cues.length === 0) {
-      return { state: 'captions-failed', reason: 'no-cues', cues, skipped, transcriptAvailable };
-    }
-    return { state: 'captions', cues, skipped, transcriptAvailable };
-  } catch {
-    // Nothing is ever thrown into the UI: an unreadable body is a named
-    // verdict, and the transcript is still there.
+  // r8 F5: the shape guard decides the untrusted-shape case BEFORE the parse
+  // — a body that is not a string is never parsed and gets the `unreadable`
+  // verdict. The contract stands (nothing is ever thrown into the UI) and the
+  // pure parse below runs WITHOUT a blanket catch: every string is decided by
+  // the parse itself — the hostile-input matrix proves none can make it throw
+  // — so a future `TypeError` in the parse is the module's own bug, visible,
+  // never an indistinguishable `unreadable` with no log.
+  if (typeof raw !== 'string') {
     return {
       state: 'captions-failed',
       reason: 'unreadable',
@@ -240,4 +236,52 @@ export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCa
       transcriptAvailable,
     };
   }
+  // One canonical line ending, and a tolerated BOM: hostile whitespace
+  // never changes a verdict.
+  const body = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
+  const lines = body.split('\n');
+  const first = lines.find((line) => line.trim() !== '') ?? '';
+  // The signature is the word WEBVTT and nothing longer: a line that merely
+  // starts with those letters (`WEBVTTX`) is not a WebVTT header.
+  if (!/^WEBVTT(\s|$)/.test(first)) {
+    return {
+      state: 'captions-failed',
+      reason: 'not-webvtt',
+      cues: [],
+      skipped: [],
+      transcriptAvailable,
+    };
+  }
+  // The header runs to the first blank line; everything after is cues.
+  let index = lines.indexOf(first) + 1;
+  while (index < lines.length && lines[index].trim() !== '') index += 1;
+  const blocks: string[][] = [];
+  let block: string[] = [];
+  for (; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (line.trim() === '') {
+      if (block.length > 0) blocks.push(block);
+      block = [];
+    } else {
+      block.push(line);
+    }
+  }
+  if (block.length > 0) blocks.push(block);
+
+  // F8: NOTE, STYLE and REGION blocks are not cues — they appear neither
+  // in `cues` nor in `skipped`, and the skip indices below number the
+  // file's cue blocks only.
+  const cueBlocks = blocks.filter((block) => !NON_CUE_BLOCK.test(block[0] ?? ''));
+
+  const cues: WebVttCue[] = [];
+  const skipped: SkippedCaptionCue[] = [];
+  for (let cueIndex = 0; cueIndex < cueBlocks.length; cueIndex += 1) {
+    const parsed = parseCueBlock(cueBlocks[cueIndex]);
+    if ('cue' in parsed) cues.push(parsed.cue);
+    else skipped.push({ cueIndex, reason: parsed.problem });
+  }
+  if (cues.length === 0) {
+    return { state: 'captions-failed', reason: 'no-cues', cues, skipped, transcriptAvailable };
+  }
+  return { state: 'captions', cues, skipped, transcriptAvailable };
 }

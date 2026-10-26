@@ -111,6 +111,26 @@
 //       counters reset on that event; the state transition stays
 //       `buffering` → `playing` only, and the error state keeps its fields
 //       (r5 F1).
+//   - W0-05b-r8 (Apollo's review of the r7 head), three honesty fixes:
+//     - F3: `lower-rendition` re-checks the kept place against the NEW
+//       rendition's real duration before the one-shot resume is armed — a
+//       lower rendition may be shorter (nothing in the schema forbids it)
+//       and a `seekTo(9)` past the end of the new source would run past the
+//       very place D06 promises to keep. The rule is `applyPresentation`'s
+//       (`duration === null || position < 0 || position >= duration →
+//       positionSeconds = 0`), with its first arm as pinned (r8's edge): a
+//       null duration is no bound to check against, so the place is kept —
+//       exactly like a `timeupdate` with no known duration (r4 F6).
+//     - F4: the support reference id folds in a module-level monotonic
+//       sequence. The id it replaces (`sup-${now()}-${errorCount}`) reset its
+//       counter every episode, so two episodes in the same millisecond
+//       handed out the same id — and the id is the one value support
+//       correlates a report with a failure. The sequence is deterministic
+//       (never `Math.random`) and the id is minted once per episode, so it
+//       stays stable for that episode (D07).
+//     - F6: `snapshot()` hands out copies — the error (with its own offers
+//       array) and the current chapter are copied out. A screen that mutates
+//       what it was handed must never corrupt the machine.
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -275,6 +295,14 @@ export type DemoPlayer = {
   restart(): DemoPlayerSnapshot;
 };
 
+/**
+ * r8 F4: a module-level monotonic sequence for the support reference id. The
+ * per-episode `errorCount` reset every episode and could collide across
+ * episodes in the same millisecond; this counter only ever moves forward.
+ * Deterministic — no `Math.random`, so a test can pin the whole id.
+ */
+let supportReferenceSequence = 0;
+
 export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   const { media, reducedMotion } = config;
   const now = config.now ?? (() => Date.now());
@@ -379,9 +407,16 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     return offers;
   }
 
-  /** One support reference per failure episode, from the host's clock. */
+  /**
+   * One support reference per failure episode, from the host's clock. r8 F4:
+   * the module-level monotonic sequence is folded into the id — the episode's
+   * `errorCount` alone handed out the same id to two episodes in one
+   * millisecond. The sequence is minted into the id exactly once per episode,
+   * so the id is unique per episode and stable for the whole of it.
+   */
   function makeSupportReferenceId(): string {
-    return `sup-${now().toString(36)}-${errorCount.toString(36)}`;
+    supportReferenceSequence += 1;
+    return `sup-${now().toString(36)}-${errorCount.toString(36)}${supportReferenceSequence.toString(36)}`;
   }
 
   type PlayerFailureReason = MediaErrorReason | InvalidReason | 'superseded';
@@ -525,18 +560,24 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
 
   function snapshot(): DemoPlayerSnapshot {
     const rendition = activeRendition();
+    const chapter = currentChapterOf(rendition);
     return {
       state,
       scenarioId,
       positionSeconds,
       durationSeconds: rendition === null ? null : rendition.durationSeconds,
-      currentChapter: currentChapterOf(rendition),
+      // r8 F6: a copy — the chapter is the rendition's own element, and a
+      // screen that mutates what it is handed must not corrupt the machine
+      // (the next read re-derives it from media time either way).
+      currentChapter: chapter === null ? null : { ...chapter },
       renditionIndex,
       pendingSwitchTo: pendingSwitch === null ? null : pendingSwitch.scenarioId,
       swapTransition,
       interactiveSandbox,
       interactiveRefusal,
-      error,
+      // r8 F6: the same for the error — the machine's own object and its
+      // offers array are never handed out live.
+      error: error === null ? null : { ...error, offers: [...error.offers] },
       unplayableReason,
       transcriptUrl: transcriptUrlOf(),
       reducedMotion,
@@ -947,6 +988,19 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
             }
           }
           if (best !== null) {
+            // r8 F3: the kept place is re-checked against the NEW rendition's
+            // real duration before the resume is armed — `applyPresentation`'s
+            // rule (`duration === null || position < 0 || position >= duration
+            // → positionSeconds = 0`), so a lower rendition that ends before
+            // the kept place can never resume past its own end (a lower
+            // rendition may be shorter — nothing in the schema forbids it).
+            // The rule's first arm stands as pinned (r8's edge): a null
+            // duration is no bound to check against, so the place is kept —
+            // exactly like a `timeupdate` with no known duration (r4 F6).
+            const nextDuration: number | null = renditions[best].durationSeconds;
+            if (nextDuration !== null && (positionSeconds < 0 || positionSeconds >= nextDuration)) {
+              positionSeconds = 0;
+            }
             renditionIndex = best;
             // F8 (owner-flagged): no seekTo here. The port cannot load the new
             // rendition's source — the screen owns sources — so an immediate
