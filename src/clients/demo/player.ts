@@ -549,6 +549,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       // continues until playback resumes (the `playing` event ends it), which
       // is what makes a second failure name a support reference id (D07).
       error = null;
+      // r5 F3: this seekTo IS the resume. If a lower-rendition switch left
+      // the F8 one-shot behind, it is consumed here — or the next `playing`
+      // would fire a second seek for one resume.
+      resumeSeekPending = false;
       media.seekTo(positionSeconds);
       media.play();
       state = 'buffering';
@@ -621,15 +625,19 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     generation += 1;
     pendingSwitch = null;
     // r4 F2: the stale fields are cleared from EVERY state, not only the
-    // media-bearing one — a restart from `pending`, `revoked` or a
-    // resolve-`error` must not leave a swap transition, a return target or
-    // an error behind for the next screen to re-apply. A swap that is
-    // history: a screen must never re-apply its animation.
+    // media-bearing one — a restart from `pending` or `revoked` must not
+    // leave a swap transition, a return target or an error behind for the
+    // next screen to re-apply. A swap that is history: a screen must never
+    // re-apply its animation. r5 F1 narrows one case of that rule: the error
+    // fields of a restart that leaves the state as `error` describe the
+    // state that stays and stay with it (below).
     swapTransition = null;
-    error = null;
-    errorCount = 0;
-    supportReferenceId = null;
     if (activeRendition() !== null) {
+      // The media-bearing path (r4 F2, unchanged): a media error restarts to
+      // `poster` and its error fields are stale.
+      error = null;
+      errorCount = 0;
+      supportReferenceId = null;
       media.pause();
       media.seekTo(0);
       positionSeconds = 0;
@@ -648,6 +656,17 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // with a Close that has nowhere to go (r3 F5: the machine never wedges).
     if (state === 'transcript' && returnState !== null) state = returnState;
     returnState = null;
+    // r5 F1: when the state stays `error` (the resolve-error, no-rendition
+    // case), its error fields stay with it — `error`, `unplayableReason`,
+    // `errorCount` and `supportReferenceId` describe the state that stands.
+    // Clearing them would hand the screen `{ state: 'error', error: null }`
+    // and a blank error overlay. Everywhere else they are stale and cleared
+    // (r4 F2's rule).
+    if (state !== 'error') {
+      error = null;
+      errorCount = 0;
+      supportReferenceId = null;
+    }
     return snapshot();
   }
 
@@ -754,6 +773,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         break;
       }
       case 'open-interactive': {
+        // r5 F4: the whole action — a refusal recorded or the artifact
+        // opened — is gated on the states the board opens an interactive
+        // from. From any other state the snapshot is unchanged, whatever the
+        // artifact carries: `open-interactive` is a true no-op there.
+        if (
+          state !== 'poster' &&
+          state !== 'playing' &&
+          state !== 'paused' &&
+          state !== 'ended'
+        ) {
+          break;
+        }
         const interactive =
           presentation !== null && presentation.state === 'playable'
             ? presentation.media.interactive
@@ -780,16 +811,14 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           interactiveRefusal = 'sandbox-allows-same-origin';
           break;
         }
-        if (state === 'poster' || state === 'playing' || state === 'paused' || state === 'ended') {
-          interactiveRefusal = null;
-          // As the iframe sandbox attribute, canonicalised the way
-          // `./schema.ts` normalises the wire value: lowercased,
-          // single-space tokens — never a mixed-case string.
-          interactiveSandbox = sandboxTokens.join(' ');
-          returnState = state === 'playing' ? 'paused' : state;
-          if (state === 'playing') media.pause();
-          state = 'interactive';
-        }
+        interactiveRefusal = null;
+        // As the iframe sandbox attribute, canonicalised the way
+        // `./schema.ts` normalises the wire value: lowercased,
+        // single-space tokens — never a mixed-case string.
+        interactiveSandbox = sandboxTokens.join(' ');
+        returnState = state === 'playing' ? 'paused' : state;
+        if (state === 'playing') media.pause();
+        state = 'interactive';
         break;
       }
       case 'close-interactive': {

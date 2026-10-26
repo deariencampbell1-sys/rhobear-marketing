@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 // W0-05b — the player state machine (behaviour 8 = JOURNEY D01–D08) with
-// position preservation. Tests first: this file is committed while
-// `src/clients/demo/player.ts` does not exist, so the run is red before any
-// implementation exists.
+// position preservation. Regression provenance: this file began as round
+// r1's red suite, committed before `src/clients/demo/player.ts` existed;
+// it guards those behaviours now.
 //
 // Every fixture here is a fake package (a hand-built DemoPresentation in the
 // shapes W0-05a exports) and a fake media element (play/pause/seekTo spies) —
@@ -1506,8 +1506,8 @@ describe('demo player state machine — W0-05b-r3 (Apollo\'s second review)', ()
 
 // W0-05b-r4 — the last mile. Apollo's seven non-blocking findings on the r3
 // head (2026-10-26 09:19Z) plus three findings from the 07:32:35Z review that
-// the r3 round never saw and that are still live in the code. Red first:
-// these tests are committed while the bugs still stand.
+// the r3 round never saw. These were the red tests for round r4's fix;
+// they guard the regressions now.
 describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
   it('r4 F1 (D07): a resolve error whose retry lands playable starts a new failure episode — the first media error after it carries no support reference id', async () => {
     const media = fakeMedia();

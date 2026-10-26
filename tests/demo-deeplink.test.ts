@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-// W0-05b — deep links (behaviour 18) and captions (behaviour 20). Tests
-// first: this file is committed while `src/clients/demo/deeplink.ts` and
-// `src/clients/demo/captions.ts` do not exist, so the run is red before any
-// implementation exists. The captions tests live here because the round's
-// file list names exactly two test files.
+// W0-05b — deep links (behaviour 18) and captions (behaviour 20). Regression
+// provenance: this file began as round r1's red suite, committed before
+// `src/clients/demo/deeplink.ts` and `src/clients/demo/captions.ts` existed;
+// it guards those behaviours now. The captions tests live here because the
+// round's file list names exactly two test files.
 import { parseDemoDeepLink, type ParsedDemoDeepLink } from '../src/clients/demo/deeplink';
 import { isWebVttUrl, parseWebVTT } from '../src/clients/demo/captions';
 import { present } from '../src/clients/demo/resolve';
@@ -336,7 +336,8 @@ describe('demo captions', () => {
 });
 
 // W0-05b-r4 — the last mile: F7 and F8 (from the 07:32:35Z review) on the
-// cue parse. Red first: these tests are committed while the bugs stand.
+// cue parse. These were the red tests for round r4's fix; they guard the
+// regressions now.
 describe('demo captions — W0-05b-r4 (Apollo\'s last mile)', () => {
   const transcriptUrl = `${mediaBase}/transcript.html`;
 
