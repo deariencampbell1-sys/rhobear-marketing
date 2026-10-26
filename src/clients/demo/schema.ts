@@ -29,7 +29,11 @@
 //     `PACKAGE_REVISION_PATTERN` is the single place to change.
 //   - `interactive.sandbox` is an allow-list of known sandbox tokens,
 //     normalized to a single-space token list; `allow-same-origin` is refused
-//     outright. W0-05b applies it verbatim as an iframe sandbox attribute.
+//     outright, and FU-1 (owner decision B) also refuses `allow-top-navigation`,
+//     `allow-top-navigation-by-user-activation` and
+//     `allow-popups-to-escape-sandbox` outright. W0-05b applies the surviving
+//     list verbatim as an iframe sandbox attribute and refuses the same
+//     tokens again at the player boundary (defence in depth).
 
 import { isRfc3339, isHttpsUrl } from '../release/schema';
 // The board names the scenarios; this client imports them rather than
@@ -56,10 +60,17 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const PACKAGE_REVISION_PATTERN = /^rev-[A-Za-z0-9._-]+$/;
 
 // The sandbox tokens a package may name: the known iframe sandbox tokens
-// minus `allow-same-origin`, which is refused outright — beside
-// `allow-scripts` it would let the framed page act as the front-door origin
-// and escape the sandbox entirely. An allow-list, never a denylist: a token
-// that is not here is `bad-interactive`.
+// minus `allow-same-origin` — beside `allow-scripts` it would let the framed
+// page act as the front-door origin and escape the sandbox entirely — and,
+// under FU-1 (owner decision B), minus `allow-top-navigation`,
+// `allow-top-navigation-by-user-activation` and
+// `allow-popups-to-escape-sandbox`: top navigation would let the framed
+// artifact navigate the front door itself and escaped popups would open
+// outside the sandbox, so neither may appear in a package at all. Schema
+// admission and the player's refusal move together — the same three tokens
+// are refused again in `./player.ts`'s `openInteractive`, with tests in both
+// directions. An allow-list, never a denylist: a token that is not here is
+// `bad-interactive`.
 const SANDBOX_TOKENS: readonly string[] = [
   'allow-downloads',
   'allow-downloads-without-user-activation',
@@ -68,12 +79,9 @@ const SANDBOX_TOKENS: readonly string[] = [
   'allow-orientation-lock',
   'allow-pointer-lock',
   'allow-popups',
-  'allow-popups-to-escape-sandbox',
   'allow-presentation',
   'allow-scripts',
   'allow-storage-access-by-user-activation',
-  'allow-top-navigation',
-  'allow-top-navigation-by-user-activation',
   'allow-top-navigation-to-custom-protocols',
 ];
 
