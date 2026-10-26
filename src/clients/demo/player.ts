@@ -45,10 +45,11 @@
 //     `paused` — a pause cannot fold it away — and re-play from `ended`
 //     restarts at zero without losing the chosen scenario.
 //   - D05 (behaviour 15): an interactive package is used only when its
-//     `sandbox` is non-empty and its URL is https and the sandbox does not
-//     contain `allow-same-origin` beside `allow-scripts` (that pair would let
-//     the framed page act as the front-door origin — remote code). The token
-//     set is ASCII case-insensitive, like HTML's `sandbox` attribute, so the
+//     `sandbox` is non-empty and its URL is https and the sandbox contains no
+//     `allow-same-origin` token at all — the rule refuses ANY
+//     `allow-same-origin` token, with `allow-scripts` or without (it would
+//     let the framed page act as the front-door origin — remote code). The
+//     token set is ASCII case-insensitive, like HTML's `sandbox` attribute, so the
 //     refusal fires on `ALLOW-SAME-ORIGIN`, `Allow-Same-Origin` and any other
 //     casing inside a multi-token string. Anything else keeps the video path
 //     and records the named reason. The sandbox is applied as the iframe
@@ -103,10 +104,23 @@ export type DemoMediaElement = {
   seekTo(positionSeconds: number): void;
 };
 
-/** The actual reason a media request failed (D07): decode, network, http-<status>. */
+/**
+ * The actual reason a media request failed (D07): decode, network, http-<status>.
+ * The status is an integer (`http-200`, `http-0`, `http-1000`): the template
+ * can also match non-integers of shape like `http-1.5`, and
+ * `isMediaErrorReason` refuses those — the guard accepts exactly the
+ * `http-<integer>` members of this type (F9: the two agree).
+ */
 export type MediaErrorReason = 'decode' | 'network' | `http-${number}`;
 
-const HTTP_STATUS_REASON = /^http-[1-9][0-9]{0,2}$/;
+// F9 (W0-05b-r4): the guard and the type agree on the integers. The type is
+// `http-${number}` and admits `http-0`, `http-007`, `http-1000` and
+// `http-200` — all four are `http-<integer>` and all four are accepted; the
+// template's non-integers (`http-1.5`) are not status codes and are refused.
+// Widening the guard, not narrowing the type: the template is the wire shape
+// the surrounding modules already speak, so the guard moves to it — the
+// status is written as an integer (an optional sign and digits).
+const HTTP_STATUS_REASON = /^http-[+-]?[0-9]+$/;
 
 export function isMediaErrorReason(value: unknown): value is MediaErrorReason {
   return (
@@ -364,6 +378,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     resumeSeekPending = false;
     if (!keepPosition) positionSeconds = 0;
     if (next.state === 'playable') {
+      // F1 (W0-05b-r4): a failure episode ends when the media is healthy
+      // again. A presentation that lands playable has real media, so the
+      // person's next media failure is their FIRST again — D07's support
+      // reference id is for a *repeated* failure and must never fire on a
+      // stale count carried across a recovered resolve (the `play` dispatch
+      // sets `playing` directly, so the `playing` handler's reset cannot be
+      // relied on here). Reset on `next.state === 'playable'` rather than
+      // keying the episode to `lastErrorKind`: only playable media proves
+      // the failure is behind them — a pending or revoked answer proves
+      // nothing about the media and keeps the episode open.
+      errorCount = 0;
+      supportReferenceId = null;
       unplayableReason = null;
       state = 'poster';
       const duration = activeDuration();
@@ -440,6 +466,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     if (activeRendition() !== null) media.pause();
     pendingSwitch = null;
     swapTransition = crossfade && !reducedMotion ? 'crossfade' : 'none';
+    // A swap is a new episode whatever the answer lands on (r4 F1 keeps this
+    // reset as it was; applyPresentation resets again on a playable landing).
     errorCount = 0;
     supportReferenceId = null;
     scenarioId = swapScenarioId;
@@ -575,8 +603,12 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     }
     // No old media keeps playing through this swap — either nothing plays
     // yet, or the new answer has no poster to wait for — so the swap lands
-    // directly: on the new poster, or on the answer's named state.
-    performSwap(next, nextScenarioId, true);
+    // directly: on the new poster, or on the answer's named state. r4 F5:
+    // the board's crossfade is for swapping AWAY from playing media; with no
+    // old media there is nothing to fade out of and the new poster has not
+    // loaded, so the swap is presented as `none` — a screen must never flash
+    // an unloaded poster mid-crossfade.
+    performSwap(next, nextScenarioId, activeRendition() !== null);
     return snapshot();
   }
 
@@ -588,22 +620,34 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // asked for before it.
     generation += 1;
     pendingSwitch = null;
+    // r4 F2: the stale fields are cleared from EVERY state, not only the
+    // media-bearing one — a restart from `pending`, `revoked` or a
+    // resolve-`error` must not leave a swap transition, a return target or
+    // an error behind for the next screen to re-apply. A swap that is
+    // history: a screen must never re-apply its animation.
+    swapTransition = null;
+    error = null;
+    errorCount = 0;
+    supportReferenceId = null;
     if (activeRendition() !== null) {
       media.pause();
       media.seekTo(0);
       positionSeconds = 0;
       state = 'poster';
-      error = null;
-      errorCount = 0;
-      supportReferenceId = null;
       returnState = null;
       interactiveSandbox = null;
       interactiveRefusal = null;
       // F8: the resume point no longer exists — the place is zero now.
       resumeSeekPending = false;
-      // A swap that is history: a screen must never re-apply its animation.
-      swapTransition = null;
+      return snapshot();
     }
+    // The state itself does not move from a named no-media state —
+    // `pending` restarts as `pending`. The transcript sheet over one is the
+    // single exception to holding still: its return target is cleared here,
+    // so it lands back on the named state underneath rather than lingering
+    // with a Close that has nowhere to go (r3 F5: the machine never wedges).
+    if (state === 'transcript' && returnState !== null) state = returnState;
+    returnState = null;
     return snapshot();
   }
 
@@ -631,13 +675,18 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       }
       case 'timeupdate': {
         // Media time is the only clock: this is where the position, the
-        // progress and the current chapter come from.
-        if (
-          activeRendition() !== null &&
-          Number.isFinite(event.positionSeconds) &&
-          event.positionSeconds >= 0
-        ) {
-          positionSeconds = event.positionSeconds;
+        // progress and the current chapter come from. r4 F6: a spurious
+        // position past the end is clamped to the real duration —
+        // `positionSeconds > durationSeconds` must never stand until
+        // `ended` — while a position with no known duration is accepted as
+        // it stands. The guard keeps rejecting non-finite and negative
+        // positions outright.
+        if (Number.isFinite(event.positionSeconds) && event.positionSeconds >= 0) {
+          const duration = activeDuration();
+          positionSeconds =
+            duration !== null && event.positionSeconds > duration
+              ? duration
+              : event.positionSeconds;
         }
         break;
       }
@@ -721,11 +770,11 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           interactiveRefusal = 'url-not-https';
           break;
         }
-        // `allow-same-origin` beside `allow-scripts` would let the framed
-        // page act as this origin: remote code. It is refused outright — and
-        // HTML's sandbox token set is ASCII case-insensitive, so the match
-        // is too: `ALLOW-SAME-ORIGIN` and any other casing are the same
-        // token and the same refusal.
+        // Any `allow-same-origin` token is refused outright — with
+        // `allow-scripts` or without: it would let the framed page act as
+        // this origin: remote code. HTML's sandbox token set is ASCII
+        // case-insensitive, so the match is too: `ALLOW-SAME-ORIGIN` and any
+        // other casing are the same token and the same refusal.
         const sandboxTokens = interactive.sandbox.trim().toLowerCase().split(/\s+/);
         if (sandboxTokens.includes('allow-same-origin')) {
           interactiveRefusal = 'sandbox-allows-same-origin';

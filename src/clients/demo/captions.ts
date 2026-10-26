@@ -18,6 +18,16 @@
 //     identifier line before its timing line; the timing line is
 //     `start --> end` with optional settings after the end timestamp, and
 //     timestamps are `HH:MM:SS.mmm` or `MM:SS.mmm` with spec-shaped fields.
+//     The timing line is the first line matching that grammar (F7: a cue
+//     identifier may itself contain `-->`, so a mere arrow is not enough);
+//     a block with no grammar-matching line falls back to the first line
+//     carrying `-->`, so a genuinely bad timing line is still named.
+//   - A NOTE, STYLE or REGION block is not a cue — per the WebVTT grammar it
+//     is a comment or metadata (F8) — so it is ignored entirely: it appears
+//     neither in `cues` nor in `skipped`, and it consumes no cue index. The
+//     keyword boundary is the grammar's: `NOTE`, `STYLE` or `REGION` followed
+//     by whitespace or the end of the line starts the block — `NOTEPAD` is
+//     merely a cue identifier and is judged by its own shape.
 //   - A block whose timing line is missing or unparseable is skipped as
 //     `bad-timing`; a cue that ends before it starts is skipped as
 //     `end-before-start`; a cue with no text is skipped as `empty-text`.
@@ -28,11 +38,19 @@
 //     transcript URL passed in is reported as still available, because a
 //     captions failure never takes the transcript down with it.
 
+/**
+ * One cue. `text` is display text: a screen must render it **as text**, never
+ * as HTML — markup-like content in a cue payload is characters, not markup
+ * (F10: the cue-text contract, stated where the type is).
+ */
 export type WebVttCue = { startSeconds: number; endSeconds: number; text: string };
 
 export type CaptionCueProblem = 'bad-timing' | 'end-before-start' | 'empty-text';
 
-/** A skipped cue, named by its index among the file's cue blocks. */
+/**
+ * A skipped cue, named by its index among the file's cue blocks (F8:
+ * NOTE/STYLE/REGION blocks are not cue blocks and consume no index).
+ */
 export type SkippedCaptionCue = { cueIndex: number; reason: CaptionCueProblem };
 
 export type CaptionsFailureReason = 'not-webvtt' | 'no-cues' | 'unreadable';
@@ -80,6 +98,11 @@ export function isWebVttUrl(value: string | null): boolean {
 const TIMESTAMP_HMS = /^(\d{2,}):([0-5]\d):([0-5]\d)\.(\d{3})$/;
 const TIMESTAMP_MS = /^(\d{1,2}):([0-5]\d)\.(\d{3})$/;
 
+// F8: per the WebVTT grammar these keyword blocks are a comment (NOTE) or
+// metadata (STYLE, REGION) — never cues. The keyword must be followed by
+// whitespace or the end of the line: `NOTEPAD` is not `NOTE`.
+const NON_CUE_BLOCK = /^(NOTE|STYLE|REGION)(\s|$)/;
+
 function parseTimestamp(raw: string): number | null {
   const hms = TIMESTAMP_HMS.exec(raw);
   if (hms !== null) {
@@ -93,13 +116,34 @@ function parseTimestamp(raw: string): number | null {
 }
 
 /**
- * Parse one cue block's lines. The timing line is the first line carrying
- * `-->`; anything before it is the cue identifier; the rest is the cue text.
+ * Does this line carry the block's timing — `start --> end` with optional
+ * settings after the end timestamp, timestamps parseable by the grammar?
+ * F7: a cue identifier may itself contain `-->`, so an arrow alone is not
+ * the timing line.
+ */
+function isTimingLine(line: string): boolean {
+  const arrow = line.indexOf('-->');
+  if (arrow === -1) return false;
+  const startSeconds = parseTimestamp(line.slice(0, arrow).trim());
+  // Settings after the end timestamp (`align:start` and friends) are not
+  // part of the timestamp.
+  const endField = line.slice(arrow + 3).trim().split(/\s+/)[0] ?? '';
+  return startSeconds !== null && parseTimestamp(endField) !== null;
+}
+
+/**
+ * Parse one cue block's lines. The timing line is the first line matching the
+ * timestamp grammar (F7); a block with no such line falls back to the first
+ * line carrying `-->`, so a genuinely unparseable timing line is still named
+ * `bad-timing`. Anything before the timing line is the cue identifier; the
+ * rest is the cue text.
  */
 function parseCueBlock(
   lines: readonly string[],
 ): { cue: WebVttCue } | { problem: CaptionCueProblem } {
-  const timingIndex = lines.findIndex((line) => line.includes('-->'));
+  const grammarIndex = lines.findIndex(isTimingLine);
+  const timingIndex =
+    grammarIndex !== -1 ? grammarIndex : lines.findIndex((line) => line.includes('-->'));
   if (timingIndex === -1) return { problem: 'bad-timing' };
   const timing = lines[timingIndex];
   const arrow = timing.indexOf('-->');
@@ -153,10 +197,15 @@ export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCa
     }
     if (block.length > 0) blocks.push(block);
 
+    // F8: NOTE, STYLE and REGION blocks are not cues — they appear neither
+    // in `cues` nor in `skipped`, and the skip indices below number the
+    // file's cue blocks only.
+    const cueBlocks = blocks.filter((block) => !NON_CUE_BLOCK.test(block[0] ?? ''));
+
     const cues: WebVttCue[] = [];
     const skipped: SkippedCaptionCue[] = [];
-    for (let cueIndex = 0; cueIndex < blocks.length; cueIndex += 1) {
-      const parsed = parseCueBlock(blocks[cueIndex]);
+    for (let cueIndex = 0; cueIndex < cueBlocks.length; cueIndex += 1) {
+      const parsed = parseCueBlock(cueBlocks[cueIndex]);
       if ('cue' in parsed) cues.push(parsed.cue);
       else skipped.push({ cueIndex, reason: parsed.problem });
     }
