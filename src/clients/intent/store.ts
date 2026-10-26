@@ -218,11 +218,12 @@ async function underConsumeLock(
   if (locks) {
     let ran = false;
     try {
-      // The result is typed `| undefined` because a LockManager that resolves
-      // without ever invoking the callback is possible (W0-06 review r4,
-      // finding 7). When that happens the body still runs — inline, on the
-      // in-process guarantee: consume() stays a total function whatever the
-      // lock manager does.
+      // The result is typed `| undefined` because a LockManager can resolve
+      // without returning the callback's result (W0-06 review r4, finding 7).
+      // When the callback never ran, the body runs inline on the in-process
+      // guarantee; when it ran and its result was lost, nothing is claimed
+      // and the body is never re-run (W0-06-r9 F3) — consume() stays a total
+      // function whatever the lock manager does.
       const core: ConsumeCore | undefined = await locks.request(
         CONSUME_LOCK_NAME,
         { mode: 'exclusive' },
@@ -232,6 +233,15 @@ async function underConsumeLock(
         },
       );
       if (core === undefined) {
+        // W0-06-r9 (F3): `ran` used to be consulted only in the catch branch,
+        // so a LockManager that invokes the callback and then resolves
+        // undefined re-ran body() — the second run read its own stamp and
+        // reported the true winner already-consumed. The body is NEVER called
+        // twice: when the callback already ran and its result was lost, the
+        // consume claims nothing (`invalid`, exactly like the catch branch);
+        // only a callback that never ran is executed inline, on the
+        // in-process guarantee.
+        if (ran) return { core: { outcome: 'invalid' }, exclusive: 'web-locks' };
         return { core: await body(), exclusive: 'in-process' };
       }
       return { core, exclusive: 'web-locks' };

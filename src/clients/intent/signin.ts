@@ -7,7 +7,6 @@
 
 import { isCanonicalReturnRoute, type Intent, type IntentKind } from './schema';
 import type {
-  ConsumeExclusivity,
   ConsumeResult,
   CreateIntentInput,
   CreateResult,
@@ -87,8 +86,11 @@ export type SignInState = (typeof SIGNIN_STATES)[number];
 /** The exclusivity a restore actually ran under, carried into the snapshot
  * (W0-06 review r2, finding 3): 'web-locks' — an exclusive cross-tab Web Lock
  * was held for the consume; 'in-process' — only this tab's queue serialised
- * it; 'none' — no restore has happened. A screen charging money must treat
- * 'in-process' on a checkout as unverified. */
+ * it; 'none' — no restore has happened (a reload that only read a consumed
+ * record ran no consume at all). W0-06-r9 (F2): a screen charging money must
+ * hold a checkout to BOTH guarantees — this one AND a durable stamp
+ * (restoreDurable) — and treat anything less ('in-process', 'none', or a
+ * stamp that reached only the in-memory mirror) as unverified. */
 export type RestoreGuarantee = 'web-locks' | 'in-process' | 'none';
 
 /** W0-06 review r2 (finding 6): completeRestore reports which of the three
@@ -178,6 +180,14 @@ export type SignInSnapshot = {
    * ran under. A caller cannot tell a cross-tab single-use guarantee from a
    * same-tab one without this. */
   restoreGuarantee: RestoreGuarantee;
+  /** W0-06-r9 (F2): the store's `durable` flag for the record behind the
+   * current state — true when it was read from (and any stamp written to)
+   * real storage, false when it lives only in this tab's in-memory mirror. A
+   * checkout is chargeable only when this is true AND restoreGuarantee is
+   * 'web-locks': a mirror-only stamp is lost on reload, which re-reads the
+   * unconsumed record and re-arms the charge. A field, not a state — the
+   * screen reads it beside the guarantee. */
+  restoreDurable: boolean;
   /** The money-path confirmation id carried into `done`, or null. This
    * machine carries the id, it cannot verify it; L2 issues it and L2 verifies
    * it (W0-06 review r5, finding 9). */
@@ -255,6 +265,10 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   // W0-06 review r2 (finding 3): the exclusivity of the last restore, so the
   // screen can tell a cross-tab guarantee from a same-tab one.
   let restoreGuarantee: RestoreGuarantee = 'none';
+  // W0-06-r9 (F2): the store's durable flag for the record behind the current
+  // state — set wherever the machine adopts a store result (create, load,
+  // consume) and reset with the other transients.
+  let restoreDurable = false;
   // W0-06 review r5 (finding 9): the money-path confirmation id carried into
   // `done`, or null.
   let moneyPathConfirmationId: string | null = null;
@@ -289,9 +303,16 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       // can ever be a destination.
       destination = intent && isCanonicalReturnRoute(intent.returnRoute) ? intent.returnRoute : null;
     }
+    // W0-06-r9 (F4): returnRoute is re-asserted through the same
+    // canonical-route check as destination before it is reported. Together
+    // with the validation of result.returnRoute at the already-consumed
+    // boundary (which treats a hostile route as an invalid restore — the
+    // option chosen; the alternative, dropping returnRoute from the snapshot
+    // in favour of destination, was not taken), a hostile string can appear
+    // in NEITHER field of the snapshot.
     return {
       state,
-      returnRoute: intent ? intent.returnRoute : null,
+      returnRoute: intent && isCanonicalReturnRoute(intent.returnRoute) ? intent.returnRoute : null,
       destination,
       intent,
       method,
@@ -302,6 +323,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       recovery,
       copy,
       restoreGuarantee,
+      restoreDurable,
       moneyPathConfirmationId,
     };
   }
@@ -317,6 +339,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     recovery = null;
     purchasesPreserved = null;
     restoreGuarantee = 'none';
+    restoreDurable = false;
     moneyPathConfirmationId = null;
     method = null;
     cooldownUntil = null;
@@ -336,22 +359,27 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     });
   }
 
-  /** W0-06 review r5 (finding 1): the ONE checkout money gate, used by BOTH
-   * consume branches. A checkout whose consume result reports the weaker
-   * in-process exclusivity lands in `restored-unverified` — never in a
-   * terminal done state — whether the store answered `consumed` or
-   * `already-consumed`: the loser of the consume race is held to the same L2
-   * re-confirmation as its winner. Everything else lands in the branch's own
-   * unconfirmed state — `restoring` for a fresh consume (a checkout under a
-   * real cross-tab lock, or an install, demo or account restore, where the
-   * worst case is a repeated navigation, not a repeated charge) and `done`
-   * for a restore that finds the intent already consumed. */
+  /** W0-06 review r5 (finding 1), W0-06-r9 (F1 and F2): the ONE checkout
+   * money gate, used by EVERY consume-adjacent branch — both consume results
+   * AND the `consumed` load of beginWithStoredIntent (F1: a reload after
+   * another tab finished the checkout used to skip the gate and land in a
+   * plain done that looked exactly like a completed charge). A checkout lands
+   * in `restored-unverified` — never in a terminal done state — unless the
+   * result carries BOTH the real cross-tab guarantee ('web-locks') AND a
+   * durable stamp (F2: a stamp that reached only the in-memory mirror is lost
+   * on reload, which re-arms the charge, so it is unverified exactly like
+   * 'in-process'). Everything else lands in the branch's own unconfirmed
+   * state — `restoring` for a fresh consume (a verified checkout, or an
+   * install, demo or account restore, where the worst case is a repeated
+   * navigation, not a repeated charge) and `done` for a restore that finds
+   * the intent already consumed. */
   function stateAfterConsume(
     kind: IntentKind | undefined,
-    exclusive: ConsumeExclusivity,
+    guarantee: RestoreGuarantee,
+    durable: boolean,
     unconfirmed: SignInState,
   ): SignInState {
-    return kind === 'checkout' && exclusive === 'in-process' ? 'restored-unverified' : unconfirmed;
+    return kind === 'checkout' && !(guarantee === 'web-locks' && durable) ? 'restored-unverified' : unconfirmed;
   }
 
   function requireIntent(): boolean {
@@ -370,6 +398,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       // leftover copy, method or cooldown from the walk before it.
       resetTransient();
       intent = result.intent;
+      restoreDurable = result.durable;
       enterState('intent-loaded');
     } else {
       // The whole intent was rejected (bad route, bad product, …): there is
@@ -396,13 +425,24 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     const loaded: LoadResult = await store.load();
     if (loaded.state === 'active') {
       intent = loaded.intent;
+      restoreDurable = loaded.durable;
       enterState('intent-loaded');
     } else if (loaded.state === 'consumed') {
       // Restore-once: the route is reported again but nothing re-runs — a
       // consumed intent can never restart a checkout or a job. The loaded
       // record is already consumed-stamped (W0-06 review r3, finding 5).
+      // W0-06-r9 (F1, HIGH): this branch used to enter `done`
+      // unconditionally, so a person reloading after ANOTHER tab finished a
+      // checkout saw a completed charge — restoreGuarantee 'none', no
+      // money-path confirmation, indistinguishable from a paid checkout. The
+      // reload ran no consume under a real cross-tab lock and cannot attest
+      // the consuming tab's stamp, so it goes through the same checkout gate:
+      // non-checkout kinds keep `done` (the worst case is a repeated
+      // navigation), a checkout lands `restored-unverified` and reaches
+      // `done` only through confirmRestore()'s money-path assertion.
       intent = loaded.intent;
-      enterState('done');
+      restoreDurable = loaded.durable;
+      enterState(stateAfterConsume(loaded.intent.kind, 'none', loaded.durable, 'done'));
     } else if (loaded.state === 'expired') {
       intent = null;
       enterState('expired');
@@ -525,13 +565,15 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     if (result.outcome === 'consumed') {
       intent = Object.freeze(result.intent);
       restoreGuarantee = result.exclusive;
-      // W0-06 review r2 (finding 3) and review r5 (finding 1): without an
-      // exclusive cross-tab Web Lock, single-use is only this tab's promise —
-      // a checkout must not present itself as plainly restored: the screen
-      // has to re-confirm through L2's money path before anything is charged.
-      // The gate routes by the RESULT through the shared helper — the same
-      // one the already-consumed branch uses, so the two cannot diverge again.
-      enterState(stateAfterConsume(result.intent.kind, result.exclusive, 'restoring'));
+      restoreDurable = result.durable;
+      // W0-06 review r2 (finding 3) and review r5 (finding 1), W0-06-r9 (F2):
+      // without BOTH the exclusive cross-tab Web Lock AND a durable stamp,
+      // single-use is only this tab's promise — a checkout must not present
+      // itself as plainly restored: the screen has to re-confirm through L2's
+      // money path before anything is charged. The gate routes by the RESULT
+      // through the shared helper — the same one the already-consumed branch
+      // and the consumed load use, so they cannot diverge again.
+      enterState(stateAfterConsume(result.intent.kind, result.exclusive, result.durable, 'restoring'));
       return { outcome: 'restored', snapshot: snapshot() };
     } else if (result.outcome === 'already-consumed') {
       // Someone already restored this intent (a second tab, a reload): report
@@ -545,30 +587,42 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       if (intent) {
         // W0-06-r8 finding 2: the stamp comes from result.returnRoute — the
         // STORE's record is the one that was actually consumed, and the two
-        // routes must agree on this path. When the stored record diverged
-        // from the loaded copy between load and consume, the store's route
-        // wins, explicitly: the stale copy never sends the person back to a
-        // destination that record did not carry. The failure mode is safe:
-        // snapshot() still re-checks the destination against the allowlist
-        // (a hostile route reports destination: null), and nothing here
+        // routes must agree on this path. W0-06-r9 (F4): that route is still
+        // unvalidated input at this boundary, so it is accepted ONLY when it
+        // passes the canonical-route check — a hostile one makes the whole
+        // restore INVALID (the option chosen; the alternative, dropping
+        // returnRoute from the snapshot in favour of destination, was not
+        // taken): the account home, never a stamped record and never a
+        // reported route. snapshot() re-checks returnRoute and destination as
+        // well, so the hostile string can appear nowhere — and nothing here
         // throws.
+        if (!isCanonicalReturnRoute(result.returnRoute)) {
+          intent = null;
+          restoreGuarantee = 'none';
+          restoreDurable = false;
+          enterState('no-intent');
+          return { outcome: 'not-restoring', snapshot: snapshot() };
+        }
         intent = stampConsumed({ ...intent, returnRoute: result.returnRoute }); // W0-06 review r4 (finding 6)
       }
       restoreGuarantee = result.exclusive;
-      // W0-06 review r5 (finding 1): the loser of the consume race is held to
-      // the SAME checkout gate as its winner — routed by the result through
-      // the shared helper, never straight to done.
-      enterState(stateAfterConsume(intent?.kind, result.exclusive, 'done'));
+      restoreDurable = result.durable;
+      // W0-06 review r5 (finding 1), W0-06-r9 (F2): the loser of the consume
+      // race is held to the SAME checkout gate as its winner — routed by the
+      // result through the shared helper, never straight to done.
+      enterState(stateAfterConsume(intent?.kind, result.exclusive, result.durable, 'done'));
       return { outcome: 'already-restored', snapshot: snapshot() };
     } else if (result.outcome === 'expired') {
       intent = null;
       restoreGuarantee = 'none';
+      restoreDurable = false;
       enterState('expired');
       return { outcome: 'not-restoring', snapshot: snapshot() };
     } else {
       // absent or invalid: the account home. Nothing was restored.
       intent = null;
       restoreGuarantee = 'none';
+      restoreDurable = false;
       enterState('no-intent');
       return { outcome: 'not-restoring', snapshot: snapshot() };
     }

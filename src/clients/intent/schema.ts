@@ -91,7 +91,11 @@ export const INTENT_KEYS = Object.freeze([
 
 /** Behaviour 4: the serialised record is capped at 512 UTF-16 code units —
  * JSON.stringify().length counts code units, not UTF-8 bytes, and this
- * constant's name says which unit is enforced. */
+ * constant's name says which unit is enforced. Every field is
+ * ASCII-constrained (allowlisted routes and ids, RFC3339 stamps), so the
+ * UTF-8 byte length coincides; tests/intent-schema.test.ts asserts BOTH on a
+ * maximal record, so a future non-ASCII field turns the test red instead of
+ * silently breaking the documented bound (W0-06-r9 F6). */
 export const INTENT_MAX_CHARS = 512;
 
 export type IntentProblem =
@@ -128,9 +132,9 @@ export function isRfc3339(value: string): boolean {
 }
 
 // 22 unpadded base64url characters carry 132 bits (≥ 128). There is no upper
-// bound here on purpose: an over-long id is refused by the 512-byte serialised
-// cap with problem 'too-large', which is the one bound that covers every field
-// at once.
+// bound here on purpose: an over-long id is refused by the 512-code-unit
+// serialised cap (INTENT_MAX_CHARS) with problem 'too-large', which is the one
+// bound that covers every field at once.
 const URL_SAFE_ID = /^[A-Za-z0-9_-]{22,}$/;
 
 export function isIntentProduct(v: unknown): v is IntentProduct {
