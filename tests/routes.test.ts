@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
 
@@ -9,14 +9,32 @@ import { renderRoute } from '../src/app/render';
 interface FsLike {
   readFileSync(path: string, encoding: 'utf8'): string;
   existsSync(path: string): boolean;
+  rmSync(path: string, options: { recursive: boolean; force: boolean }): void;
 }
 interface CpLike {
-  execSync(command: string, options: { encoding: 'utf8'; timeout: number }): string;
+  execSync(
+    command: string,
+    options: { encoding: 'utf8'; timeout: number; env?: Record<string, string | undefined> },
+  ): string;
 }
+// Same boundary as the two casts below: no @types/node in this wave's frozen
+// dependency list, so `process` is read through globalThis and narrowed.
+const proc = (globalThis as unknown as {
+  process?: { pid?: number; env?: Record<string, string | undefined> };
+}).process;
 const fsName: string = 'node:fs';
 const cpName: string = 'node:child_process';
 const fs = (await import(fsName)) as unknown as FsLike;
 const cp = (await import(cpName)) as unknown as CpLike;
+
+// Every build writes here, never to `dist/`. Two runs of this suite in one
+// working copy used to race on `dist/` (vite empties it first), so a green run
+// could fail on a build another process was halfway through deleting. The
+// directory is per-process, so concurrent runs cannot see each other at all.
+// Loud, not quiet: without a pid every run would share `dist-tests-0` and the
+// isolation this file exists for would silently disappear.
+if (!proc?.pid) throw new Error('routes.test.ts needs process.pid to isolate its build directory');
+const DIST = `dist-tests-${proc.pid}`;
 
 const CANONICAL_PATHS = [
   '/',
@@ -43,7 +61,7 @@ function visibleText(html: string): string {
 }
 
 function pageFor(routePath: string): string {
-  return routePath === '/' ? 'dist/index.html' : `dist${routePath}/index.html`;
+  return routePath === '/' ? `${DIST}/index.html` : `${DIST}${routePath}/index.html`;
 }
 
 describe('route table', () => {
@@ -69,19 +87,30 @@ describe('route table', () => {
 
 describe('prerender output', () => {
   beforeAll(() => {
-    // Always build from source: `vite build` empties dist first, so these
-    // assertions can never run against a stale bundle from an earlier build.
+    // Always build from source, into this process's own directory, so these
+    // assertions can never run against a stale bundle from an earlier build and
+    // two concurrent runs of this suite can never invalidate each other.
+    // The real build script, not a hand-assembled command line: `npm run build`
+    // is `tsc --noEmit && vite build && node scripts/prerender.mjs`, and
+    // `RHOBEAR_DIST` redirects both the vite output and the prerender output, so
+    // this exercises the production path while writing nothing into `dist/`.
     cp.execSync('npm run build', {
       encoding: 'utf8',
       timeout: 240_000,
+      env: { ...(proc?.env ?? {}), RHOBEAR_DIST: DIST },
     });
   }, 240_000);
+
+  afterAll(() => {
+    fs.rmSync(DIST, { recursive: true, force: true });
+    fs.rmSync(`.cache/prerender-${DIST}`, { recursive: true, force: true });
+  });
 
   it('writes an index.html for every route, 404.html, sitemap.xml and robots.txt', () => {
     for (const route of routes) {
       expect(fs.existsSync(pageFor(route.path)), pageFor(route.path)).toBe(true);
     }
-    for (const file of ['dist/404.html', 'dist/sitemap.xml', 'dist/robots.txt']) {
+    for (const file of [`${DIST}/404.html`, `${DIST}/sitemap.xml`, `${DIST}/robots.txt`]) {
       expect(fs.existsSync(file), file).toBe(true);
     }
   });
@@ -89,7 +118,7 @@ describe('prerender output', () => {
   it('renders every page readable with JavaScript disabled', () => {
     const pages = [...routes.map((r) => r.path), '/404'];
     for (const path of pages) {
-      const file = path === '/404' ? 'dist/404.html' : pageFor(path);
+      const file = path === '/404' ? `${DIST}/404.html` : pageFor(path);
       const html = fs.readFileSync(file, 'utf8');
       const text = visibleText(html);
       expect((html.match(/<h1[\s>]/g) ?? []).length, `${path}: one <h1>`).toBe(1);
@@ -102,21 +131,21 @@ describe('prerender output', () => {
   });
 
   it('injects the client bundle into /account and leaves static pages script-free', () => {
-    const account = fs.readFileSync('dist/account/index.html', 'utf8');
+    const account = fs.readFileSync(`${DIST}/account/index.html`, 'utf8');
     expect(account).toMatch(/<script type="module" src="\/assets\/[^"]+\.js"><\/script>/);
-    for (const file of ['dist/index.html', 'dist/plans/index.html', 'dist/404.html']) {
+    for (const file of [`${DIST}/index.html`, `${DIST}/plans/index.html`, `${DIST}/404.html`]) {
       expect(fs.readFileSync(file, 'utf8'), file).not.toContain('<script');
     }
   });
 
   it('lists exactly the canonical routes in sitemap.xml', () => {
-    const sitemap = fs.readFileSync('dist/sitemap.xml', 'utf8');
+    const sitemap = fs.readFileSync(`${DIST}/sitemap.xml`, 'utf8');
     const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
     expect(locs).toEqual(CANONICAL_PATHS.map((p) => `${ORIGIN}${p}`));
   });
 
   it('allows all in robots.txt and points at the sitemap', () => {
-    const robots = fs.readFileSync('dist/robots.txt', 'utf8');
+    const robots = fs.readFileSync(`${DIST}/robots.txt`, 'utf8');
     expect(robots).toContain('User-agent: *');
     expect(robots).toContain('Allow: /');
     expect(robots).toContain(`Sitemap: ${ORIGIN}/sitemap.xml`);
