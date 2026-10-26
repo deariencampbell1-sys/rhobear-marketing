@@ -539,3 +539,59 @@ describe("demo deep links and captions — W0-05b-r6 (Apollo's review of the r5 
     }
   });
 });
+
+// W0-05b-r7 — Apollo's review of the r6 head (2026-10-26 12:24:28Z): F2 and
+// F3(b). F2 is a security-guard bypass — the `//` guard in isWebVttUrl could
+// be skipped with backslashes, which browsers read as `/`. F3 pins the
+// zero-length-cue boundary of the parse rule. These were the red tests for
+// round r7's fix (F2 red-first; F3 tests-only); they guard the regressions
+// now.
+describe("demo captions — W0-05b-r7 (Apollo's review of the r6 head)", () => {
+  it('r7 F2 (behaviour 20): isWebVttUrl reads backslashes the way browsers do — the backslash spellings of a scheme-relative URL are refused, a Windows relative path still reads', () => {
+    // A browser normalises `\` to `/` before it resolves, so
+    // `\evil.example/x.vtt` and `/\evil.example/x.vtt` resolve to
+    // `//evil.example/x.vtt` — a protocol-relative absolute reference naming
+    // another host, exactly what F9/F6's guard exists to refuse. The guard
+    // now normalises first, so the existing rules see the browser's own
+    // reading of the string.
+    expect(isWebVttUrl('\\\\evil.example/x.vtt')).toBe(false);
+    expect(isWebVttUrl('/\\evil.example/x.vtt')).toBe(false);
+    expect(isWebVttUrl('//evil.example/x.vtt')).toBe(false);
+    // Decision pinned (r7 F2 asks for one): cross-origin http(s) is
+    // accepted — the rule is that the URL names WebVTT wherever it points,
+    // and `https://x/c.vtt` stays pinned true. After normalisation
+    // `https:\\evil.example\x.vtt` is an ordinary absolute https URL
+    // (`https://evil.example/x.vtt`) — not a protocol-relative disguise —
+    // and is accepted like any other http(s) .vtt URL.
+    expect(isWebVttUrl('https:\\\\evil.example\\x.vtt')).toBe(true);
+    // The pinned positives stand unchanged.
+    expect(isWebVttUrl('captions.vtt')).toBe(true);
+    expect(isWebVttUrl('/captions.vtt')).toBe(true);
+    expect(isWebVttUrl('https://x/c.vtt')).toBe(true);
+    expect(isWebVttUrl('https://x/c.vtt?x=1#f')).toBe(true);
+    // A genuine Windows-style relative path is still the front door's own
+    // captions (`.\captions.vtt` → `./captions.vtt` after normalisation):
+    // the guard refuses scheme-relative absolutes, not odd relative
+    // spellings.
+    expect(isWebVttUrl('.\\captions.vtt')).toBe(true);
+  });
+
+  it('r7 F3 (behaviour 20): a zero-length cue is a cue — end === start parses; end < start is still end-before-start', () => {
+    // Both sides of the rule's boundary, pinned so it cannot drift either
+    // way: the parse rejects only `end < start`.
+    const raw = [
+      'WEBVTT',
+      '',
+      '00:00:03.000 --> 00:00:03.000',
+      'A zero-length cue.',
+      '',
+      '00:00:05.000 --> 00:00:04.000',
+      'Backwards.',
+      '',
+    ].join('\n');
+    const parsed = parseWebVTT(raw, `${mediaBase}/transcript.html`);
+    expect(parsed.state).toBe('captions');
+    expect(parsed.cues).toEqual([{ startSeconds: 3, endSeconds: 3, text: 'A zero-length cue.' }]);
+    expect(parsed.skipped).toEqual([{ cueIndex: 1, reason: 'end-before-start' }]);
+  });
+});

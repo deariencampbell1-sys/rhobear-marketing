@@ -2538,3 +2538,137 @@ describe("demo player state machine — W0-05b-r6 (Apollo's review of the r5 hea
     }
   });
 });
+
+// W0-05b-r7 — Apollo's review of the r6 head (2026-10-26 12:24:28Z): F1–F3.
+// F1 is a D07 contradiction — the lower-rendition resume never closed the
+// failure episode, so a later failure handed out a support reference id even
+// though playback had resumed. F3 pins three branches nothing asserted. These
+// were the red tests for round r7's fix (F1 red-first; F3 tests-only); they
+// guard the regressions now.
+describe("demo player state machine — W0-05b-r7 (Apollo's review of the r6 head)", () => {
+  it('r7 F1 (D07): the lower-rendition resume closes the failure episode — lower-rendition → play → playing → media-error carries no support reference id (the M1 scenario)', async () => {
+    const { player } = await playerInMediaError();
+    // The person takes the lower rendition (the machine lands on `poster`),
+    // plays (the `play` dispatch sets `playing` directly), and the media
+    // plays. The `playing` event is the media saying it plays — D07's
+    // "playback ever resumed" fact — so it ends the episode whatever state
+    // the machine is in; this resume never touches `buffering`, which is
+    // exactly how the episode used to leak.
+    player.dispatch({ type: 'lower-rendition' });
+    expect(player.snapshot().state).toBe('poster');
+    player.dispatch({ type: 'play' });
+    expect(player.snapshot().state).toBe('playing');
+    player.dispatch({ type: 'playing' });
+
+    // A later failure is their FIRST again: playback resumed in between, so
+    // D07 forbids a support reference id here. The scenario and the place
+    // stand, as ever.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    const snapshot = player.snapshot();
+    expect(snapshot.state).toBe('error');
+    expect(snapshot.error?.reason).toBe('decode');
+    expect(snapshot.error?.supportReferenceId).toBeNull();
+    expect(snapshot.scenarioId).toBe(SCENARIO_ID);
+    expect(snapshot.positionSeconds).toBe(9);
+  });
+
+  it('r7 F1 (D07): two media errors with no playing between them still produce the support reference id — the repeated-failure rule is intact', async () => {
+    const { player } = await playerInMediaError();
+    // No `playing` in between: the episode never ended, so the second
+    // failure is a repeated failure and D07's support reference id stands.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    const snapshot = player.snapshot();
+    expect(snapshot.state).toBe('error');
+    expect(snapshot.error?.reason).toBe('decode');
+    expect(snapshot.error?.supportReferenceId).toMatch(/^sup-[0-9a-z]+-[0-9a-z]+$/);
+    expect(snapshot.scenarioId).toBe(SCENARIO_ID);
+    expect(snapshot.positionSeconds).toBe(9);
+  });
+
+  it('r7 F1 (D07): a playing during buffering behaves as before — buffering → playing and the failure episode is over', async () => {
+    const { player } = await playerInMediaError();
+    await player.retry();
+    expect(player.snapshot().state).toBe('buffering');
+    // The old rule's own case: the state moves buffering → playing, and the
+    // episode is over — exactly what it did before this round.
+    player.dispatch({ type: 'playing' });
+    expect(player.snapshot().state).toBe('playing');
+    player.dispatch({ type: 'media-error', reason: 'http-503' });
+    const snapshot = player.snapshot();
+    expect(snapshot.state).toBe('error');
+    expect(snapshot.error?.reason).toBe('http-503');
+    expect(snapshot.error?.supportReferenceId).toBeNull();
+  });
+
+  it('r7 F3 (behaviour 10): the current chapter is null before the first chapter — a position preceding every startSeconds names no chapter', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [
+            rendition(1280, 720, 42, [
+              { label: 'Preparation', startSeconds: 5 },
+              { label: 'The run', startSeconds: 30 },
+            ]),
+          ],
+        }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    // Before every chapter's startSeconds there is no current chapter — the
+    // machine names nothing rather than inventing a chapter zero.
+    expect(player.snapshot().positionSeconds).toBe(0);
+    expect(player.snapshot().currentChapter).toBeNull();
+    // The first chapter claims its own start exactly, and the null is not
+    // sticky: it is derived from media time on every read.
+    player.dispatch({ type: 'timeupdate', positionSeconds: 5 });
+    expect(player.snapshot().currentChapter?.label).toBe('Preparation');
+    player.dispatch({ type: 'timeupdate', positionSeconds: 4.999 });
+    expect(player.snapshot().currentChapter).toBeNull();
+  });
+
+  it("r7 F3 (behaviour 8): open-transcript from error closes back to error with the error fields intact — a state keeps its fields (r5 F1's rule)", async () => {
+    const { player } = await playerInMediaError();
+    // A repeated failure, so the error carries a support reference id too —
+    // every field must survive the round trip.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().error?.supportReferenceId).not.toBeNull();
+    const before = player.snapshot();
+
+    const opened = player.dispatch({ type: 'open-transcript' });
+    expect(opened.state).toBe('transcript');
+    const closed = player.dispatch({ type: 'close-transcript' });
+    expect(closed.state).toBe('error');
+    // The error fields describe the state that stands and are intact —
+    // reason, support reference id, offers, and the preserved place.
+    expect(closed.error).toEqual(before.error);
+    expect(closed.unplayableReason).toBe(before.unplayableReason);
+    expect(closed.scenarioId).toBe(SCENARIO_ID);
+    expect(closed.positionSeconds).toBe(9);
+
+    // The other named return targets the sheet opens from hold as well:
+    // ended back to ended, paused back to paused.
+    const endedMedia = fakeMedia();
+    const ended = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media: endedMedia,
+      reducedMotion: false,
+    });
+    await ended.start();
+    ended.dispatch({ type: 'play' });
+    ended.dispatch({ type: 'ended' });
+    expect(ended.snapshot().state).toBe('ended');
+    ended.dispatch({ type: 'open-transcript' });
+    expect(ended.dispatch({ type: 'close-transcript' }).state).toBe('ended');
+
+    ended.dispatch({ type: 'play' });
+    ended.dispatch({ type: 'pause' });
+    expect(ended.snapshot().state).toBe('paused');
+    ended.dispatch({ type: 'open-transcript' });
+    expect(ended.dispatch({ type: 'close-transcript' }).state).toBe('paused');
+  });
+});
