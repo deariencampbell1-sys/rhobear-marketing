@@ -248,6 +248,14 @@ export function parseIntent(raw: unknown): ParsedIntent {
     if (typeof rec.consumedAt !== 'string' || !isRfc3339(rec.consumedAt)) {
       return { ok: false, problem: 'bad-consumed-at' };
     }
+    // W0-06 review r3 (finding 4): range-checked against the record's own
+    // lifetime. A stamp before createdAt is a record consumed before it
+    // existed; a stamp after expiresAt is a future stamp that makes
+    // now() - consumedAt negative forever and pins the consumed record
+    // indefinitely. Both are refused with bad-consumed-at.
+    if (Date.parse(rec.consumedAt) < Date.parse(createdAt) || Date.parse(rec.consumedAt) > Date.parse(expiresAt)) {
+      return { ok: false, problem: 'bad-consumed-at' };
+    }
     consumedAt = rec.consumedAt;
   }
 

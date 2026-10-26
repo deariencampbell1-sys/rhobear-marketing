@@ -56,8 +56,9 @@ export function magicLinkSentCopy(email: string): string {
 
 /**
  * The board's states (behaviour 10) plus the two magic-link leaf states
- * behaviour 12 adds (`sent`, `used`). The machine never invents a step the
- * board does not have.
+ * behaviour 12 adds (`sent`, `used`) and `link-expired`, the W0-06 review r3
+ * (finding 1) split of the magic-link expiry from the intent's `expired`.
+ * The machine never invents a step the board does not have.
  */
 export const SIGNIN_STATES = Object.freeze([
   'idle',
@@ -71,6 +72,7 @@ export const SIGNIN_STATES = Object.freeze([
   'denied',
   'canceled',
   'expired',
+  'link-expired',
   'cooldown',
   'wrong-browser',
   'offline',
@@ -102,6 +104,16 @@ export type RestoreDestinationResult =
   | { outcome: 'already-restored'; snapshot: SignInSnapshot }
   | { outcome: 'not-restoring'; snapshot: SignInSnapshot };
 
+/** W0-06 review r3 (finding 2): the money path may pass its own
+ * re-confirmation details when calling confirmRestore(); nothing in this
+ * machine reads them — the confirmation itself is L2's act. */
+export type ConfirmRestoreOptions = Readonly<Record<string, unknown>>;
+
+/** W0-06 review r3 (finding 2): confirmRestore answers with the done
+ * snapshot, or the literal 'not-restoring' from any other state — a wrong
+ * state changes nothing. */
+export type ConfirmRestoreResult = SignInSnapshot | 'not-restoring';
+
 /**
  * The only states a magic-link event may arrive from: while the machine is
  * still waiting on the provider, or inside the magic-link states themselves.
@@ -131,7 +143,8 @@ export type SignInSnapshot = {
   state: SignInState;
   /** The original return route, or null when no intent exists. */
   returnRoute: string | null;
-  /** Where to send the person now; `/account` for no-intent, null when expired. */
+  /** Where to send the person now: `/account` for no-intent, null when the
+   * intent expired, the return route when only the magic link did. */
   destination: string | null;
   intent: Intent | null;
   method: SignInProviderId | null;
@@ -175,6 +188,10 @@ export type SignInMachine = {
   /** restoring → done; the result says whether it restored, was already
    * done, or was called from a state where nothing is being restored. */
   completeRestore(): CompleteRestoreResult;
+  /** restored-unverified → done, called by the money path AFTER its own
+   * re-confirmation through L2. Every other state reports 'not-restoring'
+   * and is left untouched (W0-06 review r3, finding 2). */
+  confirmRestore(options?: ConfirmRestoreOptions): ConfirmRestoreResult;
   requestMagicLink(email: string): boolean;
   onMagicLinkEvent(event: MagicLinkEvent): boolean;
   remainingCooldownSeconds(): number;
@@ -208,9 +225,12 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     if (state === 'no-intent') {
       destination = ACCOUNT_HOME_ROUTE;
     } else if (state === 'expired') {
-      // An expired intent is never restored: no destination at all.
+      // An expired INTENT is never restored: no destination at all.
       destination = null;
     } else {
+      // Every other state keeps the intent's return route — including
+      // `link-expired`, where the magic link died but the intent is still
+      // live (W0-06 review r3, finding 1).
       destination = intent ? intent.returnRoute : null;
     }
     return {
@@ -258,40 +278,50 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
   }
 
   async function beginWithStoredIntent(): Promise<SignInSnapshot> {
+    // W0-06 review r3 (finding 6): EVERY branch resets the transient fields,
+    // not just `active` — a machine reused across returns must show this
+    // return's state only. On the consumed branch this reset is also the
+    // honest guarantee: no restore ran here, so no lock existed (finding 5).
+    claimedSuccess = false;
+    recovery = null;
+    purchasesPreserved = null;
+    restoreGuarantee = 'none';
     const loaded: LoadResult = await store.load();
     if (loaded.state === 'active') {
       intent = loaded.intent;
       state = 'intent-loaded';
-      claimedSuccess = false;
-      recovery = null;
-      purchasesPreserved = null;
-      restoreGuarantee = 'none';
     } else if (loaded.state === 'consumed') {
       // Restore-once: the route is reported again but nothing re-runs — a
-      // consumed intent can never restart a checkout or a job.
+      // consumed intent can never restart a checkout or a job. The loaded
+      // record is already consumed-stamped (W0-06 review r3, finding 5).
       intent = loaded.intent;
       state = 'done';
     } else if (loaded.state === 'expired') {
       intent = null;
       state = 'expired';
-      claimedSuccess = false;
     } else {
       // absent or invalid: the account home, never a redirect loop.
       intent = null;
       state = 'no-intent';
-      claimedSuccess = false;
     }
     return snapshot();
   }
 
   function continueToMethodSelect(): boolean {
+    // W0-06 review r3 (finding 1): an expired INTENT is terminal — there is
+    // nothing left to restore, and the refusal must not drag the state off
+    // `expired` either.
+    if (state === 'expired') return false;
     if (!requireIntent()) return false;
     if (
       state === 'intent-loaded' ||
       state === 'denied' ||
       state === 'canceled' ||
       state === 'offline' ||
-      state === 'provider-pending'
+      state === 'provider-pending' ||
+      // W0-06 review r3 (finding 1): the link expired but the intent did not
+      // — send a new link and keep the place.
+      state === 'link-expired'
     ) {
       state = 'method-select';
       copy = null;
@@ -385,6 +415,16 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     } else if (result.outcome === 'already-consumed') {
       // Someone already restored this intent (a second tab, a reload): report
       // the original route once more and never re-run the operation.
+      // W0-06 review r3 (finding 5): the snapshot carries a consumed-stamped
+      // intent — the store's already-consumed outcome reports the route, not
+      // the original stamp, so the record is stamped at the moment of
+      // observation and a screen never reads intent.consumedAt as undefined —
+      // and the guarantee of THIS restore attempt (the exclusivity the
+      // consume call actually ran under), never the last restore's.
+      if (intent) {
+        intent = { ...intent, consumedAt: new Date(now()).toISOString() };
+      }
+      restoreGuarantee = result.exclusive;
       state = 'done';
       return { outcome: 'already-restored', snapshot: snapshot() };
     } else if (result.outcome === 'expired') {
@@ -406,10 +446,33 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       state = 'done';
       return 'restored';
     }
-    if (state === 'done') return 'already-done'; // restoring → done happens once
+    if (state === 'done') {
+      // W0-06 review r3 (finding 5): a done machine always reports a
+      // consumed-stamped intent, and restoreGuarantee stays exactly what the
+      // restore that reached done recorded — from the actual existence of a
+      // lock. A second call must not rewrite that history.
+      if (intent && intent.consumedAt === undefined) {
+        intent = { ...intent, consumedAt: new Date(now()).toISOString() };
+      }
+      return 'already-done'; // restoring → done happens once
+    }
     // 'restored-unverified' deliberately does NOT complete here: the screen
-    // must re-confirm through L2's money path first (W0-06 review r2, finding 3).
+    // must re-confirm through L2's money path first, then call
+    // confirmRestore() (W0-06 review r2, finding 3; review r3, finding 2).
     return 'not-restoring';
+  }
+
+  /** W0-06 review r3 (finding 2): the one method that finishes a checkout
+   * restored on the weaker in-process guarantee — the dead end the review
+   * found. The money path calls it AFTER its own re-confirmation through L2.
+   * It does not charge, does not call the network and does not consume
+   * anything. Accepted only from 'restored-unverified'; from any other state
+   * it reports 'not-restoring' and changes nothing. */
+  function confirmRestore(options?: ConfirmRestoreOptions): ConfirmRestoreResult {
+    void options; // deliberately unused: the re-confirmation is L2's act
+    if (state !== 'restored-unverified') return 'not-restoring';
+    state = 'done';
+    return snapshot();
   }
 
   function requestMagicLink(email: string): boolean {
@@ -420,6 +483,11 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
 
   function onMagicLinkEvent(event: MagicLinkEvent): boolean {
     if (method !== 'email' || !intent) return false;
+    if (event.type === 'expired' && state === 'link-expired') {
+      // Idempotent (W0-06 review r3, edge case): a second expiry event
+      // changes nothing and duplicates no copy.
+      return true;
+    }
     // A late or duplicated event must never drag a finished state (done,
     // denied, conflict, …) back into sent/used/offline.
     if (!MAGIC_LINK_EVENT_SOURCES.includes(state)) return false;
@@ -429,7 +497,10 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
       state = 'cooldown';
       cooldownUntil = event.until;
     } else if (event.type === 'expired') {
-      state = 'expired';
+      // The LINK expired while the intent is still live: `link-expired` keeps
+      // the destination and offers a new link (W0-06 review r3, finding 1).
+      // Only the intent's own TTL passing is `expired`.
+      state = 'link-expired';
     } else if (event.type === 'used') {
       state = 'used';
     } else if (event.type === 'wrong-browser') {
@@ -460,6 +531,7 @@ export function createSignInMachine(deps: SignInMachineDeps): SignInMachine {
     sessionApproved,
     restoreDestination,
     completeRestore,
+    confirmRestore,
     requestMagicLink,
     onMagicLinkEvent,
     remainingCooldownSeconds,

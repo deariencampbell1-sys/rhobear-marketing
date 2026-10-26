@@ -35,7 +35,11 @@
 // The consume body is wrapped (W0-06 review r2, finding 7): a failure inside
 // the critical section — for example createIntentId when
 // globalThis.crypto.getRandomValues is absent — becomes the outcome
-// `invalid`, never a rejection into the UI.
+// `invalid`, never a rejection into the UI. create(), save() and persist are
+// wrapped in the same discipline (W0-06 review r3, finding 3): the module's
+// "nothing here throws into the UI" promise covers them too, and a failure
+// inside them resolves to `{ ok: false, problem: 'invalid' }` — reusing the
+// existing failure label, never a new problem code.
 
 import {
   createIntentId,
@@ -107,7 +111,11 @@ export type CreateIntentInput = {
 
 export type CreateResult =
   | { ok: true; intent: Intent; durable: boolean }
-  | { ok: false; problem: IntentProblem };
+  // W0-06 review r3 (finding 3): `invalid` is the module's existing failure
+  // label (the one load and consume already report) for a failure INSIDE — a
+  // missing crypto.getRandomValues, a hostile record — never a new problem
+  // code and never a rejection into the UI.
+  | { ok: false; problem: IntentProblem | 'invalid' };
 
 export type LoadResult =
   | { state: 'active'; intent: Intent; durable: boolean }
@@ -332,45 +340,63 @@ export function createIntentStore(deps: IntentStoreDeps = {}): IntentStore {
     return { kind: 'record', intent: parsed.intent, durable, from };
   }
 
+  /** W0-06 review r3 (finding 3): the whole body is wrapped like the consume
+   * body — any failure inside resolves to `{ ok: false, problem: 'invalid' }`
+   * instead of rejecting into the UI. */
   async function persist(record: Intent): Promise<CreateResult> {
-    const checked = parseIntent(record);
-    if (!checked.ok) return { ok: false, problem: checked.problem };
-    const text = JSON.stringify({ v: ENVELOPE_VERSION, i: checked.intent } satisfies Envelope);
-    if (text.length > STORED_MAX_CHARS) return { ok: false, problem: 'too-large' };
-    // The kind decides the default adapter (finding 4); the store remembers
-    // it as the holder so reads find the record again.
-    const adapter = injected ?? adapterDefaultFor(record.kind);
-    holder = adapter;
-    const durable = await writeRaw(text, adapter);
-    return { ok: true, intent: checked.intent, durable };
+    try {
+      const checked = parseIntent(record);
+      if (!checked.ok) return { ok: false, problem: checked.problem };
+      const text = JSON.stringify({ v: ENVELOPE_VERSION, i: checked.intent } satisfies Envelope);
+      if (text.length > STORED_MAX_CHARS) return { ok: false, problem: 'too-large' };
+      // The kind decides the default adapter (finding 4); the store remembers
+      // it as the holder so reads find the record again.
+      const adapter = injected ?? adapterDefaultFor(record.kind);
+      holder = adapter;
+      const durable = await writeRaw(text, adapter);
+      return { ok: true, intent: checked.intent, durable };
+    } catch {
+      return { ok: false, problem: 'invalid' };
+    }
   }
 
   async function create(input: CreateIntentInput): Promise<CreateResult> {
-    // Reject before anything is written: a bad route fails the whole intent,
-    // with no fallback to '/'.
-    if (!isIntentProduct(input.product)) return { ok: false, problem: 'bad-product' };
-    if (!isIntentKind(input.kind)) return { ok: false, problem: 'bad-kind' };
-    if (!isCanonicalReturnRoute(input.returnRoute)) return { ok: false, problem: 'bad-return-route' };
-    if (input.plan !== undefined && !isIntentPlan(input.plan)) return { ok: false, problem: 'bad-plan' };
-    if (input.scenario !== undefined && !isKnownScenario(input.scenario)) {
-      return { ok: false, problem: 'bad-scenario' };
+    try {
+      // Reject before anything is written: a bad route fails the whole intent,
+      // with no fallback to '/'.
+      if (!isIntentProduct(input.product)) return { ok: false, problem: 'bad-product' };
+      if (!isIntentKind(input.kind)) return { ok: false, problem: 'bad-kind' };
+      if (!isCanonicalReturnRoute(input.returnRoute)) return { ok: false, problem: 'bad-return-route' };
+      if (input.plan !== undefined && !isIntentPlan(input.plan)) return { ok: false, problem: 'bad-plan' };
+      if (input.scenario !== undefined && !isKnownScenario(input.scenario)) {
+        return { ok: false, problem: 'bad-scenario' };
+      }
+      const createdAtMs = now();
+      const record: Intent = {
+        id: createIntentId(),
+        product: input.product,
+        ...(input.scenario !== undefined ? { scenario: input.scenario } : {}),
+        ...(input.plan !== undefined ? { plan: input.plan } : {}),
+        returnRoute: input.returnRoute,
+        kind: input.kind,
+        createdAt: new Date(createdAtMs).toISOString(),
+        expiresAt: new Date(createdAtMs + ttlMsForKind(input.kind)).toISOString(),
+      };
+      return await persist(record);
+    } catch {
+      // W0-06 review r3 (finding 3): createIntentId when
+      // globalThis.crypto.getRandomValues is absent, a hostile clock — an
+      // outcome, never a rejection.
+      return { ok: false, problem: 'invalid' };
     }
-    const createdAtMs = now();
-    const record: Intent = {
-      id: createIntentId(),
-      product: input.product,
-      ...(input.scenario !== undefined ? { scenario: input.scenario } : {}),
-      ...(input.plan !== undefined ? { plan: input.plan } : {}),
-      returnRoute: input.returnRoute,
-      kind: input.kind,
-      createdAt: new Date(createdAtMs).toISOString(),
-      expiresAt: new Date(createdAtMs + ttlMsForKind(input.kind)).toISOString(),
-    };
-    return persist(record);
   }
 
   async function save(record: Intent): Promise<CreateResult> {
-    return persist(record);
+    try {
+      return await persist(record);
+    } catch {
+      return { ok: false, problem: 'invalid' };
+    }
   }
 
   async function load(): Promise<LoadResult> {
