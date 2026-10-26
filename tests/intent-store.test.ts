@@ -761,6 +761,95 @@ describe('intent store', () => {
     }
   });
 
+  it('a lock manager that runs the callback but resolves undefined never runs the consume body twice: exactly one invocation, nothing claimed', async () => {
+    // W0-06-r9 F3: `ran` was consulted only in the catch branch, so a
+    // LockManager that invokes the callback and then resolves undefined
+    // re-ran body() — the second run read its own stamp and reported the true
+    // winner already-consumed. The body is NEVER called twice: when the
+    // callback ran and its result was lost, nothing is claimed (`invalid`,
+    // exactly like the catch branch). The invocation count below is real:
+    // with an absent record every consume-body run performs exactly one
+    // stored read, so the read count IS the body-invocation count.
+    const countRuns = (): { storage: IntentStorage; reads: () => number } => {
+      let reads = 0;
+      return {
+        reads: () => reads,
+        storage: {
+          getItem: () => {
+            reads += 1;
+            return null;
+          },
+          setItem: () => undefined,
+          removeItem: () => undefined,
+        },
+      };
+    };
+    // The broken manager: it RUNS the callback and loses its result.
+    const runsAndResolvesUndefined = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, body: () => Promise<R> | R): Promise<R> {
+        void body();
+        return Promise.resolve(undefined as unknown as R);
+      },
+    };
+    vi.stubGlobal('navigator', { locks: runsAndResolvesUndefined });
+    try {
+      const { storage, reads } = countRuns();
+      const store = createIntentStore({ storage, now: fakeClock().now });
+      await expect(store.consume()).resolves.toEqual({ outcome: 'invalid' });
+      expect(reads(), 'the body ran exactly once').toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The same count on a live record: one real run (its stamp lands), one
+    // invocation, and nothing claimed — never the second run's
+    // already-consumed.
+    vi.stubGlobal('navigator', { locks: runsAndResolvesUndefined });
+    try {
+      const store = createIntentStore({ storage: memoryIntentStorage(), now: fakeClock().now });
+      await store.create({ product: 'herald', kind: 'account', returnRoute: '/account' });
+      await expect(store.consume()).resolves.toEqual({ outcome: 'invalid' });
+      expect((await store.load()).state, 'the one real run consumed the record').toBe('consumed');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // The rejecting stub, both shapes (the named edge cases): one that
+    // rejects WITHOUT running the callback still consumes, on the in-process
+    // guarantee; one that runs the callback and THEN rejects claims nothing —
+    // and still runs the body exactly once.
+    const rejectsBefore = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, _body: () => Promise<R> | R): Promise<R> {
+        return Promise.reject(new Error('locks unavailable'));
+      },
+    };
+    vi.stubGlobal('navigator', { locks: rejectsBefore });
+    try {
+      const store = createIntentStore({ storage: memoryIntentStorage(), now: fakeClock().now });
+      await store.create({ product: 'herald', kind: 'account', returnRoute: '/account' });
+      const won = await store.consume();
+      expect(won.outcome, 'the body still runs, inline').toBe('consumed');
+      if (won.outcome === 'consumed') expect(won.exclusive).toBe('in-process');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    const rejectsAfter = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, body: () => Promise<R> | R): Promise<R> {
+        void body();
+        return Promise.reject(new Error('locks unavailable'));
+      },
+    };
+    vi.stubGlobal('navigator', { locks: rejectsAfter });
+    try {
+      const { storage, reads } = countRuns();
+      const store = createIntentStore({ storage, now: fakeClock().now });
+      await expect(store.consume()).resolves.toEqual({ outcome: 'invalid' });
+      expect(reads(), 'the body ran exactly once').toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('an expired record is removed on the load that reports it expired, and a second load is absent', async () => {
     // W0-06 review r4 (finding 8): expired install intents used to linger in
     // storage indefinitely. The load that reports `expired` removes the

@@ -1,7 +1,7 @@
 // W0-06 behaviours 10–15: the sign-in state machine, method availability from
 // configuration, the magic-link states, denied/canceled/offline/conflict,
 // restore-once and back navigation. Injected storage and injected clock only.
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   ACCOUNT_HOME_ROUTE,
   SIGNIN_PROVIDERS,
@@ -12,6 +12,7 @@ import {
   magicLinkSentCopy,
   visibleMethods,
   type MagicLinkEvent,
+  type RestoreDestinationResult,
   type SignInMachine,
   type SignInProviderConfig,
   type SignInSnapshot,
@@ -74,6 +75,14 @@ function backedStorage(backing: Map<string, string>): IntentStorage {
 }
 
 describe('sign-in state machine', () => {
+  // W0-06-r9 (F5): every stubbed block releases its stub in a try/finally;
+  // this afterEach is the structural backstop so a throw anywhere in a
+  // stubbed walk can never leak a stubbed navigator into a later test and
+  // make the file order-dependent.
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('sign-in walks idle through method-select, provider-pending, returning, restoring and done, with the branch states defined', async () => {
     const { machine } = setup({ google: true });
     expect(machine.snapshot().state).toBe('idle');
@@ -93,8 +102,14 @@ describe('sign-in state machine', () => {
     expect(machine.sessionApproved()).toBe(true);
     expect(machine.snapshot().state).toBe('returning');
     stubWebLocks(); // the happy path below is the fully-guaranteed restore
-    const restoring = await machine.restoreDestination();
-    vi.unstubAllGlobals();
+    // W0-06-r9 (F5): the stub is released in a finally — a throw between the
+    // stub and its release must never leak it into a later test.
+    let restoring: RestoreDestinationResult;
+    try {
+      restoring = await machine.restoreDestination();
+    } finally {
+      vi.unstubAllGlobals();
+    }
     expect(restoring.outcome).toBe('restored');
     expect(restoring.snapshot.state).toBe('restoring');
     expect(restoring.snapshot.restoreGuarantee).toBe('web-locks');
@@ -211,8 +226,12 @@ describe('sign-in state machine', () => {
     done.machine.chooseMethod('email');
     done.machine.sessionApproved();
     stubWebLocks(); // this walk ends in a fully-guaranteed restore
-    await done.machine.restoreDestination();
-    vi.unstubAllGlobals();
+    // W0-06-r9 (F5): try/finally, never a bare pair of calls.
+    try {
+      await done.machine.restoreDestination();
+    } finally {
+      vi.unstubAllGlobals();
+    }
     done.machine.completeRestore();
     expect(done.machine.snapshot().state).toBe('done');
     for (const event of events) {
@@ -690,7 +709,6 @@ describe('sign-in state machine', () => {
     const backing = new Map<string, string>();
     const clock = fakeClock();
     // The machine's first restore runs under a real web lock.
-    stubWebLocks();
     const machine = createSignInMachine({
       store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
       now: clock.now,
@@ -700,11 +718,18 @@ describe('sign-in state machine', () => {
     machine.continueToMethodSelect();
     machine.chooseMethod('google');
     machine.sessionApproved();
-    const first = await machine.restoreDestination();
+    // W0-06-r9 (F5): the stub wraps only the restore and is released in a
+    // finally — never leaked, whatever the restore does.
+    stubWebLocks();
+    let first: RestoreDestinationResult;
+    try {
+      first = await machine.restoreDestination();
+    } finally {
+      vi.unstubAllGlobals();
+    }
     expect(first.outcome).toBe('restored');
     expect(machine.snapshot().restoreGuarantee).toBe('web-locks'); // the LAST restore's guarantee
     expect(machine.completeRestore()).toBe('restored');
-    vi.unstubAllGlobals();
 
     // The machine is reused for a second intent that another tab consumes
     // first — and this time there is no Web Locks API at all.
@@ -1450,8 +1475,12 @@ describe('sign-in state machine', () => {
     expect(machine.snapshot().state).toBe('done');
 
     // The failure mode of a divergence that cannot be trusted is explicit and
-    // safe: a route outside the allowlist is never a destination (the r5
-    // re-check), and nothing throws.
+    // safe: W0-06-r9 (F4) accepts result.returnRoute ONLY when it passes the
+    // canonical-route check and treats the whole restore as invalid otherwise
+    // (the option chosen; the alternative — dropping returnRoute from the
+    // snapshot in favour of destination — was not taken): never a stamped
+    // record, never a reported route, never a destination — and nothing
+    // throws.
     const hostile: IntentStore = {
       ...real,
       consume: async () => ({
@@ -1466,7 +1495,165 @@ describe('sign-in state machine', () => {
     guarded.continueToMethodSelect();
     guarded.chooseMethod('google');
     guarded.sessionApproved();
-    await expect(guarded.restoreDestination()).resolves.toMatchObject({ outcome: 'already-restored' });
-    expect(guarded.snapshot().destination, 'a route outside the allowlist is never a destination').toBeNull();
+    await expect(guarded.restoreDestination()).resolves.toMatchObject({ outcome: 'not-restoring' });
+    expect(guarded.snapshot().state, 'a hostile route makes the whole restore invalid').toBe('no-intent');
+    expect(guarded.snapshot().returnRoute, 'never stamped, never reported').toBeNull();
+    expect(
+      guarded.snapshot().destination,
+      'the account home — a route outside the allowlist is never a destination',
+    ).toBe(ACCOUNT_HOME_ROUTE);
+    expect(JSON.stringify(guarded.snapshot()), 'the hostile string appears nowhere in the snapshot').not.toContain(
+      'evil',
+    );
+  });
+
+  it('a reload of a consumed checkout is never a completed charge: beginWithStoredIntent on a consumed checkout is restored-unverified, and confirmRestore with moneyPathConfirmed is required to reach done', async () => {
+    // W0-06-r9 F1 (HIGH): beginWithStoredIntent's `consumed` branch entered
+    // `done` unconditionally, so a person who reloaded after ANOTHER tab
+    // finished the checkout saw a completed charge — restoreGuarantee 'none',
+    // moneyPathConfirmationId null, indistinguishable from a paid checkout.
+    // The branch now goes through the same checkout money gate as both
+    // consume results: the reload ran no consume under a real cross-tab lock
+    // and cannot attest the consuming tab's stamp, so a checkout never lands
+    // in plain done.
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    const store = createIntentStore({ storage: backedStorage(backing), now: clock.now });
+    const buyer = createSignInMachine({ store, now: clock.now, providers: { google: true } });
+    await buyer.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    // Another tab finishes the checkout first.
+    expect((await store.consume()).outcome).toBe('consumed');
+
+    // The reload: a fresh machine over the same backing.
+    const reloaded = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: {},
+    });
+    const begun = await reloaded.beginWithStoredIntent();
+    expect(begun.state, 'a consumed checkout never looks like a completed charge').not.toBe('done');
+    expect(begun.state, 'the reload holds no cross-tab guarantee: the gate applies').toBe('restored-unverified');
+    expect(begun.restoreGuarantee, 'no restore ran here — never a claimed web-locks guarantee').toBe('none');
+    // confirmRestore with the money-path assertion is required to reach done.
+    expect(reloaded.completeRestore(), 'the gate holds the reload too').toBe('not-restoring');
+    expect(reloaded.snapshot().state, 'never done without the money path').toBe('restored-unverified');
+    const done = reloaded.confirmRestore({ moneyPathConfirmed: true, confirmationId: 'l2-confirm-reload' });
+    expect(done).toMatchObject({ state: 'done', destination: '/plans' });
+    expect(reloaded.snapshot().moneyPathConfirmationId, 'the confirmation id travels').toBe('l2-confirm-reload');
+
+    // Non-checkout kinds keep done — the worst case there is a repeated
+    // navigation, not a repeated charge. The demo-kind consumed walk in the
+    // branch matrix above stays green unchanged.
+    for (const kind of ['demo', 'install', 'account'] as const) {
+      const b = new Map<string, string>();
+      const c = fakeClock();
+      const s = createIntentStore({ storage: backedStorage(b), now: c.now });
+      const m = createSignInMachine({ store: s, now: c.now, providers: {} });
+      await m.armIntent({ product: 'builds', kind, returnRoute: '/builds' });
+      expect((await s.consume()).outcome).toBe('consumed');
+      const back = createSignInMachine({
+        store: createIntentStore({ storage: backedStorage(b), now: c.now }),
+        now: c.now,
+        providers: {},
+      });
+      expect((await back.beginWithStoredIntent()).state, `${kind} keeps done`).toBe('done');
+    }
+  });
+
+  it('a durable:false checkout consume under the real web lock does not reach a chargeable done; a durable:true one does', async () => {
+    // W0-06-r9 F2: stateAfterConsume read only the exclusivity. A consume
+    // whose stamp only reached the in-memory mirror (setItem threw — the
+    // mirror fallback under the real lock) reported a fully restored
+    // checkout: a reload loses the mirror, re-reads the unconsumed record and
+    // re-arms the charge. A checkout is verified only under BOTH guarantees —
+    // web-locks AND a durable stamp — and the durable flag is a snapshot
+    // field so a screen can see it.
+    // Arm A: the stamp lands only in the mirror (durable:false) — even under
+    // a real cross-tab lock the checkout is unverified.
+    const quota = new Error('QuotaExceededError');
+    const wedged: IntentStorage = {
+      getItem: () => null,
+      setItem: () => {
+        throw quota;
+      },
+      removeItem: () => {
+        throw quota;
+      },
+    };
+    stubWebLocks();
+    try {
+      const { machine } = setup({ google: true }, wedged);
+      await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+      machine.continueToMethodSelect();
+      machine.chooseMethod('google');
+      machine.sessionApproved();
+      const restored = await machine.restoreDestination();
+      expect(restored.outcome).toBe('restored');
+      expect(restored.snapshot.restoreGuarantee, 'the lock WAS held — that alone is not enough').toBe('web-locks');
+      expect(restored.snapshot.restoreDurable, 'the stamp only reached the in-memory mirror').toBe(false);
+      expect(restored.snapshot.state, 'not a chargeable done — not even restoring').toBe('restored-unverified');
+      expect(machine.completeRestore(), 'the gate holds it').toBe('not-restoring');
+      expect(machine.snapshot().state).toBe('restored-unverified');
+      expect(machine.confirmRestore({ moneyPathConfirmed: true, confirmationId: 'l2-confirm-durable' })).toMatchObject({
+        state: 'done',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+
+    // Arm B: web-locks AND a durable stamp — the only combination that may
+    // reach a chargeable done.
+    stubWebLocks();
+    try {
+      const { machine } = setup({ google: true }); // in-memory storage: durable
+      await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+      machine.continueToMethodSelect();
+      machine.chooseMethod('google');
+      machine.sessionApproved();
+      const restored = await machine.restoreDestination();
+      expect(restored.outcome).toBe('restored');
+      expect(restored.snapshot.restoreGuarantee).toBe('web-locks');
+      expect(restored.snapshot.restoreDurable, 'the stamp reached storage').toBe(true);
+      expect(restored.snapshot.state, 'web-locks AND durable: the gate lets it through').toBe('restoring');
+      expect(machine.completeRestore()).toBe('restored');
+      expect(machine.snapshot().state, 'a chargeable done').toBe('done');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('a hostile result.returnRoute never appears in the snapshot: an already-consumed restore carrying https://evil.example is treated as invalid', async () => {
+    // W0-06-r9 F4: the already-consumed path stamped result.returnRoute into
+    // the intent unvalidated (defence-in-depth: the real store only ever
+    // reports parseIntent-validated routes). Fix option chosen: accept
+    // result.returnRoute ONLY when it passes isCanonicalReturnRoute —
+    // otherwise the restore is treated as invalid (the account home), never
+    // stamped and never reported. The alternative — dropping returnRoute from
+    // the snapshot in favour of destination — was not taken.
+    const clock = fakeClock();
+    const real = createIntentStore({ storage: memoryIntentStorage(), now: clock.now });
+    const hostile: IntentStore = {
+      ...real,
+      consume: async () => ({
+        outcome: 'already-consumed' as const,
+        returnRoute: 'https://evil.example',
+        durable: true,
+        exclusive: 'in-process' as const,
+      }),
+    };
+    const machine = createSignInMachine({ store: hostile, now: clock.now, providers: { google: true } });
+    await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.outcome, 'a hostile route makes the whole restore invalid').toBe('not-restoring');
+    const snap = machine.snapshot();
+    expect(snap.state).toBe('no-intent');
+    expect(snap.returnRoute, 'never reported').toBeNull();
+    expect(snap.destination).toBe(ACCOUNT_HOME_ROUTE);
+    expect(snap.intent, 'never stamped').toBeNull();
+    expect(JSON.stringify(snap), 'the hostile string appears nowhere in the snapshot').not.toContain('evil.example');
+    expect(JSON.stringify(restored.snapshot), 'and nowhere in the returned snapshot either').not.toContain('evil.example');
   });
 });

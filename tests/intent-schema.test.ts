@@ -1,6 +1,6 @@
 // W0-06 behaviours 1–4: the intent record, the return-route allowlist, the
-// credential-free rule and the 512-byte cap. Hand-written validation in the
-// house style of src/clients/money/schema.ts — no zod anywhere.
+// credential-free rule and the 512-code-unit cap. Hand-written validation in
+// the house style of src/clients/money/schema.ts — no zod anywhere.
 import { describe, expect, it } from 'vitest';
 import { engineScenarios } from '../src/data/engines';
 import {
@@ -179,6 +179,26 @@ describe('intent schema', () => {
     const fitsExactly = baseIdLength + (INTENT_MAX_CHARS - baseLength);
     expect(parseIntent(goodRecord({ id: 'A'.repeat(fitsExactly) })).ok).toBe(true);
     expect(parseIntent(goodRecord({ id: 'A'.repeat(fitsExactly + 1) }))).toEqual({ ok: false, problem: 'too-large' });
+
+    // W0-06-r9 (F6): BOTH units are asserted for a maximal record — the code
+    // units the cap is written in, and the UTF-8 bytes an earlier PR body
+    // claimed. The two coincide only because every field is ASCII-constrained
+    // (allowlisted routes and ids, RFC3339 stamps), so a future non-ASCII
+    // field turns this red instead of silently breaking the documented bound.
+    const maximal = parseIntent(goodRecord({ id: 'A'.repeat(fitsExactly) }));
+    expect(maximal.ok).toBe(true);
+    if (maximal.ok) {
+      const serialised = JSON.stringify(maximal.intent);
+      expect(serialised.length, 'the maximal record sits exactly at the cap').toBe(INTENT_MAX_CHARS);
+      expect(
+        new TextEncoder().encode(serialised).length,
+        'the byte bound holds too: bytes never exceed the 512 cap',
+      ).toBeLessThanOrEqual(INTENT_MAX_CHARS);
+      expect(
+        new TextEncoder().encode(serialised).length,
+        'the coincidence is pinned: bytes equal code units only while every field is ASCII',
+      ).toBe(serialised.length);
+    }
 
     // expiresAt must be strictly after createdAt: a record expired before it
     // existed is refused, not silently accepted.
