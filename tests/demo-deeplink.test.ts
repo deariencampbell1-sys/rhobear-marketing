@@ -66,8 +66,10 @@ describe('demo deep links', () => {
       scenarioId: 'teams-01',
       positionSeconds: null,
     });
-    // Every unusable t is ignored the same way: no position, no refusal.
-    for (const hash of ['#t=abc', '#t=', '#t=-5', '#t=Infinity', '#t=NaN', '#t=1=2']) {
+    // Every number the grammar allows but the media duration does not is
+    // ignored the same way: no position, no refusal. (A value outside the
+    // grammar is bad-fragment — F10's rule, pinned in its own test below.)
+    for (const hash of ['#t=-5', '#t=12', '#t=60']) {
       expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 12)).toEqual({
         kind: 'player',
         scenarioId: 'teams-01',
@@ -113,6 +115,74 @@ describe('demo deep links', () => {
       ),
     ).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: 7 });
     expect(JSON.stringify(parseDemoDeepLink({ pathname: '/engines/teams-01', search: '?t=42' }, 60))).not.toContain('sekrit');
+  });
+});
+
+// W0-05b-r3 — Apollo's second review of PR #64 (2026-10-26 07:13Z): F9–F11.
+describe('demo deep links and captions — W0-05b-r3 (Apollo\'s second review)', () => {
+  it('r3 F9 (behaviour 20): isWebVttUrl accepts http(s) and relative URLs only — a javascript: or data: URL is not WebVTT whatever its path ends in', () => {
+    // The scheme is part of the rule: a path that ends in .vtt is nothing when
+    // the URL runs code or carries a data: body.
+    expect(isWebVttUrl('javascript:alert(1)//x.vtt')).toBe(false);
+    expect(isWebVttUrl('data:text/vtt;base64,xxx.vtt')).toBe(false);
+    // http(s) and the front door's own relative captions are accepted.
+    expect(isWebVttUrl('https://x/c.vtt')).toBe(true);
+    expect(isWebVttUrl('http://x/c.vtt')).toBe(true);
+    expect(isWebVttUrl('/captions.vtt')).toBe(true);
+  });
+
+  it('r3 F10 (behaviour 18): the t= value must match the grammar — a number with at most 3 decimals and nothing else; anything else is bad-fragment', () => {
+    // A second #, a unit suffix, an empty value, a placeholder, a bare word:
+    // anything the grammar does not admit is not our format and is refused —
+    // never silently opened at no position.
+    for (const hash of [
+      '#t=42#foo',
+      '#t=42s',
+      '#t=',
+      '#t=<duration>',
+      '#t=abc',
+      '#t=Infinity',
+      '#t=NaN',
+      '#t=1=2',
+      '#t= 42',
+      '#t=42.5678',
+    ]) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'not-found',
+        reason: 'bad-fragment',
+      });
+    }
+    // The grammar: an optional sign, digits, at most three decimals.
+    // #t=42, #t=42.5 and #t=0 stay valid.
+    for (const [hash, position] of [
+      ['#t=42', 42],
+      ['#t=42.5', 42.5],
+      ['#t=0', 0],
+    ] as const) {
+      expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash }, 60)).toEqual({
+        kind: 'player',
+        scenarioId: 'teams-01',
+        positionSeconds: position,
+      });
+    }
+  });
+
+  it('r3 F11 (behaviour 18): a deep link starts a clip — #t=<duration> is not a start position and the link opens with no position', () => {
+    // Two controls, two rules (commented at both sites): the fragment's bound
+    // is 0 <= t < duration — a start at the very end is meaningless — while
+    // applySeek's bound is 0 <= t <= duration. Out of the fragment's range the
+    // value is ignored: never a clamped start, never an error page (the
+    // locked `#t=42` on 12 s rule, held identically at t == duration).
+    expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=42' }, 42)).toEqual({
+      kind: 'player',
+      scenarioId: 'teams-01',
+      positionSeconds: null,
+    });
+    expect(parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=43' }, 42)).toEqual({
+      kind: 'player',
+      scenarioId: 'teams-01',
+      positionSeconds: null,
+    });
   });
 });
 
