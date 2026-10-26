@@ -1,6 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
+// The source scan imports the modules as text via vite's ?raw loader — the
+// repo has no @types/node, so no node: imports anywhere in these files.
+import schemaSource from '../src/clients/demo/schema.ts?raw';
+import resolveSource from '../src/clients/demo/resolve.ts?raw';
+import indexSource from '../src/clients/demo/index.ts?raw';
 // W0-05a — publication state → presentation. Every fixture is a contract-
 // complete package body whose contentHash really is the sha256 of the body
 // with the contentHash key removed (a digest cannot cover itself), so the
@@ -16,7 +19,13 @@ import {
   type FetchLike,
 } from '../src/clients/demo/resolve';
 
-const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+/** The same digest the resolver computes, via the platform's Web Crypto. */
+const sha256Hex = async (text: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  let hex = '';
+  for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, '0');
+  return hex;
+};
 
 const SOURCE_REVISION = 'a'.repeat(40);
 const PACKAGE_REVISION = 'rev-2026-10-25-1';
@@ -30,7 +39,10 @@ const mediaBase = (scenarioId: string) =>
  * A serialized contract-complete package. `contentHash` is computed over the
  * body with the contentHash key removed, exactly as the resolver verifies it.
  */
-function rawPackage(patch: Record<string, unknown> = {}, scenarioId: string = SCENARIO_ID): string {
+async function rawPackage(
+  patch: Record<string, unknown> = {},
+  scenarioId: string = SCENARIO_ID,
+): Promise<string> {
   const base = mediaBase(scenarioId);
   const body: Record<string, unknown> = {
     schema: 'rhobear.demo-package.v1',
@@ -58,7 +70,7 @@ function rawPackage(patch: Record<string, unknown> = {}, scenarioId: string = SC
     immutableUrls: true,
     ...patch,
   };
-  const contentHash = sha256Hex(JSON.stringify(body));
+  const contentHash = await sha256Hex(JSON.stringify(body));
   return JSON.stringify({ ...body, contentHash });
 }
 
@@ -87,7 +99,7 @@ function expectPlayable(presentation: DemoPresentation): Playable {
 
 describe('demo resolve', () => {
   it('plays an approved package from the mirror, with captions and transcript surfaced', async () => {
-    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: rawPackage() });
+    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: await rawPackage() });
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
     const playable = expectPlayable(await resolver.resolve(SCENARIO_ID));
     expect(playable.source).toBe('network');
@@ -101,7 +113,7 @@ describe('demo resolve', () => {
   });
 
   it('a schema-invalid package is refused with a named reason and no playable media', async () => {
-    const wrongMime = rawPackage({
+    const wrongMime = await rawPackage({
       renditions: [
         {
           url: `${mediaBase(SCENARIO_ID)}/clip-720.mp4`,
@@ -123,7 +135,7 @@ describe('demo resolve', () => {
   });
 
   it('a package whose contentHash does not match the fetched body is refused, and never cached', async () => {
-    const body = rawPackage();
+    const body = await rawPackage();
     const tampered = JSON.stringify({ ...JSON.parse(body), renditions: [] });
     const cache = createMemoryDemoCache();
     const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: tampered });
@@ -134,9 +146,9 @@ describe('demo resolve', () => {
 
   it('publication state maps to presentation: pending shows footage-pending, superseded never plays the old URL, revoked stops playback but keeps the transcript', async () => {
     const bodies = {
-      [`/demos/pending.json`]: rawPackage({ publicationState: 'pending' }),
-      [`/demos/superseded.json`]: rawPackage({ publicationState: 'superseded' }),
-      [`/demos/revoked.json`]: rawPackage({ publicationState: 'revoked' }),
+      [`/demos/pending.json`]: await rawPackage({ publicationState: 'pending' }, 'pending'),
+      [`/demos/superseded.json`]: await rawPackage({ publicationState: 'superseded' }, 'superseded'),
+      [`/demos/revoked.json`]: await rawPackage({ publicationState: 'revoked' }, 'revoked'),
     };
     const { fetchImpl } = mirror(bodies);
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
@@ -158,9 +170,9 @@ describe('demo resolve', () => {
 
   it('an approved package without both captions and a transcript is refused, never half-rendered', async () => {
     const { fetchImpl } = mirror({
-      [`/demos/neither.json`]: rawPackage({ captionsUrl: null, transcriptUrl: null }),
-      [`/demos/captions-only.json`]: rawPackage({ transcriptUrl: null }),
-      [`/demos/transcript-only.json`]: rawPackage({ captionsUrl: null }),
+      [`/demos/neither.json`]: await rawPackage({ captionsUrl: null, transcriptUrl: null }, 'neither'),
+      [`/demos/captions-only.json`]: await rawPackage({ transcriptUrl: null }, 'captions-only'),
+      [`/demos/transcript-only.json`]: await rawPackage({ captionsUrl: null }, 'transcript-only'),
     });
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
     for (const scenarioId of ['neither', 'captions-only', 'transcript-only']) {
@@ -174,15 +186,18 @@ describe('demo resolve', () => {
   it('an approved package that was not fully watched, has no named approver or has no approval time is refused', async () => {
     const approvedAt = '2026-10-25T12:00:00Z';
     const { fetchImpl } = mirror({
-      [`/demos/unwatched.json`]: rawPackage({
-        approval: { approvedBy: 'Owner', approvedAt, watchedComplete: false },
-      }),
-      [`/demos/no-approver.json`]: rawPackage({
-        approval: { approvedBy: '', approvedAt, watchedComplete: true },
-      }),
-      [`/demos/no-approved-at.json`]: rawPackage({
-        approval: { approvedBy: 'Owner', approvedAt: 'not-a-date', watchedComplete: true },
-      }),
+      [`/demos/unwatched.json`]: await rawPackage(
+        { approval: { approvedBy: 'Owner', approvedAt, watchedComplete: false } },
+        'unwatched',
+      ),
+      [`/demos/no-approver.json`]: await rawPackage(
+        { approval: { approvedBy: '', approvedAt, watchedComplete: true } },
+        'no-approver',
+      ),
+      [`/demos/no-approved-at.json`]: await rawPackage(
+        { approval: { approvedBy: 'Owner', approvedAt: 'not-a-date', watchedComplete: true } },
+        'no-approved-at',
+      ),
     });
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
     for (const scenarioId of ['unwatched', 'no-approver', 'no-approved-at']) {
@@ -204,7 +219,9 @@ describe('demo resolve', () => {
         inner.markForPurge(scenarioId);
       },
     };
-    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: rawPackage({ publicationState: 'revoked' }) });
+    const { fetchImpl } = mirror({
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage({ publicationState: 'revoked' }),
+    });
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
     expect(await resolver.resolve(SCENARIO_ID)).toEqual({
       state: 'revoked',
@@ -219,7 +236,7 @@ describe('demo resolve', () => {
     let t = 1_000;
     const now = (): number => t;
     const cache = createMemoryDemoCache();
-    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: rawPackage() });
+    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: await rawPackage() });
     const online = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, now, cache });
     const first = expectPlayable(await online.resolve(SCENARIO_ID));
     expect(first.source).toBe('network');
@@ -235,7 +252,9 @@ describe('demo resolve', () => {
 
   it('a cached revoked package still never plays offline', async () => {
     const cache = createMemoryDemoCache();
-    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: rawPackage({ publicationState: 'revoked' }) });
+    const { fetchImpl } = mirror({
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage({ publicationState: 'revoked' }),
+    });
     const online = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
     expect((await online.resolve(SCENARIO_ID)).state).toBe('revoked');
     const offline = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: offlineFetch, cache });
@@ -250,9 +269,7 @@ describe('demo resolve', () => {
   });
 
   it('no module in src/clients/demo/** references a placeholder video file — there is no fallback media in any state', () => {
-    const sources = ['schema.ts', 'resolve.ts', 'index.ts']
-      .map((file) => readFileSync(new URL(`../src/clients/demo/${file}`, import.meta.url), 'utf8'))
-      .join('\n');
+    const sources = [schemaSource, resolveSource, indexSource].join('\n');
     expect(sources).not.toMatch(/\.(mp4|webm|mov|m4v|ogv)\b/i);
     expect(sources).not.toMatch(/data:video|blob:/i);
   });
@@ -279,8 +296,8 @@ describe('demo resolve', () => {
 
   it('a manifest with no registry entry is unlisted: playable by deep link, absent from the index, never silently dropped', async () => {
     const { fetchImpl } = mirror({
-      [`/demos/${SCENARIO_ID}.json`]: rawPackage(),
-      [`/demos/${UNLISTED_ID}.json`]: rawPackage({}, UNLISTED_ID),
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage(),
+      [`/demos/${UNLISTED_ID}.json`]: await rawPackage({}, UNLISTED_ID),
     });
     const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl });
     // Playable by deep link: resolve() never consults the registry.
