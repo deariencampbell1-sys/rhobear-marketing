@@ -194,13 +194,19 @@ describe('intent schema', () => {
       { problem: 'bad-scenario', corrupt: { scenario: 'not-a-scenario' } },
       { problem: 'bad-created-at', corrupt: { createdAt: 'not-a-date' } },
       { problem: 'bad-consumed-at', corrupt: { consumedAt: 'not-a-date' } },
+      // W0-06 review r3 (finding 4): consumedAt is range-checked — a stamp
+      // before createdAt or after expiresAt is bad-consumed-at, or a future
+      // stamp pins a consumed record in the consumed state forever.
+      { problem: 'bad-consumed-at', corrupt: { consumedAt: '2026-10-25T11:59:59.999Z' } }, // before createdAt
+      { problem: 'bad-consumed-at', corrupt: { consumedAt: '2026-10-25T13:00:00.001Z' } }, // after expiresAt
       // The four branches the earlier tests already exercised, in the same table.
       { problem: 'bad-return-route', corrupt: { returnRoute: '/not-canonical' } },
       { problem: 'bad-expires-at', corrupt: { expiresAt: '2026-10-25T11:00:00.000Z' } }, // before createdAt
       { problem: 'too-large', corrupt: { id: 'A'.repeat(600) } }, // still URL-safe, so too-large fires, not bad-id
       { problem: 'not-an-object', raw: 'just a string' },
     ];
-    // One case per problem code, all eleven, none repeated, none missing.
+    // One case per problem code, all eleven, none missing — bad-consumed-at
+    // is pinned three ways (shape, before createdAt, after expiresAt).
     const allProblems: IntentProblem[] = [
       'not-an-object',
       'bad-id',
@@ -231,6 +237,51 @@ describe('intent schema', () => {
       });
       expect(await store.load(), `${problem} loads as invalid through the store`).toEqual({ state: 'invalid' });
     }
+  });
+
+  it('a consumed record with a future consumedAt is dropped by retention, not kept forever', async () => {
+    // W0-06 review r3 (finding 4): a consumedAt in the future made
+    // now() - Date.parse(consumedAt) negative, so retention never fired and a
+    // consumed record was retained indefinitely. The range check refuses a
+    // stamp outside [createdAt, expiresAt] at parse (the guard-table cases
+    // above); where a stamp does parse, the retention window is bounded and
+    // reachable on an injected clock.
+    const makeStore = (consumedAt: string, now: () => number) => {
+      const backing = new Map<string, string>([
+        [INTENT_STORAGE_KEY, JSON.stringify({ v: 1, i: goodRecord({ consumedAt }) })],
+      ]);
+      const store = createIntentStore({
+        storage: {
+          getItem: (key) => backing.get(key) ?? null,
+          setItem: (key, value) => {
+            backing.set(key, value);
+          },
+          removeItem: (key) => {
+            backing.delete(key);
+          },
+        },
+        now,
+      });
+      return { backing, store };
+    };
+    let t = Date.parse('2026-10-25T12:00:00.000Z');
+    const clock = (): number => t;
+
+    // The unbounded case: a stamp after expiresAt can never sit in the
+    // consumed state at all — it is refused at parse, so nothing keeps it.
+    const beyond = makeStore('2026-10-25T13:30:00.000Z', clock);
+    expect((await beyond.store.load()).state, 'a future consumedAt must not keep the record as consumed').not.toBe(
+      'consumed',
+    );
+
+    // The bounded case: a stamp in the clock's future but inside
+    // [createdAt, expiresAt] reaches retention on the injected clock —
+    // dropped at five minutes past its stamp, not kept forever.
+    const skew = makeStore('2026-10-25T12:59:00.000Z', clock);
+    expect((await skew.store.load()).state).toBe('consumed');
+    t = Date.parse('2026-10-25T13:04:00.000Z'); // consumedAt + CONSUMED_RETENTION_MS
+    expect(await skew.store.load()).toEqual({ state: 'absent' });
+    expect(skew.backing.has(INTENT_STORAGE_KEY), 'dropped by retention').toBe(false);
   });
 
   it('the intent scenario allowlist equals the engines registry ids exactly — the registry import is the point', () => {

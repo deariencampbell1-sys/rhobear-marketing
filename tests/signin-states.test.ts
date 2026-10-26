@@ -14,13 +14,18 @@ import {
   type MagicLinkEvent,
   type SignInMachine,
   type SignInProviderConfig,
+  type SignInSnapshot,
   type SignInState,
 } from '../src/clients/intent/signin';
 import {
+  CHECKOUT_TTL_MS,
   CONSUMED_RETENTION_MS,
+  DAY_TTL_MS,
+  INTENT_STORAGE_KEY,
   createIntentStore,
   memoryIntentStorage,
   type IntentStorage,
+  type IntentStore,
 } from '../src/clients/intent/store';
 
 const BASE = Date.parse('2026-10-25T12:00:00Z');
@@ -109,6 +114,7 @@ describe('sign-in state machine', () => {
         'denied',
         'canceled',
         'expired',
+        'link-expired',
         'cooldown',
         'wrong-browser',
         'offline',
@@ -147,6 +153,7 @@ describe('sign-in state machine', () => {
     expect(machine.requestMagicLink('person@example.com')).toBe(true);
     expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true); // from provider-pending
     expect(machine.snapshot().state).toBe('sent');
+    expect(machine.snapshot().destination).toBe('/reviews'); // the live intent's returnRoute
     // The sent copy cannot know or say whether the address owns an account:
     // no enumeration, no "we couldn't find that email".
     expect(magicLinkSentCopy('new@example.com')).toBe(magicLinkSentCopy('longtime@example.com'));
@@ -155,12 +162,16 @@ describe('sign-in state machine', () => {
     // Cooldown from sent (an allowed source), remaining seconds on the clock.
     expect(machine.onMagicLinkEvent({ type: 'cooldown', until: clock.now() + 30_000 })).toBe(true);
     expect(machine.snapshot().state).toBe('cooldown');
+    expect(machine.snapshot().destination).toBe('/reviews');
     expect(machine.remainingCooldownSeconds()).toBe(30);
     clock.advance(10_000);
     expect(machine.remainingCooldownSeconds()).toBe(20);
-    // Expired from cooldown (an allowed source).
+    // Expired from cooldown (an allowed source) — the LINK expired while the
+    // intent is still live, so this is `link-expired` and the destination
+    // survives (W0-06 review r3, finding 1).
     expect(machine.onMagicLinkEvent({ type: 'expired' })).toBe(true);
-    expect(machine.snapshot().state).toBe('expired');
+    expect(machine.snapshot().state).toBe('link-expired');
+    expect(machine.snapshot().destination).toBe('/reviews');
     expect(machine.snapshot().intent).not.toBeNull();
     expect(machine.snapshot().claimedSuccess).toBe(false);
 
@@ -174,6 +185,7 @@ describe('sign-in state machine', () => {
       expect(fresh.machine.onMagicLinkEvent(event), expected).toBe(true);
       expect(fresh.machine.snapshot().state).toBe(expected);
       expect(fresh.machine.snapshot().intent).not.toBeNull();
+      expect(fresh.machine.snapshot().destination).toBe('/reviews');
       expect(fresh.machine.snapshot().claimedSuccess).toBe(false);
     };
     await leafFrom({ type: 'used' }, 'used');
@@ -205,6 +217,9 @@ describe('sign-in state machine', () => {
     for (const event of events) {
       expect(done.machine.onMagicLinkEvent(event), `done ignores ${event.type}`).toBe(false);
       expect(done.machine.snapshot().state, `done ignores ${event.type}`).toBe('done');
+      // A magic link expiring after a successful restore: the event is
+      // ignored, the destination stays (W0-06 review r3, edge case).
+      expect(done.machine.snapshot().destination, `done keeps the destination on ${event.type}`).toBe('/get');
     }
 
     // denied: ignored, the state stays denied.
@@ -260,8 +275,8 @@ describe('sign-in state machine', () => {
         m.onMagicLinkEvent({ type: 'cooldown', until: BASE + 60_000 });
       },
       { type: 'expired' },
-      'expired',
-    ); // from cooldown
+      'link-expired',
+    ); // from cooldown — the link expired, the intent did not (finding 1)
   });
 
   it('denied, canceled, offline and conflict keep the intent and never grant', async () => {
@@ -512,5 +527,304 @@ describe('sign-in state machine', () => {
     expect(already.outcome).toBe('already-restored');
     expect(already.snapshot.state).toBe('done');
     expect(already.snapshot.returnRoute).toBe('/reviews');
+  });
+
+  it('a magic-link expiry keeps the destination and offers a new link: link-expired, destination is the returnRoute', async () => {
+    // W0-06 review r3 (finding 1): a magic link that expires while the intent
+    // is still live is `link-expired` — NOT `expired`. The destination this
+    // client exists to keep is kept, and the person can send a new link and
+    // carry on from the same place.
+    const { machine } = setup({ email: true });
+    const created = await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    expect(created.ok).toBe(true);
+    machine.continueToMethodSelect();
+    machine.chooseMethod('email');
+    machine.requestMagicLink('person@example.com');
+    expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true);
+    expect(machine.onMagicLinkEvent({ type: 'expired' })).toBe(true);
+
+    const linkExpired = machine.snapshot();
+    expect(linkExpired.state).toBe('link-expired');
+    expect(linkExpired.destination).toBe('/reviews'); // the intent's returnRoute, unchanged
+    expect(linkExpired.destination).toBe(linkExpired.intent?.returnRoute);
+    expect(linkExpired.intent).not.toBeNull();
+
+    // Idempotent: a second expiry event changes nothing and duplicates no copy.
+    const copyAfterFirst = linkExpired.copy;
+    expect(machine.onMagicLinkEvent({ type: 'expired' })).toBe(true);
+    expect(machine.snapshot().state).toBe('link-expired');
+    expect(machine.snapshot().copy).toBe(copyAfterFirst);
+    expect(machine.snapshot().destination).toBe('/reviews');
+
+    // The way back: method-select with the intent intact, and a new link.
+    expect(machine.continueToMethodSelect()).toBe(true);
+    expect(machine.snapshot().state).toBe('method-select');
+    expect(machine.snapshot().intent).not.toBeNull();
+    expect(machine.snapshot().destination).toBe('/reviews');
+    expect(machine.chooseMethod('email')).toBe(true);
+    expect(machine.requestMagicLink('person@example.com'), 'a new link can be sent').toBe(true);
+  });
+
+  it('an intent expiry is terminal and offers no destination: expired, destination null, method-select refused', async () => {
+    // W0-06 review r3 (finding 1): `expired` is the INTENT's TTL passing (or
+    // load() reporting it) and nothing else. There is nothing left to
+    // restore, so the state is terminal: no destination and no way back to
+    // method-select. This arm is the opposite of the link-expiry test, so the
+    // two expiries can never be re-merged silently.
+    const { machine, clock } = setup({ google: true });
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    clock.advance(CHECKOUT_TTL_MS + 1);
+    const begun = await machine.beginWithStoredIntent();
+    expect(begun.state).toBe('expired');
+    expect(begun.destination).toBeNull();
+    expect(begun.intent).toBeNull();
+    // Terminal: a refused call changes nothing.
+    expect(machine.continueToMethodSelect()).toBe(false);
+    expect(machine.snapshot().state).toBe('expired');
+    expect(machine.snapshot().destination).toBeNull();
+
+    // The same expiry through the consume path: the intent expired before it
+    // could be restored — again no destination, again terminal.
+    const fresh = setup({ google: true });
+    await fresh.machine.armIntent({ product: 'builds', kind: 'install', returnRoute: '/get' });
+    fresh.machine.continueToMethodSelect();
+    fresh.machine.chooseMethod('google');
+    fresh.machine.sessionApproved();
+    fresh.clock.advance(DAY_TTL_MS + 1);
+    const expired = await fresh.machine.restoreDestination();
+    expect(expired.outcome).toBe('not-restoring');
+    expect(expired.snapshot.state).toBe('expired');
+    expect(expired.snapshot.destination).toBeNull();
+    expect(fresh.machine.continueToMethodSelect()).toBe(false);
+    expect(fresh.machine.snapshot().state).toBe('expired');
+  });
+
+  it('an empty or whitespace returnRoute never reaches destination', async () => {
+    // The allowlist refuses an empty or whitespace return route outright, so
+    // it can never reach snapshot().destination.
+    const { machine } = setup({ google: true });
+    for (const returnRoute of ['', '   ', '\t\n']) {
+      const created = await machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute });
+      expect(created).toEqual({ ok: false, problem: 'bad-return-route' });
+      expect(machine.snapshot().destination).toBeNull();
+      expect(machine.snapshot().intent).toBeNull();
+    }
+  });
+
+  it('confirmRestore completes a restored-unverified checkout and refuses from every other state', async () => {
+    // W0-06 review r3 (finding 2): restored-unverified used to be a dead end
+    // — no method could ever finish it. confirmRestore() is that method: the
+    // money path re-confirms through L2 and then calls it. It does not
+    // charge, does not call the network and does not consume anything.
+    const { machine } = setup({ google: true });
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    await machine.restoreDestination();
+    expect(machine.snapshot().state).toBe('restored-unverified');
+    const intentBefore = machine.snapshot().intent;
+
+    // Positive arm: the one accepted state.
+    const confirmed = machine.confirmRestore();
+    expect(confirmed).not.toBe('not-restoring');
+    expect(confirmed).toMatchObject({ state: 'done', destination: '/plans' });
+    expect(machine.snapshot().state).toBe('done');
+    expect(machine.snapshot().intent, 'confirmRestore consumes nothing').toEqual(intentBefore);
+    // Twice: the second call reports 'not-restoring'.
+    expect(machine.confirmRestore()).toBe('not-restoring');
+
+    // Negative arms: idle, done and restoring — refused, nothing changes.
+    const idle = setup({ google: true });
+    expect(idle.machine.confirmRestore()).toBe('not-restoring');
+    expect(idle.machine.snapshot().state).toBe('idle');
+
+    const done = setup({ google: true });
+    await done.machine.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+    done.machine.continueToMethodSelect();
+    done.machine.chooseMethod('google');
+    done.machine.sessionApproved();
+    await done.machine.restoreDestination();
+    done.machine.completeRestore();
+    expect(done.machine.snapshot().state).toBe('done');
+    expect(done.machine.confirmRestore()).toBe('not-restoring');
+    expect(done.machine.snapshot().state).toBe('done');
+
+    const restoring = setup({ google: true });
+    await restoring.machine.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+    restoring.machine.continueToMethodSelect();
+    restoring.machine.chooseMethod('google');
+    restoring.machine.sessionApproved();
+    await restoring.machine.restoreDestination();
+    expect(restoring.machine.snapshot().state).toBe('restoring');
+    expect(restoring.machine.confirmRestore()).toBe('not-restoring');
+    expect(restoring.machine.snapshot().state).toBe('restoring');
+  });
+
+  it('a checkout on the in-process guarantee reaches done only through confirmRestore', async () => {
+    // W0-06 review r3 (finding 2): completeRestore() still refuses
+    // restored-unverified — the money path must re-confirm first — but the
+    // flow is no longer a dead end.
+    const { machine } = setup({ google: true });
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const restored = await machine.restoreDestination();
+    expect(restored.snapshot.state).toBe('restored-unverified');
+    expect(machine.completeRestore()).toBe('not-restoring');
+    expect(machine.snapshot().state).toBe('restored-unverified');
+    // Only confirmRestore() — after L2's own re-confirmation — reaches done.
+    expect(machine.confirmRestore()).toMatchObject({ state: 'done' });
+    expect(machine.snapshot().state).toBe('done');
+    expect(machine.completeRestore()).toBe('already-done');
+  });
+
+  it("an already-consumed restore reports a consumed-stamped intent and this restore's guarantee, not the last one", async () => {
+    // W0-06 review r3 (finding 5): the already-consumed path used to leave
+    // intent untouched (consumedAt undefined for the screen) and carried the
+    // previous restore's guarantee onto done.
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    // The machine's first restore runs under a real web lock.
+    stubWebLocks();
+    const machine = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    await machine.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const first = await machine.restoreDestination();
+    expect(first.outcome).toBe('restored');
+    expect(machine.snapshot().restoreGuarantee).toBe('web-locks'); // the LAST restore's guarantee
+    expect(machine.completeRestore()).toBe('restored');
+    vi.unstubAllGlobals();
+
+    // The machine is reused for a second intent that another tab consumes
+    // first — and this time there is no Web Locks API at all.
+    await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    const rival = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    expect((await rival.beginWithStoredIntent()).state).toBe('intent-loaded');
+    rival.continueToMethodSelect();
+    rival.chooseMethod('google');
+    rival.sessionApproved();
+    expect((await rival.restoreDestination()).outcome).toBe('restored');
+
+    machine.continueToMethodSelect();
+    machine.chooseMethod('google');
+    machine.sessionApproved();
+    const already = await machine.restoreDestination();
+    expect(already.outcome).toBe('already-restored');
+    expect(already.snapshot.state).toBe('done');
+    expect(already.snapshot.intent?.consumedAt, 'a consumed-stamped intent, never undefined').toBeTruthy();
+    expect(already.snapshot.restoreGuarantee, "this restore's guarantee, not the last one's").toBe('in-process');
+    // The already-done report keeps both: a second call must not rewrite them.
+    expect(machine.completeRestore()).toBe('already-done');
+    const done = machine.snapshot();
+    expect(done.intent?.consumedAt).toBeTruthy();
+    expect(done.restoreGuarantee).toBe('in-process');
+  });
+
+  it("a machine reused across returns shows this return's state only: every beginWithStoredIntent branch resets the transient fields", async () => {
+    // W0-06 review r3 (finding 6): only the `active` branch used to reset, so
+    // a machine reused across returns could show a prior return's
+    // claimedSuccess, restoreGuarantee, recovery or purchasesPreserved.
+    // Every branch — active, consumed, expired, invalid, absent — resets all
+    // four back to their start values.
+    const assertStartValues = (s: SignInSnapshot) => {
+      expect(s.claimedSuccess).toBe(false);
+      expect(s.restoreGuarantee).toBe('none');
+      expect(s.recovery).toBeNull();
+      expect(s.purchasesPreserved).toBeNull();
+    };
+
+    /** Dirty claimedSuccess and the guarantee: approve, then restore to done. */
+    const walkRestored = async (m: SignInMachine) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+      expect((await m.restoreDestination()).outcome).toBe('restored');
+      m.completeRestore();
+    };
+    /** Dirty claimedSuccess only (no consume). */
+    const walkApproved = async (m: SignInMachine) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+    };
+    /** Dirty recovery and purchasesPreserved. */
+    const walkConflict = async (m: SignInMachine) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.channelConflict();
+    };
+
+    type Walk = (m: SignInMachine) => Promise<void>;
+    type Force = (
+      store: IntentStore,
+      clock: { advance: (ms: number) => void },
+      backing: Map<string, string>,
+    ) => Promise<void>;
+    const branches: readonly { name: string; walks: readonly Walk[]; force: Force; state: SignInState }[] = [
+      { name: 'active', walks: [walkApproved, walkConflict], force: async () => undefined, state: 'intent-loaded' },
+      {
+        name: 'consumed',
+        walks: [walkRestored, walkApproved, walkConflict],
+        force: async (store) => {
+          await store.consume();
+        },
+        state: 'done',
+      },
+      {
+        name: 'expired',
+        walks: [walkApproved, walkConflict],
+        force: async (_store, clock) => {
+          clock.advance(DAY_TTL_MS + 1);
+        },
+        state: 'expired',
+      },
+      {
+        name: 'invalid',
+        walks: [walkApproved, walkConflict],
+        force: async (_store, _clock, backing) => {
+          backing.set(INTENT_STORAGE_KEY, '{oops');
+        },
+        state: 'no-intent',
+      },
+      {
+        name: 'absent',
+        walks: [walkRestored, walkApproved, walkConflict],
+        force: async (store) => {
+          await store.clear();
+        },
+        state: 'no-intent',
+      },
+    ];
+
+    for (const branch of branches) {
+      for (const walk of branch.walks) {
+        const backing = new Map<string, string>();
+        const clock = fakeClock();
+        const store = createIntentStore({ storage: backedStorage(backing), now: clock.now });
+        const machine = createSignInMachine({ store, now: clock.now, providers: { google: true } });
+        await walk(machine);
+        await branch.force(store, clock, backing);
+        const begun = await machine.beginWithStoredIntent();
+        expect(begun.state, `${branch.name} branch`).toBe(branch.state);
+        assertStartValues(begun);
+        // The machine itself reports the same, not just the returned snapshot.
+        assertStartValues(machine.snapshot());
+      }
+    }
   });
 });

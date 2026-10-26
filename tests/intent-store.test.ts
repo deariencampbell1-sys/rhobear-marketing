@@ -411,6 +411,37 @@ describe('intent store', () => {
     }
   });
 
+  it('a store whose crypto.getRandomValues is unavailable returns { ok: false } from create(), never a rejection', async () => {
+    // W0-06 review r3 (finding 3): create()/save()/persist share consume's
+    // total-function discipline — nothing here throws into the UI. A missing
+    // crypto.getRandomValues fails inside createIntentId and must resolve to
+    // the module's existing `invalid` label, never reject.
+    const session = recordingStorage();
+    const persistent = recordingStorage();
+    vi.stubGlobal('window', { sessionStorage: session, localStorage: persistent });
+    vi.stubGlobal('crypto', {}); // getRandomValues absent
+    try {
+      const store = createIntentStore({ now: fakeClock().now });
+      await expect(store.create({ product: 'builds', kind: 'install', returnRoute: '/get' })).resolves.toEqual({
+        ok: false,
+        problem: 'invalid',
+      });
+      expect(session.backing.size, 'nothing was written to either adapter').toBe(0);
+      expect(persistent.backing.size, 'nothing was written to either adapter').toBe(0);
+      // save() is wrapped in the same discipline: a hostile record that
+      // throws on field access resolves to the same shape and writes nothing.
+      const hostile = {
+        get id(): string {
+          throw new Error('hostile record');
+        },
+      } as unknown as Intent;
+      await expect(store.save(hostile)).resolves.toEqual({ ok: false, problem: 'invalid' });
+      expect(session.backing.size + persistent.backing.size, 'nothing was written to either adapter').toBe(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('two consumers with asymmetric latency: A settles entirely before B writes, exactly one wins', async () => {
     // One backing store, two "tabs". Tab A's adapter is instant; tab B's
     // adapter defers every operation after its first read until A's consume
