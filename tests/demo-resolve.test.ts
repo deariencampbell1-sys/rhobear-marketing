@@ -10,11 +10,12 @@ import indexSource from '../src/clients/demo/index.ts?raw';
 // itself), so the resolver's hash gate only fires when a test tampers on
 // purpose. Fixed clock via `now`; the network is a stub FetchLike — no real
 // request is ever made.
-import { type ScenarioRegistry } from '../src/clients/demo/schema';
+import { parseDemoPackage, type ScenarioRegistry } from '../src/clients/demo/schema';
 import {
   buildEnginesIndex,
   createDemoResolver,
   createMemoryDemoCache,
+  present,
   type DemoCache,
   type DemoPresentation,
   type FetchLike,
@@ -410,7 +411,10 @@ describe('demo resolve', () => {
       state: 'invalid',
       reason: 'scenario-mismatch',
     });
+    // The mismatched body condemns whatever was cached: its media can no
+    // longer be trusted to describe this scenario.
     expect(cache.get(SCENARIO_ID)).toBeUndefined();
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
     expect(urls).toEqual([`${MIRROR}/demos/${SCENARIO_ID}.json`]);
   });
 
@@ -588,6 +592,201 @@ describe('demo resolve', () => {
         state: 'invalid',
         reason: 'not-an-object',
       });
+    }
+  });
+
+  it('resolve never throws: a deeply nested body, an absent crypto.subtle and a throwing canonical form each return invalid', async () => {
+    // Fail-closed is total: no body and no runtime may reject at the front
+    // door instead of handing the screen a named refusal — and a refusal
+    // stores nothing.
+    const cache = createMemoryDemoCache();
+
+    // A body nested 10 000 arrays deep: JSON.parse survives it, the canonical
+    // form must not — its recursion is capped and the body is refused past
+    // the cap instead of taking the stack down.
+    const deep = `{"contentHash":"${'d'.repeat(64)}","deep":${'['.repeat(10_000)}${']'.repeat(10_000)}}`;
+    {
+      const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: deep });
+      const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+      expect(await resolver.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'unhashable' });
+    }
+
+    // An absent crypto.subtle — a non-secure context, some SSR runtimes: the
+    // hash cannot be computed, so the body is refused, not crashed on.
+    const body = await rawPackage();
+    {
+      vi.stubGlobal('crypto', {});
+      try {
+        const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: body });
+        const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+        expect(await resolver.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'unhashable' });
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }
+
+    // A canonical form that throws for any reason is a refusal too.
+    {
+      const stringify = vi.spyOn(JSON, 'stringify').mockImplementation(() => {
+        throw new RangeError('canonical form exploded');
+      });
+      try {
+        const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: body });
+        const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+        expect(await resolver.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'unhashable' });
+      } finally {
+        stringify.mockRestore();
+      }
+    }
+
+    // Nothing was cached on any of the three arms.
+    expect(cache.get(SCENARIO_ID)).toBeUndefined();
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
+  });
+
+  it('a body that is a single huge string resolves invalid and never throws', async () => {
+    const huge = JSON.stringify('a'.repeat(20_000_000));
+    const cache = createMemoryDemoCache();
+    const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: huge });
+    const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+    expect(await resolver.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'not-an-object' });
+    expect(cache.get(SCENARIO_ID)).toBeUndefined();
+  });
+
+  it('a mirror 503 falls back to the cached approved package instead of going dark, and a 404 does not', async () => {
+    // Only 404/410 mean "nothing published": every other status — a 500, a
+    // 503, a 429, a bare 304 — is a transient mirror problem and falls
+    // through to the cache exactly as a timeout does. One transient error
+    // must not take an approved, already-cached demo dark.
+    const cache = createMemoryDemoCache();
+    const bodies = { [`/demos/${SCENARIO_ID}.json`]: await rawPackage() };
+    const online = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: mirror(bodies).fetchImpl, cache });
+    expectPlayable(await online.resolve(SCENARIO_ID));
+    for (const status of [500, 503, 429, 304]) {
+      const flaky: FetchLike = async () => ({ ok: false, status, text: async () => '' });
+      const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: flaky, cache });
+      const playable = expectPlayable(await resolver.resolve(SCENARIO_ID));
+      expect(playable.source, String(status)).toBe('cache');
+    }
+    for (const status of [404, 410]) {
+      const gone: FetchLike = async () => ({ ok: false, status, text: async () => '' });
+      const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: gone, cache });
+      expect(await resolver.resolve(SCENARIO_ID), String(status)).toEqual({
+        state: 'footage-pending',
+        reason: 'footage-pending',
+      });
+    }
+    // A "nothing published" answer condemns whatever was cached: the mirror
+    // has withdrawn the package, so its media may no longer play.
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
+  });
+
+  it('a package refused for captions-required or approval-incomplete is never cached, and it marks any existing entry for purge', async () => {
+    const refusals = [
+      { reason: 'captions-required', patch: { captionsUrl: null, transcriptUrl: null } },
+      {
+        reason: 'approval-incomplete',
+        patch: {
+          approval: { approvedBy: 'Owner', approvedAt: '2026-10-25T12:00:00Z', watchedComplete: false },
+        },
+      },
+    ];
+    for (const { reason, patch } of refusals) {
+      const refusedBody = await rawPackage(patch);
+      // Never cached: the publication gates run before put, so a body that
+      // can never play is never written.
+      const fresh = createMemoryDemoCache();
+      const { fetchImpl } = mirror({ [`/demos/${SCENARIO_ID}.json`]: refusedBody });
+      const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache: fresh });
+      expect(await resolver.resolve(SCENARIO_ID), reason).toEqual({ state: 'invalid', reason });
+      expect(fresh.get(SCENARIO_ID), reason).toBeUndefined();
+      // And it marks any existing entry for purge: put must never clear the
+      // mark for a package that can never play.
+      const seeded = createMemoryDemoCache();
+      const approvedBody = await rawPackage();
+      const seed = createDemoResolver({
+        mirrorUrl: MIRROR,
+        fetchImpl: mirror({ [`/demos/${SCENARIO_ID}.json`]: approvedBody }).fetchImpl,
+        cache: seeded,
+      });
+      expectPlayable(await seed.resolve(SCENARIO_ID));
+      const refuse = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache: seeded });
+      expect(await refuse.resolve(SCENARIO_ID), reason).toEqual({ state: 'invalid', reason });
+      expect(seeded.isMarkedForPurge(SCENARIO_ID), reason).toBe(true);
+      expect(seeded.get(SCENARIO_ID)?.rawText, reason).toBe(approvedBody);
+    }
+  });
+
+  it('present() has no side effects: a revoked package renders revoked and the cache is marked only by resolve', async () => {
+    const parsed = parseDemoPackage(JSON.parse(await rawPackage({ publicationState: 'revoked' })));
+    if (!('package' in parsed)) throw new Error('expected the package to parse');
+    const marks: string[] = [];
+    const puts: string[] = [];
+    const inner = createMemoryDemoCache();
+    const cache: DemoCache = {
+      get: (scenarioId) => inner.get(scenarioId),
+      put: (scenarioId, entry) => {
+        puts.push(scenarioId);
+        inner.put(scenarioId, entry);
+      },
+      markForPurge: (scenarioId) => {
+        marks.push(scenarioId);
+        inner.markForPurge(scenarioId);
+      },
+      isMarkedForPurge: (scenarioId) => inner.isMarkedForPurge(scenarioId),
+    };
+    // Calling present directly renders the revoked state and touches nothing.
+    expect(present(parsed.package, 'network', 1_000)).toEqual({
+      state: 'revoked',
+      reason: 'revoked',
+      transcriptUrl: `${mediaBase(SCENARIO_ID)}/transcript.html`,
+      purgeCached: true,
+    });
+    expect(marks).toEqual([]);
+    expect(puts).toEqual([]);
+    // The cache is marked only by resolve, which observes the revoked body.
+    const { fetchImpl } = mirror({
+      [`/demos/${SCENARIO_ID}.json`]: await rawPackage({ publicationState: 'revoked' }),
+    });
+    const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl, cache });
+    expect((await resolver.resolve(SCENARIO_ID)).state).toBe('revoked');
+    expect(marks).toEqual([SCENARIO_ID]);
+  });
+
+  it('a cached entry whose rawText is now unparseable is condemned, not thrown', async () => {
+    // Written by an older version: the record cannot even be re-parsed. That
+    // is a refusal and a purge mark — never a rejection at the front door.
+    const cache = createMemoryDemoCache();
+    cache.put(SCENARIO_ID, { rawText: 'not json at all', fetchedAt: 1_000 });
+    const offline = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: offlineFetch, cache });
+    expect(await offline.resolve(SCENARIO_ID)).toEqual({ state: 'invalid', reason: 'not-an-object' });
+    expect(cache.isMarkedForPurge(SCENARIO_ID)).toBe(true);
+  });
+
+  it('an invalid fetchTimeoutMs falls back to the documented default deadline', async () => {
+    // 0, -1 and NaN are not deadlines: each falls back to
+    // DEFAULT_FETCH_TIMEOUT_MS — 10 seconds — and the request is bounded
+    // there, not earlier and not never.
+    vi.useFakeTimers();
+    try {
+      for (const fetchTimeoutMs of [0, -1, Number.NaN]) {
+        let settled = false;
+        const hungFetch: FetchLike = () => new Promise<never>(() => {});
+        const resolver = createDemoResolver({ mirrorUrl: MIRROR, fetchImpl: hungFetch, fetchTimeoutMs });
+        const pending = resolver.resolve(SCENARIO_ID).then((presentation) => {
+          settled = true;
+          return presentation;
+        });
+        await vi.advanceTimersByTimeAsync(9_999);
+        expect(settled, String(fetchTimeoutMs)).toBe(false);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(await pending, String(fetchTimeoutMs)).toEqual({
+          state: 'footage-pending',
+          reason: 'footage-pending',
+        });
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

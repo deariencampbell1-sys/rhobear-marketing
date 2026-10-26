@@ -62,11 +62,34 @@ const codeOf = (raw: unknown): string => {
   return 'problem' in parsed ? parsed.problem : 'parsed';
 };
 
+/** The RegistryProblem code a registry produces, or 'parsed'. */
+const registryCodeOf = (raw: unknown): string => {
+  const parsed = parseScenarioRegistry(raw);
+  return 'problem' in parsed ? parsed.problem : 'parsed';
+};
+
+/** One complete registry row; overrides replace one field at a time. */
+function registryRow(
+  scenarioId: string,
+  order: number,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    scenarioId,
+    engine: 'teams',
+    title: 'Teams at work',
+    oneLiner: 'One honest line.',
+    posterAlt: 'Poster alt text',
+    order,
+    ...overrides,
+  };
+}
+
 /**
  * One violated field per refusal code — the only gate between a hostile body
  * and a rendered package. The table is typed as a total record over
- * `DemoProblem`, so the compiler refuses both directions of drift: a
- * seventeenth code cannot arrive unpinned (missing key) and an extra key
+ * `DemoProblem`, so the compiler refuses both directions of drift: an
+ * eighteenth code cannot arrive unpinned (missing key) and an extra key
  * cannot hide here (excess property check).
  */
 const oneViolationPerCode = {
@@ -117,6 +140,10 @@ const oneViolationPerCode = {
     body: wellFormed({ approval: { approvedBy: 'Owner', approvedAt: 5, watchedComplete: true } }),
   },
   'bad-content-hash': { note: 'contentHash shape', body: wellFormed({ contentHash: 'nothex' }) },
+  'unknown-scenario': {
+    note: 'a registry row naming a valid-shaped id the board does not',
+    body: [registryRow('invented-99', 1)],
+  },
 } satisfies Record<DemoProblem, { note: string; body: unknown }>;
 
 describe('parseDemoPackage', () => {
@@ -190,15 +217,124 @@ describe('parseDemoPackage', () => {
     );
   });
 
-  it('every DemoProblem refusal code is pinned: one violated field per code, all sixteen', () => {
+  it('a package URL with any query or fragment is refused: X-Goog-Signature, Policy, Key-Pair-Id, Azure se/sp and a #token fragment', () => {
+    // An immutable link carries no query and no fragment at all: a denylist of
+    // parameter names is a promise to keep it complete forever — GCS signs
+    // with X-Goog-Signature/X-Goog-Expires, CloudFront with Policy and
+    // Key-Pair-Id, Azure SAS with se/sp — and url.searchParams never even sees
+    // a fragment, so #token=… would sail past any parameter-name check.
+    const condemned = [
+      `${BASE}/poster.png?X-Goog-Signature=sig`,
+      `${BASE}/poster.png?Policy=ey-policy`,
+      `${BASE}/poster.png?Key-Pair-Id=key`,
+      `${BASE}/poster.png?se=2026-10-26&sp=rl`,
+      `${BASE}/poster.png#token=abc`,
+    ];
+    for (const posterUrl of condemned) {
+      expect(codeOf(wellFormed({ posterUrl })), posterUrl).toBe('bad-url');
+    }
+  });
+
+  it("the revision must be a path segment and must have a revision shape (rev- prefixed): 's', '1' and 'demos' are refused, a real revision on the path is accepted", () => {
+    // The shape, chosen once and stated in the module doc: a package revision
+    // is `rev-` plus a non-empty run of alphanumerics, dots and dashes — the
+    // publisher's stamp (rev-2026-10-25-1). A revision validated only as
+    // non-empty ('s', '1', 'demos') matches almost any media path, so the
+    // shape is enforced here and the URL rule demands a whole path segment,
+    // not a substring.
+    for (const packageRevision of ['s', '1', 'demos', '', 'rev-']) {
+      expect(codeOf(wellFormed({ packageRevision })), packageRevision).toBe('bad-package-revision');
+    }
+    // The revision present only as a substring of a longer segment is not
+    // anchored and is refused.
+    expect(
+      codeOf(
+        wellFormed({
+          posterUrl: `https://media.example.com/demos/teams-01/x${PACKAGE_REVISION}y/poster.png`,
+        }),
+      ),
+    ).toBe('bad-url');
+    // A real revision, as a whole path segment, is accepted.
+    expect(codeOf(wellFormed())).toBe('parsed');
+  });
+
+  it('an interactive sandbox is an allow-listed token set: allow-same-origin is refused, and so is an unknown token', () => {
+    // W0-05b carries this string into an iframe sandbox attribute on the
+    // front-door origin: allow-same-origin — especially beside allow-scripts —
+    // lets the framed page act as the front-door origin and escape the
+    // sandbox, so it is refused outright, and every remaining token must be a
+    // known sandbox token. An allow-list, not a denylist.
+    for (const sandbox of [
+      'allow-scripts allow-same-origin',
+      'allow-same-origin',
+      'allow-escape-sandbox',
+      'allow-scripts allow-fake-power',
+    ]) {
+      expect(codeOf(wellFormed({ interactive: { url: `${BASE}/try.html`, sandbox } })), sandbox).toBe(
+        'bad-interactive',
+      );
+    }
+    // Tabs and repeated spaces between allow-listed tokens parse, and the
+    // value W0-05b receives is the normalized token list.
+    const parsed = parseDemoPackage(
+      wellFormed({
+        interactive: { url: `${BASE}/try.html`, sandbox: 'allow-scripts\t allow-popups  allow-forms' },
+      }),
+    );
+    if (!('package' in parsed)) throw new Error('expected the package to parse');
+    expect(parsed.package.interactive?.sandbox).toBe('allow-scripts allow-popups allow-forms');
+  });
+
+  it('evidence inputs normalize when absent and null, and pass through when present', () => {
+    for (const inputsLike of [undefined, null]) {
+      const parsed = parseDemoPackage(
+        wellFormed({
+          evidence: { inputs: inputsLike, runIds: ['run-1'], logs: [], artifactHashes: ['c'.repeat(64)] },
+        }),
+      );
+      if (!('package' in parsed)) throw new Error('expected the package to parse');
+      expect(parsed.package.evidence.inputs).toEqual([]);
+    }
+    const parsed = parseDemoPackage(
+      wellFormed({
+        evidence: {
+          inputs: ['stdin.json'],
+          runIds: ['run-1'],
+          logs: [],
+          artifactHashes: ['c'.repeat(64)],
+        },
+      }),
+    );
+    if (!('package' in parsed)) throw new Error('expected the package to parse');
+    expect(parsed.package.evidence.inputs).toEqual(['stdin.json']);
+  });
+
+  it('a valid interactive object parses, with its immutable url and sandbox carried through', () => {
+    const parsed = parseDemoPackage(
+      wellFormed({ interactive: { url: `${BASE}/try.html`, sandbox: 'allow-scripts' } }),
+    );
+    if (!('package' in parsed)) throw new Error('expected the package to parse');
+    expect(parsed.package.interactive).toEqual({ url: `${BASE}/try.html`, sandbox: 'allow-scripts' });
+  });
+
+  it('a non-string captionsUrl and a non-string transcriptUrl each refuse', () => {
+    expect(codeOf(wellFormed({ captionsUrl: 7 }))).toBe('bad-url');
+    expect(codeOf(wellFormed({ transcriptUrl: false }))).toBe('bad-url');
+  });
+
+  it('every DemoProblem refusal code is pinned: one violated field per code, all seventeen', () => {
     const codes = Object.keys(oneViolationPerCode) as DemoProblem[];
-    expect(codes).toHaveLength(16);
+    expect(codes).toHaveLength(17);
     const pinned = new Map<string, number>();
     for (const code of codes) {
       const fixture = oneViolationPerCode[code];
       // Each fixture violates exactly the check its code names, so the refusal
       // is unambiguous: the gate fires with its own code and no other.
-      expect(codeOf(fixture.body), fixture.note).toBe(code);
+      // `unknown-scenario` is the registry's refusal; every other code names a
+      // package body refusal from parseDemoPackage.
+      const produced =
+        code === 'unknown-scenario' ? registryCodeOf(fixture.body) : codeOf(fixture.body);
+      expect(produced, fixture.note).toBe(code);
       pinned.set(code, (pinned.get(code) ?? 0) + 1);
     }
     // Every member of DemoProblem is covered exactly once — no code left
@@ -271,6 +407,17 @@ describe('parseDemoPackage', () => {
 });
 
 describe('demo module cohesion', () => {
+  it('the demo modules judge dates through one isRfc3339', () => {
+    // schema.ts's re-export is the demo surface's single date judgment:
+    // resolve.ts imports isRfc3339 through ./schema, not a second time from
+    // ../release/schema, and neither demo module keeps a private copy.
+    expect(resolveSource).toMatch(/import\s*\{[^}]*\bisRfc3339\b[^}]*\}\s*from\s*'\.\/schema'/);
+    expect(resolveSource).not.toMatch(/isRfc3339[^;]*from\s*'\.\.\/release\/schema'/);
+    expect(schemaSource).toContain('export { isRfc3339 };');
+    expect(schemaSource).not.toMatch(/function isRfc3339/);
+    expect(resolveSource).not.toMatch(/function isRfc3339/);
+  });
+
   it('the demo modules share one isRecord and one registry row type', () => {
     // resolve.ts imports isRecord from ./schema — the repo's ?raw source
     // assertion style — instead of defining a second copy.
@@ -375,23 +522,41 @@ describe('content hash canonical form', () => {
 });
 
 describe('parseScenarioRegistry', () => {
-  const row = (scenarioId: string, order: number) => ({
-    scenarioId,
-    engine: 'teams',
-    title: 'Teams at work',
-    oneLiner: 'One honest line.',
-    posterAlt: 'Poster alt text',
-    order,
-  });
-
   it('parses a registry, and refuses duplicates, non-arrays and malformed rows', () => {
-    const parsed = parseScenarioRegistry([row('teams-01', 1)]);
+    const parsed = parseScenarioRegistry([registryRow('teams-01', 1)]);
     if (!('rows' in parsed)) throw new Error('expected the registry to parse');
     expect(parsed.rows.length).toBe(1);
-    expect(parseScenarioRegistry([row('teams-01', 1), row('teams-01', 2)])).toEqual({
+    expect(parseScenarioRegistry([registryRow('teams-01', 1), registryRow('teams-01', 2)])).toEqual({
       problem: 'duplicate-scenario',
     });
     expect(parseScenarioRegistry({})).toEqual({ problem: 'not-an-array' });
     expect(parseScenarioRegistry([{ scenarioId: 'teams-01' }])).toEqual({ problem: 'bad-row' });
+  });
+
+  it('a registry row naming an invented scenario id is unknown-scenario, and every registry id parses', () => {
+    // KNOWN_SCENARIO_IDS is enforced now, not merely documented: a
+    // valid-shaped but invented id is exactly the drift the board's table
+    // exists to stop before it reaches /engines, and it refuses with its own
+    // code.
+    expect(parseScenarioRegistry([registryRow('invented-99', 1)])).toEqual({
+      problem: 'unknown-scenario',
+    });
+    // Next to a valid row, only the bad row refuses — in either position.
+    const good = registryRow('teams-01', 1);
+    expect(parseScenarioRegistry([good, registryRow('invented-99', 2)])).toEqual({
+      problem: 'unknown-scenario',
+    });
+    expect(parseScenarioRegistry([registryRow('invented-99', 1), good])).toEqual({
+      problem: 'unknown-scenario',
+    });
+    const alone = parseScenarioRegistry([good]);
+    if (!('rows' in alone)) throw new Error('expected the registry to parse');
+    expect(alone.rows.map((row) => row.scenarioId)).toEqual(['teams-01']);
+    // Every id the board names parses clean.
+    const all = parseScenarioRegistry(
+      KNOWN_SCENARIO_IDS.map((scenarioId, i) => registryRow(scenarioId, i + 1)),
+    );
+    if (!('rows' in all)) throw new Error('expected the registry to parse');
+    expect(all.rows.map((row) => row.scenarioId)).toEqual([...KNOWN_SCENARIO_IDS]);
   });
 });
