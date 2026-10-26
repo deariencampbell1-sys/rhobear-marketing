@@ -703,4 +703,108 @@ describe('intent store', () => {
     expect(isRfc3339('2026-10-25T12:00:00')).toBe(false);
     expect(isRfc3339('not-a-date')).toBe(false);
   });
+
+  it('consume past the consumed retention reports absent, not already-consumed, and removes the record', async () => {
+    // W0-06 review r4 (finding 5): load() deletes a consumed record after
+    // CONSUMED_RETENTION_MS and reports absent, but consume() reported
+    // already-consumed forever — so ten minutes after another tab finished,
+    // this tab was sent back into a completed checkout. The two readers must
+    // agree about a consumed record's age: the worlds below share one clock
+    // and are both driven at the boundary.
+    const clock = fakeClock();
+    const loadWorld = new Map<string, string>();
+    const consumeWorld = new Map<string, string>();
+    const loadStore = createIntentStore({ storage: sharedBacking(loadWorld), now: clock.now });
+    const consumeStore = createIntentStore({ storage: sharedBacking(consumeWorld), now: clock.now });
+    for (const store of [loadStore, consumeStore]) {
+      const created = await store.create({ product: 'herald', kind: 'account', returnRoute: '/account' });
+      expect(created.ok).toBe(true);
+      expect((await store.consume()).outcome).toBe('consumed');
+    }
+
+    // One millisecond inside the retention both readers still see the record.
+    clock.advance(CONSUMED_RETENTION_MS - 1);
+    expect((await loadStore.load()).state).toBe('consumed');
+    expect((await consumeStore.consume()).outcome).toBe('already-consumed');
+    expect(loadWorld.has(INTENT_STORAGE_KEY)).toBe(true);
+
+    // Exactly at the boundary (equal, not just greater) both agree it is gone:
+    // absent from load(), absent from consume() — never already-consumed.
+    clock.advance(1);
+    expect(await loadStore.load()).toEqual({ state: 'absent' });
+    expect(await consumeStore.consume()).toEqual({ outcome: 'absent' });
+    expect(loadWorld.has(INTENT_STORAGE_KEY), 'load() removed the record').toBe(false);
+    expect(consumeWorld.has(INTENT_STORAGE_KEY), 'consume() removed the record').toBe(false);
+  });
+
+  it('a lock manager that resolves without running the callback still consumes, on the in-process guarantee', async () => {
+    // W0-06 review r4 (finding 7): a LockManager that resolves without ever
+    // invoking the callback used to leave the consume core undefined and
+    // consume() threw a TypeError. The body runs inline instead, on the
+    // in-process guarantee — consume() is total whatever the lock manager does.
+    const fakeLocks = {
+      request<R>(_name: string, _options: { mode: 'exclusive' | 'shared' }, _body: () => Promise<R> | R): Promise<R> {
+        return Promise.resolve(undefined as unknown as R);
+      },
+    };
+    vi.stubGlobal('navigator', { locks: fakeLocks });
+    try {
+      const store = createIntentStore({ storage: memoryIntentStorage(), now: fakeClock().now });
+      await store.create({ product: 'herald', kind: 'account', returnRoute: '/account' });
+      const won = await store.consume();
+      expect(won.outcome).toBe('consumed');
+      if (won.outcome === 'consumed') expect(won.exclusive, 'no callback ran: the weaker guarantee is reported').toBe('in-process');
+      // And the record really was consumed: never twice.
+      expect((await store.consume()).outcome).toBe('already-consumed');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('an expired record is removed on the load that reports it expired, and a second load is absent', async () => {
+    // W0-06 review r4 (finding 8): expired install intents used to linger in
+    // storage indefinitely. The load that reports `expired` removes the
+    // record, the same discipline as `consumed`.
+    const storage = recordingStorage();
+    const clock = fakeClock();
+    const store = createIntentStore({ storage, now: clock.now });
+    await store.create({ product: 'builds', kind: 'install', returnRoute: '/get' });
+    clock.advance(DAY_TTL_MS + 1);
+    expect(await store.load()).toEqual({ state: 'expired' });
+    expect(storage.backing.has(INTENT_STORAGE_KEY), 'the expired record is removed by the load that reports it').toBe(
+      false,
+    );
+    expect(await store.load()).toEqual({ state: 'absent' });
+
+    // Edge: a load whose removeItem throws still reports expired, and the
+    // mirror tombstone keeps the stale record invisible.
+    const staleExpired = {
+      v: 1,
+      i: {
+        id: 'q83N-vxK2mPp0QeR5sT8uAw',
+        product: 'forge',
+        plan: 'shell',
+        returnRoute: '/plans',
+        kind: 'checkout',
+        createdAt: '2026-10-25T12:00:00.000Z',
+        expiresAt: '2026-10-25T13:00:00.000Z',
+      },
+    };
+    const backing = new Map([[INTENT_STORAGE_KEY, JSON.stringify(staleExpired)]]);
+    const wedged = createIntentStore({
+      storage: {
+        getItem: async (key) => backing.get(key) ?? null,
+        setItem: async (key, value) => {
+          backing.set(key, value);
+        },
+        removeItem: async () => {
+          throw new Error('storage is wedged');
+        },
+      },
+      now: () => Date.parse('2026-10-25T13:00:00.001Z'),
+    });
+    expect(await wedged.load()).toEqual({ state: 'expired' });
+    expect(await wedged.load()).toEqual({ state: 'absent' }); // the tombstone keeps it invisible
+    expect(backing.get(INTENT_STORAGE_KEY), 'the stale bytes are still on disk').toBeTruthy();
+  });
 });

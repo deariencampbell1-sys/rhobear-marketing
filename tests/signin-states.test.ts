@@ -17,6 +17,7 @@ import {
   type SignInSnapshot,
   type SignInState,
 } from '../src/clients/intent/signin';
+import { parseIntent } from '../src/clients/intent/schema';
 import {
   CHECKOUT_TTL_MS,
   CONSUMED_RETENTION_MS,
@@ -625,18 +626,20 @@ describe('sign-in state machine', () => {
     expect(machine.snapshot().state).toBe('restored-unverified');
     const intentBefore = machine.snapshot().intent;
 
-    // Positive arm: the one accepted state.
-    const confirmed = machine.confirmRestore();
+    // Positive arm: the one accepted state — with the money path's explicit
+    // assertion (W0-06 review r4, finding 4).
+    const confirmed = machine.confirmRestore({ moneyPathConfirmed: true });
     expect(confirmed).not.toBe('not-restoring');
     expect(confirmed).toMatchObject({ state: 'done', destination: '/plans' });
     expect(machine.snapshot().state).toBe('done');
     expect(machine.snapshot().intent, 'confirmRestore consumes nothing').toEqual(intentBefore);
-    // Twice: the second call reports 'not-restoring'.
-    expect(machine.confirmRestore()).toBe('not-restoring');
+    // Edge: on restored-unverified with a true assertion, then again — the
+    // second call reports 'not-restoring'.
+    expect(machine.confirmRestore({ moneyPathConfirmed: true })).toBe('not-restoring');
 
     // Negative arms: idle, done and restoring — refused, nothing changes.
     const idle = setup({ google: true });
-    expect(idle.machine.confirmRestore()).toBe('not-restoring');
+    expect(idle.machine.confirmRestore({ moneyPathConfirmed: true })).toBe('not-restoring');
     expect(idle.machine.snapshot().state).toBe('idle');
 
     const done = setup({ google: true });
@@ -647,7 +650,7 @@ describe('sign-in state machine', () => {
     await done.machine.restoreDestination();
     done.machine.completeRestore();
     expect(done.machine.snapshot().state).toBe('done');
-    expect(done.machine.confirmRestore()).toBe('not-restoring');
+    expect(done.machine.confirmRestore({ moneyPathConfirmed: true })).toBe('not-restoring');
     expect(done.machine.snapshot().state).toBe('done');
 
     const restoring = setup({ google: true });
@@ -657,7 +660,7 @@ describe('sign-in state machine', () => {
     restoring.machine.sessionApproved();
     await restoring.machine.restoreDestination();
     expect(restoring.machine.snapshot().state).toBe('restoring');
-    expect(restoring.machine.confirmRestore()).toBe('not-restoring');
+    expect(restoring.machine.confirmRestore({ moneyPathConfirmed: true })).toBe('not-restoring');
     expect(restoring.machine.snapshot().state).toBe('restoring');
   });
 
@@ -675,7 +678,7 @@ describe('sign-in state machine', () => {
     expect(machine.completeRestore()).toBe('not-restoring');
     expect(machine.snapshot().state).toBe('restored-unverified');
     // Only confirmRestore() — after L2's own re-confirmation — reaches done.
-    expect(machine.confirmRestore()).toMatchObject({ state: 'done' });
+    expect(machine.confirmRestore({ moneyPathConfirmed: true })).toMatchObject({ state: 'done' });
     expect(machine.snapshot().state).toBe('done');
     expect(machine.completeRestore()).toBe('already-done');
   });
@@ -737,12 +740,15 @@ describe('sign-in state machine', () => {
     // a machine reused across returns could show a prior return's
     // claimedSuccess, restoreGuarantee, recovery or purchasesPreserved.
     // Every branch — active, consumed, expired, invalid, absent — resets all
-    // four back to their start values.
+    // six snapshot-visible transient fields back to their start values
+    // (W0-06 review r4, finding 2): copy and method too, not just four.
     const assertStartValues = (s: SignInSnapshot) => {
       expect(s.claimedSuccess).toBe(false);
       expect(s.restoreGuarantee).toBe('none');
       expect(s.recovery).toBeNull();
       expect(s.purchasesPreserved).toBeNull();
+      expect(s.copy).toBeNull();
+      expect(s.method).toBeNull();
     };
 
     /** Dirty claimedSuccess and the guarantee: approve, then restore to done. */
@@ -768,6 +774,15 @@ describe('sign-in state machine', () => {
       m.chooseMethod('google');
       m.channelConflict();
     };
+    /** Dirty copy and method: choose email and request a magic link. */
+    const walkMagicLink = async (m: SignInMachine) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('email');
+      m.requestMagicLink('person@example.com');
+      expect(m.snapshot().copy, 'precondition: copy is dirty').not.toBeNull();
+      expect(m.snapshot().method, 'precondition: method is dirty').toBe('email');
+    };
 
     type Walk = (m: SignInMachine) => Promise<void>;
     type Force = (
@@ -776,10 +791,15 @@ describe('sign-in state machine', () => {
       backing: Map<string, string>,
     ) => Promise<void>;
     const branches: readonly { name: string; walks: readonly Walk[]; force: Force; state: SignInState }[] = [
-      { name: 'active', walks: [walkApproved, walkConflict], force: async () => undefined, state: 'intent-loaded' },
+      {
+        name: 'active',
+        walks: [walkApproved, walkConflict, walkMagicLink],
+        force: async () => undefined,
+        state: 'intent-loaded',
+      },
       {
         name: 'consumed',
-        walks: [walkRestored, walkApproved, walkConflict],
+        walks: [walkRestored, walkApproved, walkConflict, walkMagicLink],
         force: async (store) => {
           await store.consume();
         },
@@ -787,7 +807,7 @@ describe('sign-in state machine', () => {
       },
       {
         name: 'expired',
-        walks: [walkApproved, walkConflict],
+        walks: [walkApproved, walkConflict, walkMagicLink],
         force: async (_store, clock) => {
           clock.advance(DAY_TTL_MS + 1);
         },
@@ -795,7 +815,7 @@ describe('sign-in state machine', () => {
       },
       {
         name: 'invalid',
-        walks: [walkApproved, walkConflict],
+        walks: [walkApproved, walkConflict, walkMagicLink],
         force: async (_store, _clock, backing) => {
           backing.set(INTENT_STORAGE_KEY, '{oops');
         },
@@ -803,7 +823,7 @@ describe('sign-in state machine', () => {
       },
       {
         name: 'absent',
-        walks: [walkRestored, walkApproved, walkConflict],
+        walks: [walkRestored, walkApproved, walkConflict, walkMagicLink],
         force: async (store) => {
           await store.clear();
         },
@@ -816,7 +836,7 @@ describe('sign-in state machine', () => {
         const backing = new Map<string, string>();
         const clock = fakeClock();
         const store = createIntentStore({ storage: backedStorage(backing), now: clock.now });
-        const machine = createSignInMachine({ store, now: clock.now, providers: { google: true } });
+        const machine = createSignInMachine({ store, now: clock.now, providers: { google: true, email: true } });
         await walk(machine);
         await branch.force(store, clock, backing);
         const begun = await machine.beginWithStoredIntent();
@@ -826,5 +846,257 @@ describe('sign-in state machine', () => {
         assertStartValues(machine.snapshot());
       }
     }
+  });
+
+  it("a dirty machine that gets a rejected intent reports no success: every transient field is cleared on armIntent's failure branch", async () => {
+    // W0-06 review r4 (finding 1): the failure branch used to set state, intent
+    // and copy and nothing else — claimedSuccess, recovery, purchasesPreserved,
+    // restoreGuarantee, method and the cooldown survived, so a machine that had
+    // claimed a session could report { state: 'idle', claimedSuccess: true }.
+    // One resetTransient() owns all seven fields; this test dirties them and
+    // asserts all seven after the rejection, so the reset list and the
+    // assertion list cannot drift apart again.
+    const rejection = { ok: false, problem: 'bad-return-route' } as const;
+    const failureCopy = 'That destination could not be saved (bad-return-route).';
+
+    /** Every transient field, at its reset value, after a rejected intent. */
+    const assertAllSevenCleared = (m: SignInMachine, label: string) => {
+      const s = m.snapshot();
+      expect(s.state, label).toBe('idle');
+      expect(s.intent, label).toBeNull();
+      expect(s.claimedSuccess, label).toBe(false);
+      expect(s.recovery, label).toBeNull();
+      expect(s.purchasesPreserved, label).toBeNull();
+      expect(s.restoreGuarantee, label).toBe('none');
+      expect(s.method, label).toBeNull();
+      // copy is cleared too and replaced by THIS return's failure copy — the
+      // stale magic-link message never survives the rejection.
+      expect(s.copy, label).toBe(failureCopy);
+      // cooldownUntil is machine-private; both of its readers report the
+      // reset: no countdown and no leftover cooldown claiming readiness.
+      expect(m.remainingCooldownSeconds(), label).toBe(0);
+      expect(m.readyToResend(), label).toBe(false);
+    };
+
+    type Walk = (m: SignInMachine, clock: { advance: (ms: number) => void }) => Promise<void>;
+    /** Dirty claimedSuccess and method (sessionApproved). */
+    const walkApproved: Walk = async (m) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+      expect(m.snapshot().claimedSuccess, 'precondition: claimedSuccess is dirty').toBe(true);
+    };
+    /** Dirty recovery and purchasesPreserved (channelConflict). */
+    const walkConflict: Walk = async (m) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.channelConflict();
+      expect(m.snapshot().recovery, 'precondition: recovery is dirty').not.toBeNull();
+    };
+    /** Dirty copy, method and a cooldown deadline that has already passed. */
+    const walkCooldown: Walk = async (m, clock) => {
+      await m.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+      m.continueToMethodSelect();
+      m.chooseMethod('email');
+      m.requestMagicLink('person@example.com');
+      expect(m.onMagicLinkEvent({ type: 'cooldown', until: BASE + 30_000 })).toBe(true);
+      clock.advance(30_000); // the deadline is now in the past — and dirty
+      expect(m.readyToResend(), 'precondition: a stale cooldown deadline is dirty').toBe(true);
+    };
+    /** Dirty restoreGuarantee and claimedSuccess (a restore ran). */
+    const walkRestored: Walk = async (m) => {
+      await m.armIntent({ product: 'engines', kind: 'demo', returnRoute: '/engines' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+      expect((await m.restoreDestination()).outcome).toBe('restored');
+      expect(m.snapshot().restoreGuarantee, 'precondition: the guarantee is dirty').not.toBe('none');
+    };
+
+    const walks: readonly (readonly [string, Walk])[] = [
+      ['sessionApproved dirties claimedSuccess', walkApproved],
+      ['channelConflict dirties recovery and purchasesPreserved', walkConflict],
+      ['a cooldown dirties copy, method and the cooldown deadline', walkCooldown],
+      ['a restore dirties restoreGuarantee', walkRestored],
+    ];
+    for (const [name, walk] of walks) {
+      const { machine, clock } = setup({ google: true, email: true });
+      await walk(machine, clock);
+      expect(
+        await machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute: '/not-canonical' }),
+        name,
+      ).toEqual(rejection);
+      assertAllSevenCleared(machine, name);
+
+      // Edge: armIntent() failing twice in a row — the second snapshot is
+      // identical to the first.
+      const first = machine.snapshot();
+      expect(
+        await machine.armIntent({ product: 'builds', kind: 'checkout', returnRoute: '/not-canonical' }),
+        name,
+      ).toEqual(rejection);
+      expect(machine.snapshot(), name).toEqual(first);
+    }
+  });
+
+  it('a used link and a wrong-browser link both offer a new one: continueToMethodSelect returns to method-select with the intent intact', async () => {
+    // W0-06 review r4 (finding 3): `used` and `wrong-browser` are live-intent
+    // states — the intent is unconsumed in each — and neither had an outbound
+    // transition: the only exit was a page reload.
+    const arm = async (event: MagicLinkEvent, expected: SignInState) => {
+      const { machine } = setup({ email: true });
+      await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+      machine.continueToMethodSelect();
+      machine.chooseMethod('email');
+      machine.requestMagicLink('person@example.com');
+      expect(machine.onMagicLinkEvent(event), expected).toBe(true);
+      expect(machine.snapshot().state, expected).toBe(expected);
+      // A new link is offered: method-select with the intent intact.
+      expect(machine.continueToMethodSelect(), expected).toBe(true);
+      const s = machine.snapshot();
+      expect(s.state, expected).toBe('method-select');
+      expect(s.intent, expected).not.toBeNull();
+      expect(s.destination, expected).toBe('/reviews');
+      expect(visibleMethods({ email: true }), expected).toEqual(['email']);
+      // and a new link can actually be requested from here
+      expect(machine.chooseMethod('email'), expected).toBe(true);
+      expect(machine.requestMagicLink('person@example.com'), expected).toBe(true);
+    };
+    await arm({ type: 'used' }, 'used');
+    await arm({ type: 'wrong-browser' }, 'wrong-browser');
+  });
+
+  it('confirmRestore requires an explicit money-path assertion: a missing or false one changes nothing', async () => {
+    // W0-06 review r4 (finding 4): the "L2 must re-confirm before charging"
+    // contract used to be a comment over `void options`. It is typed now:
+    // confirmRestore(assertion: { readonly moneyPathConfirmed: true }) — this
+    // machine cannot verify the re-confirmation; the caller asserts it, and
+    // the required argument exists so the assertion is visible at every call
+    // site. A missing or false assertion is refused exactly like a wrong
+    // state: 'not-restoring', nothing changed.
+    type Assertion = { readonly moneyPathConfirmed: true };
+    const toUnverified = async (m: SignInMachine) => {
+      await m.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+      await m.restoreDestination();
+      expect(m.snapshot().state).toBe('restored-unverified');
+    };
+
+    const missing = setup({ google: true });
+    await toUnverified(missing.machine);
+    expect(missing.machine.confirmRestore(undefined as unknown as Assertion)).toBe('not-restoring');
+    expect(missing.machine.snapshot().state, 'a missing assertion changes nothing').toBe('restored-unverified');
+
+    const falsy = setup({ google: true });
+    await toUnverified(falsy.machine);
+    expect(
+      falsy.machine.confirmRestore({ moneyPathConfirmed: false } as unknown as Assertion),
+      'a false assertion changes nothing',
+    ).toBe('not-restoring');
+    expect(falsy.machine.snapshot().state).toBe('restored-unverified');
+
+    // Edge: on restored-unverified with a true assertion, then again —
+    // 'not-restoring'.
+    const once = setup({ google: true });
+    await toUnverified(once.machine);
+    expect(once.machine.confirmRestore({ moneyPathConfirmed: true })).toMatchObject({ state: 'done' });
+    expect(once.machine.confirmRestore({ moneyPathConfirmed: true })).toBe('not-restoring');
+  });
+
+  it("an already-consumed stamp never exceeds expiresAt, so the snapshot's record still validates", async () => {
+    // W0-06 review r4 (finding 6): the already-consumed path fabricates a
+    // consumedAt from now(), which can land past the record's own expiresAt —
+    // a snapshot whose record parseIntent would refuse. The stamp is clamped
+    // to expiresAt.
+    const backing = new Map<string, string>();
+    const clock = fakeClock();
+    const rival = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    await rival.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
+    const loser = createSignInMachine({
+      store: createIntentStore({ storage: backedStorage(backing), now: clock.now }),
+      now: clock.now,
+      providers: { google: true },
+    });
+    expect((await loser.beginWithStoredIntent()).state).toBe('intent-loaded');
+    for (const m of [rival, loser]) {
+      m.continueToMethodSelect();
+      m.chooseMethod('google');
+      m.sessionApproved();
+    }
+    // The rival consumes just before the checkout intent's TTL ends...
+    clock.advance(CHECKOUT_TTL_MS - 1_000);
+    expect((await rival.restoreDestination()).outcome).toBe('restored');
+    // ...and the loser reports already-consumed after expiresAt has passed,
+    // still inside the consumed retention window.
+    clock.advance(2_000);
+    const already = await loser.restoreDestination();
+    expect(already.outcome).toBe('already-restored');
+    const record = already.snapshot.intent;
+    expect(record, 'the snapshot still carries the record').not.toBeNull();
+    const stamp = Date.parse(record?.consumedAt ?? '');
+    const expiresAt = Date.parse(record?.expiresAt ?? '');
+    expect(stamp, 'the fabricated stamp never exceeds expiresAt').not.toBeGreaterThan(expiresAt);
+    expect(parseIntent(record), "the snapshot's record still validates").toMatchObject({ ok: true });
+  });
+
+  it('a malformed cooldown until is refused and changes nothing', async () => {
+    // W0-06 review r4 (finding 9): a NaN or Infinity `until` used to propagate
+    // NaN seconds to the screen, and a `until` at or below zero left the
+    // machine stuck in `cooldown`. A malformed `until` is refused outright.
+    const { machine } = setup({ email: true });
+    await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('email');
+    machine.requestMagicLink('person@example.com');
+    expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true);
+    const before = machine.snapshot();
+    for (const until of [NaN, Infinity, -Infinity, 0, -1]) {
+      expect(machine.onMagicLinkEvent({ type: 'cooldown', until }), String(until)).toBe(false);
+      expect(machine.snapshot(), String(until)).toEqual(before); // changes nothing
+    }
+    expect(machine.remainingCooldownSeconds()).toBe(0);
+  });
+
+  it('a finished cooldown reports ready-to-resend, not a permanent zero', async () => {
+    // W0-06 review r4 (finding 9): at zero seconds the state used to stay
+    // `cooldown` forever and a screen could not tell "resend allowed" from
+    // "still counting". remainingCooldownSeconds() still reports the distinct
+    // 0, and readyToResend() — the named predicate — now exposes that the
+    // cooldown is over: the zero is never the only report.
+    const { machine, clock } = setup({ email: true });
+    await machine.armIntent({ product: 'reviews', kind: 'demo', returnRoute: '/reviews' });
+    machine.continueToMethodSelect();
+    machine.chooseMethod('email');
+    machine.requestMagicLink('person@example.com');
+    expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true);
+    expect(machine.onMagicLinkEvent({ type: 'cooldown', until: clock.now() + 30_000 })).toBe(true);
+    // Still counting: not ready to resend.
+    expect(machine.remainingCooldownSeconds()).toBe(30);
+    expect(machine.readyToResend()).toBe(false);
+    clock.advance(30_000);
+    // Finished: ready-to-resend is reported — not a bare permanent zero.
+    expect(machine.remainingCooldownSeconds()).toBe(0);
+    expect(machine.readyToResend(), 'a finished cooldown reports ready-to-resend').toBe(true);
+
+    // Edge: a cooldown whose valid `until` has already passed when the next
+    // event arrives — the event lands, and a fresh cooldown counts again.
+    expect(machine.onMagicLinkEvent({ type: 'cooldown', until: clock.now() + 20_000 })).toBe(true);
+    expect(machine.remainingCooldownSeconds()).toBe(20);
+    expect(machine.readyToResend()).toBe(false);
+    clock.advance(20_000);
+    expect(machine.readyToResend()).toBe(true);
+    // The next event lands the same way from the finished cooldown, and the
+    // run-out deadline is still what readiness reports.
+    expect(machine.onMagicLinkEvent({ type: 'sent' })).toBe(true);
+    expect(machine.snapshot().state).toBe('sent');
+    expect(machine.readyToResend()).toBe(true);
   });
 });
