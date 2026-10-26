@@ -978,7 +978,7 @@ describe('sign-in state machine', () => {
     // id, it cannot verify it; L2 issues it and L2 verifies it). A missing or
     // false assertion is refused exactly like a wrong state: 'not-restoring',
     // nothing changed.
-    type Assertion = { readonly moneyPathConfirmed: true };
+    type Assertion = { readonly moneyPathConfirmed: true; readonly confirmationId: string };
     const toUnverified = async (m: SignInMachine) => {
       await m.armIntent({ product: 'forge', kind: 'checkout', returnRoute: '/plans', plan: 'shell' });
       m.continueToMethodSelect();

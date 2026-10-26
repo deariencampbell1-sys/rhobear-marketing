@@ -10,19 +10,16 @@
 // contains a token, session, card, receipt, email or account UUID, and its
 // return route is one of the canonical routes and nothing else.
 
-import { engineScenarios } from '../../data/engines';
-
-// W0-06 review r2 (finding 8): this import is deliberate and load-bearing —
-// the scenario allowlist below is DERIVED live from the frozen engines
-// registry in src/data/engines.ts (one source of truth, no hand-copied second
-// list), and it is a hand-copied list that would drift. The coupling is
-// proven, not merely commented: tests/intent-schema.test.ts asserts the
-// allowlist equals the registry's scenario ids exactly. The price is visible
-// here: renaming or removing a scenario id there silently turns every stored
-// intent carrying the old id into bad-scenario → invalid, and the person
-// loses their place. A rename is therefore a migration, not an edit — the
-// pinned test turns the break into a named failure, not into someone's
-// sign-in.
+// W0-06 review r5 (finding 6): the scenario allowlist lives in ./scenarios as
+// a literal and this module imports ONLY that — the runtime client must not
+// import the engines registry at module load (every front-door consumer of the
+// intent client would pull the whole data module into its bundle for a short
+// allowlist and inherit its init-time failure modes). The drift guard moved
+// with the list: tests/intent-schema.test.ts imports the registry and asserts
+// the two sets are equal, in both directions, with a named failure. A rename
+// in the registry must be migrated deliberately — never edited silently into
+// someone's sign-in.
+import { INTENT_SCENARIOS } from './scenarios';
 
 /** The only return routes an intent may carry. Anything else is rejected. */
 export const CANONICAL_RETURN_ROUTES = Object.freeze([
@@ -59,11 +56,8 @@ export type IntentPlan = (typeof INTENT_PLANS)[number];
 export const INTENT_KINDS = Object.freeze(['checkout', 'install', 'demo', 'account'] as const);
 export type IntentKind = (typeof INTENT_KINDS)[number];
 
-// The allowlist itself, exported so the derivation can be proven equal to
-// the registry (W0-06 review r2, finding 8) — never a hand-copied copy.
-export const INTENT_SCENARIOS: readonly string[] = Object.freeze(
-  engineScenarios.map((s) => s.scenarioId),
-);
+// The allowlist itself now lives in ./scenarios (W0-06 review r5, finding 6);
+// the set below is the membership check parseIntent and the store use.
 const scenarioIdSet: ReadonlySet<string> = new Set(INTENT_SCENARIOS);
 
 export type Intent = {
@@ -124,8 +118,12 @@ export function isRfc3339(value: string): boolean {
   if (!Number.isFinite(Date.parse(value))) return false;
   // Date.parse normalises impossible dates (2026-02-30 becomes 2 March), so
   // the calendar is checked against the digits that were actually written.
+  // new Date(0) + setUTCFullYear takes the year literally (W0-06 review r5,
+  // finding 7): Date.UTC maps a year below 100 to 1900 + year and would
+  // refuse a well-formed early instant.
   const [year, month, day] = value.slice(0, 10).split('-').map(Number);
-  const probe = new Date(Date.UTC(year, month - 1, day));
+  const probe = new Date(0);
+  probe.setUTCFullYear(year, month - 1, day);
   return probe.getUTCFullYear() === year && probe.getUTCMonth() === month - 1 && probe.getUTCDate() === day;
 }
 
@@ -259,20 +257,23 @@ export function parseIntent(raw: unknown): ParsedIntent {
     consumedAt = rec.consumedAt;
   }
 
-  // Allowlist rebuild: a fresh object with only the declared keys. A token,
-  // session, card, receipt, email or account UUID that arrived alongside the
-  // record is gone here, before any screen or store sees it.
-  const intent: Intent = {
-    id,
-    product,
-    ...(scenario !== undefined ? { scenario } : {}),
-    ...(plan !== undefined ? { plan } : {}),
-    returnRoute,
-    kind,
-    createdAt,
-    expiresAt,
-    ...(consumedAt !== undefined ? { consumedAt } : {}),
-  };
+  // Allowlist rebuild — DRIVEN by INTENT_KEYS (W0-06 review r5, finding 8):
+  // the constant is a control, not documentation. Each declared key is mapped
+  // from the values validated above (an absent optional maps to undefined and
+  // stays a declared key), so the rebuild and the constant cannot drift with
+  // no compile error: the parsed record's keys are exactly INTENT_KEYS, and a
+  // key outside the list is refused entry — a token, session, card, receipt,
+  // email or account UUID that arrived alongside the record is gone here,
+  // before any screen or store sees it. The rebuilt record is frozen (W0-06
+  // review r5, finding 5): no consumer can rewrite the allowlist's own output
+  // through it.
+  const validated: Record<string, unknown> = { id, product, returnRoute, kind, createdAt, expiresAt };
+  if (scenario !== undefined) validated.scenario = scenario;
+  if (plan !== undefined) validated.plan = plan;
+  if (consumedAt !== undefined) validated.consumedAt = consumedAt;
+  const intent = Object.freeze(
+    Object.fromEntries(INTENT_KEYS.map((key) => [key, validated[key]])),
+  ) as Intent;
 
   if (JSON.stringify(intent).length > INTENT_MAX_CHARS) {
     return { ok: false, problem: 'too-large' };
