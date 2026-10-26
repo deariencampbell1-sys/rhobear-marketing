@@ -47,10 +47,14 @@
 //   - D05 (behaviour 15): an interactive package is used only when its
 //     `sandbox` is non-empty and its URL is https and the sandbox does not
 //     contain `allow-same-origin` beside `allow-scripts` (that pair would let
-//     the framed page act as the front-door origin — remote code). Anything
-//     else keeps the video path and records the named reason. The sandbox is
-//     applied verbatim as the iframe sandbox attribute (as `./schema.ts`
-//     pinned it), and the machine itself fetches nothing and spends nothing.
+//     the framed page act as the front-door origin — remote code). The token
+//     set is ASCII case-insensitive, like HTML's `sandbox` attribute, so the
+//     refusal fires on `ALLOW-SAME-ORIGIN`, `Allow-Same-Origin` and any other
+//     casing inside a multi-token string. Anything else keeps the video path
+//     and records the named reason. The sandbox is applied as the iframe
+//     sandbox attribute canonicalised the way `./schema.ts` normalises the
+//     wire value — lowercased, single-space tokens, never a mixed-case
+//     string — and the machine itself fetches nothing and spends nothing.
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -135,7 +139,7 @@ export type DemoPlayerSnapshot = {
   pendingSwitchTo: string | null;
   /** How the last completed scenario swap was presented (behaviour 9). */
   swapTransition: 'crossfade' | 'none' | null;
-  /** The sandbox to apply verbatim as the iframe sandbox attribute. */
+  /** The canonicalised sandbox to apply as the iframe sandbox attribute. */
   interactiveSandbox: string | null;
   interactiveRefusal: InteractiveRefusalReason | null;
   error: DemoPlayerError | null;
@@ -223,6 +227,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     presentation: DemoPresentation | null;
     posterReady: boolean;
   } | null = null;
+  // An in-flight resolve (start) or re-resolve (retry): one call at a time —
+  // a second call while one is in flight returns the snapshot unchanged,
+  // never a second resolve racing the first (React StrictMode, double-tap).
+  let resolving = false;
 
   function activeRenditions(): readonly DemoRendition[] {
     return presentation !== null && presentation.state === 'playable'
@@ -373,8 +381,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   function performSwap(next: DemoPresentation, swapScenarioId: string): void {
     // The old media plays until this instant; the swap is one step (no blank
     // frame), and under reduced motion it is presented without the board's
-    // crossfade — the reduced-motion input, applied in the machine.
-    media.pause();
+    // crossfade — the reduced-motion input, applied in the machine. From a
+    // state with no media there is nothing to pause: the null port is never
+    // touched.
+    if (activeRendition() !== null) media.pause();
     pendingSwitch = null;
     swapTransition = reducedMotion ? 'none' : 'crossfade';
     errorCount = 0;
@@ -404,30 +414,47 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   async function start(): Promise<DemoPlayerSnapshot> {
-    if (state !== 'resolve') return snapshot();
-    const next = await config.resolver.resolve(scenarioId);
-    applyPresentation(next, true);
-    return snapshot();
+    if (state !== 'resolve' || resolving) return snapshot();
+    resolving = true;
+    try {
+      const next = await config.resolver.resolve(scenarioId);
+      applyPresentation(next, true);
+      return snapshot();
+    } finally {
+      resolving = false;
+    }
   }
 
   async function retry(): Promise<DemoPlayerSnapshot> {
-    if (state !== 'error') return snapshot();
+    if (state !== 'error' || resolving) return snapshot();
     if (lastErrorKind === 'media' && activeRendition() !== null) {
       // A failed media request is retried as a media request — real playback
       // of the same source at the preserved position (S1), on the person's
-      // explicit tap, never automatically.
+      // explicit tap, never automatically. The overlay goes at once: an
+      // error must not outlive its failure — while the failure episode itself
+      // continues until playback resumes (the `playing` event ends it), which
+      // is what makes a second failure name a support reference id (D07).
+      error = null;
       media.seekTo(positionSeconds);
       media.play();
       state = 'buffering';
       return snapshot();
     }
-    const next = await config.resolver.resolve(scenarioId);
-    applyPresentation(next, true);
-    return snapshot();
+    resolving = true;
+    try {
+      const next = await config.resolver.resolve(scenarioId);
+      applyPresentation(next, true);
+      return snapshot();
+    } finally {
+      resolving = false;
+    }
   }
 
   async function switchScenario(nextScenarioId: string): Promise<DemoPlayerSnapshot> {
-    if (!isScenarioId(nextScenarioId) || activeRendition() === null) return snapshot();
+    // A person can always pick another scenario (behaviour 13): the picker
+    // works from every state — pending, revoked and resolve-error included —
+    // so only a scenario id the board does not have is refused.
+    if (!isScenarioId(nextScenarioId)) return snapshot();
     const token = {
       scenarioId: nextScenarioId,
       presentation: null as DemoPresentation | null,
@@ -437,13 +464,14 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     const next = await config.resolver.resolve(nextScenarioId);
     // A newer switch or a restart may have condemned this one meanwhile.
     if (pendingSwitch !== token) return snapshot();
-    if (next.state === 'playable') {
+    if (next.state === 'playable' && activeRendition() !== null) {
       token.presentation = next;
       if (token.posterReady) performSwap(next, nextScenarioId);
       return snapshot();
     }
-    // No poster will ever be ready for this answer; the old media played
-    // until this instant and the swap lands on the named state.
+    // No old media keeps playing through this swap — either nothing plays
+    // yet, or the new answer has no poster to wait for — so the swap lands
+    // directly: on the new poster, or on the answer's named state.
     performSwap(next, nextScenarioId);
     return snapshot();
   }
@@ -461,6 +489,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       interactiveSandbox = null;
       interactiveRefusal = null;
       pendingSwitch = null;
+      // A swap that is history: a screen must never re-apply its animation.
+      swapTransition = null;
     }
     return snapshot();
   }
@@ -571,15 +601,21 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           break;
         }
         // `allow-same-origin` beside `allow-scripts` would let the framed
-        // page act as this origin: remote code. It is refused outright.
-        if (interactive.sandbox.trim().split(/\s+/).includes('allow-same-origin')) {
+        // page act as this origin: remote code. It is refused outright — and
+        // HTML's sandbox token set is ASCII case-insensitive, so the match
+        // is too: `ALLOW-SAME-ORIGIN` and any other casing are the same
+        // token and the same refusal.
+        const sandboxTokens = interactive.sandbox.trim().toLowerCase().split(/\s+/);
+        if (sandboxTokens.includes('allow-same-origin')) {
           interactiveRefusal = 'sandbox-allows-same-origin';
           break;
         }
         if (state === 'poster' || state === 'playing' || state === 'paused' || state === 'ended') {
           interactiveRefusal = null;
-          // Verbatim, as `./schema.ts` pinned it: the iframe sandbox attribute.
-          interactiveSandbox = interactive.sandbox;
+          // As the iframe sandbox attribute, canonicalised the way
+          // `./schema.ts` normalises the wire value: lowercased,
+          // single-space tokens — never a mixed-case string.
+          interactiveSandbox = sandboxTokens.join(' ');
           returnState = state === 'playing' ? 'paused' : state;
           if (state === 'playing') media.pause();
           state = 'interactive';

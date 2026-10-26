@@ -10,8 +10,10 @@
 // hostile or empty, returns a verdict.
 //
 // The parse rules, defensively:
-//   - The body must begin with the `WEBVTT` signature (a leading BOM is
-//     tolerated); anything else is `not-webvtt`.
+//   - The body must begin with the `WEBVTT` signature — the word followed by
+//     whitespace or the end of the line (`WEBVTT - some note` is the spec's
+//     noted form; `WEBVTTX` is not a signature) — with a leading BOM
+//     tolerated; anything else is `not-webvtt`.
 //   - Cues are blocks separated by blank lines. A block may carry a cue
 //     identifier line before its timing line; the timing line is
 //     `start --> end` with optional settings after the end timestamp, and
@@ -51,17 +53,24 @@ export type ParsedCaptions =
     };
 
 /**
- * Presence at the URL level: a captions URL must name a WebVTT file. The
- * resolver already refuses a package without one; this states the same rule
- * for a URL a screen is about to read.
+ * Presence at the URL level: a captions URL must name a WebVTT file, wherever
+ * it points. The resolver already refuses a package without one; this states
+ * the same rule for a URL a screen is about to read — absolute or relative.
  */
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
+  // The extension is a rule about the path, not about absolute URLs: an
+  // absolute URL is parsed so a query or fragment can never forge the
+  // suffix; a relative one — the front door's own captions — is cut at `?`
+  // or `#` by hand, and only then checked.
+  let path = value;
   try {
-    return new URL(value).pathname.toLowerCase().endsWith('.vtt');
+    path = new URL(value).pathname;
   } catch {
-    return false;
+    const cut = path.search(/[?#]/);
+    if (cut !== -1) path = path.slice(0, cut);
   }
+  return path.toLowerCase().endsWith('.vtt');
 }
 
 const TIMESTAMP_HMS = /^(\d{2,}):([0-5]\d):([0-5]\d)\.(\d{3})$/;
@@ -113,7 +122,9 @@ export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCa
     const body = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
     const lines = body.split('\n');
     const first = lines.find((line) => line.trim() !== '') ?? '';
-    if (!first.startsWith('WEBVTT')) {
+    // The signature is the word WEBVTT and nothing longer: a line that merely
+    // starts with those letters (`WEBVTTX`) is not a WebVTT header.
+    if (!/^WEBVTT(\s|$)/.test(first)) {
       return {
         state: 'captions-failed',
         reason: 'not-webvtt',
