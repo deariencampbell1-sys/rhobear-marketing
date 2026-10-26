@@ -286,7 +286,7 @@ describe('demo captions', () => {
     for (const [hostile, reason] of [
       // An empty body: there is no signature line at all.
       ['', 'not-webvtt'],
-      // The first non-blank line is not a signature.
+      // The first line is not a signature.
       ['not webvtt at all', 'not-webvtt'],
       // A tolerated BOM and the signature — and nothing else: no cue block.
       ['\uFEFFWEBVTT', 'no-cues'],
@@ -903,5 +903,72 @@ describe("demo deep links and captions — W0-05b-r10 (Apollo's review of the r9
         reason: 'bad-path',
       });
     }
+  });
+});
+
+// W0-05b-r11 — Apollo's union review of the r10 head (the four non-blocking
+// findings of the 18:09:17Z review plus the two still-open findings of the
+// 17:07:39Z review). F3 is the header's own lie: the parse skipped to the
+// first non-blank line while the header says the body must BEGIN with the
+// signature. F4 is the never-throw posture on the allowlist parameter — a JS
+// caller's `null` or object escaped the default parameter and threw out of
+// `.includes`. These were the red tests for round r11's fix (F3's BOM rows
+// were green already — pinned here so the tolerance cannot widen).
+describe("demo deep links and captions — W0-05b-r11 (Apollo's union review of the r10 head)", () => {
+  const transcriptUrl = `${mediaBase}/transcript.html`;
+
+  it('r11 F3 (behaviour 20): the WEBVTT signature must be on the very first line after the tolerated BOM — a preamble of blank lines is not-webvtt, and a second BOM is not stripped', () => {
+    const cue = '00:00:00.000 --> 00:00:01.000\nHi';
+    // The header says "the body must begin with the signature" and the
+    // browser's grammar agrees — the parse requires the signature on the
+    // first line after the BOM. A preamble of blank lines is NOT skipped to
+    // the first non-blank line: not-webvtt.
+    for (const raw of [
+      `\nWEBVTT\n\n${cue}`,
+      `\n\nWEBVTT\n\n${cue}`,
+      `\n\n\nWEBVTT\n\n${cue}`,
+      // The BOM is stripped first — what remains is a leading blank line.
+      `\uFEFF\nWEBVTT\n\n${cue}`,
+      // A whitespace-only first line is no preamble either.
+      ` \nWEBVTT\n\n${cue}`,
+    ]) {
+      expect(parseWebVTT(raw, transcriptUrl)).toMatchObject({
+        state: 'captions-failed',
+        reason: 'not-webvtt',
+      });
+    }
+    // The BOM is tolerated exactly once, on the very first line: the
+    // first-line signature still parses.
+    const bomFirst = parseWebVTT(`\uFEFFWEBVTT\n\n${cue}`, transcriptUrl);
+    expect(bomFirst.state).toBe('captions');
+    expect(bomFirst.cues).toEqual([{ startSeconds: 0, endSeconds: 1, text: 'Hi' }]);
+    // ... and a second BOM is not stripped — `\uFEFF\uFEFFWEBVTT` is
+    // not-webvtt (pinned).
+    expect(parseWebVTT(`\uFEFF\uFEFFWEBVTT\n\n${cue}`, transcriptUrl)).toMatchObject({
+      state: 'captions-failed',
+      reason: 'not-webvtt',
+    });
+  });
+
+  it('r11 F4 (behaviour 18): the allowlist parameter is shape-guarded — a null or object allowlist parses with the built-in list and never throws', () => {
+    // A JS caller can pass anything: `null` and `{}` both escape the default
+    // parameter and used to throw out of `.includes` — the locked never-throw
+    // contract ("nothing is ever thrown into the UI") covers the parse's own
+    // parameters. The built-in list is used instead: refuse nothing, never
+    // throw.
+    for (const broken of [null, {}]) {
+      const allowlist = broken as unknown as string[];
+      expect(() =>
+        parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=7' }, 60, allowlist),
+      ).not.toThrow();
+      expect(
+        parseDemoDeepLink({ pathname: '/engines/teams-01', hash: '#t=7' }, 60, allowlist),
+      ).toEqual({ kind: 'player', scenarioId: 'teams-01', positionSeconds: 7 });
+    }
+    // The built-in list refuses what it always refused — an invented
+    // scenario id is still not-found under a broken allowlist.
+    expect(
+      parseDemoDeepLink({ pathname: '/engines/zzz-99', hash: '#t=7' }, 60, {} as unknown as string[]),
+    ).toEqual({ kind: 'not-found', reason: 'unknown-scenario' });
   });
 });

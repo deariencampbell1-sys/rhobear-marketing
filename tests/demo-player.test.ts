@@ -3322,3 +3322,206 @@ describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 he
     }
   });
 });
+
+// W0-05b-r11 — Apollo's union review of the r10 head (the four non-blocking
+// findings of the 18:09:17Z review plus the two still-open findings of the
+// 17:07:39Z review). F1 breaks the locked "the machine must never wedge"
+// invariant: restart()'s no-media path never unwound the interactive sheet,
+// leaving `state = 'interactive'` with `returnState === null` — Close a
+// permanent no-op. F5 leaves the sheet fields in the error snapshot; F6
+// reports `playing` over a no-media package. F2 covers the live interactive
+// arm of decideSeek's sheet-seek branch (green by construction — it is the
+// fix for a coverage gap). F3 and F4 live in tests/demo-deeplink.test.ts.
+// F1/F5/F6 were the red tests for round r11's fix.
+describe("demo player state machine — W0-05b-r11 (Apollo's union review of the r10 head)", () => {
+  it('r11 F1 (never-wedge / D05): restart() from the interactive sheet over a zero-rendition playable presentation lands on the named state underneath — the sheet fields are null in the snapshot and close-interactive is not the only way out', async () => {
+    const media = fakeMedia();
+    // The r9 F2 shape class: a hand-built playable presentation with zero
+    // renditions and a valid https interactive. open-interactive reaches
+    // `interactive` from `poster` — r9 F2's tolerance, unchanged (the fix is
+    // the restart path, not a new refusal on open).
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [], interactive: { ...INTERACTIVE } }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('poster');
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveSandbox).toBe('allow-scripts');
+
+    // The wedge this pins: restart() used to land `state = 'interactive'`
+    // with `returnState === null` — `close-interactive` is gated on
+    // `returnState !== null` and became a permanent no-op, with only the
+    // scenario picker escaping — and `interactiveSandbox`/`interactiveRefusal`
+    // survived the restart.
+    const restarted = player.restart();
+    expect(restarted.state).toBe('poster'); // the named state underneath
+    expect(restarted.interactiveSandbox).toBeNull();
+    expect(restarted.interactiveRefusal).toBeNull();
+
+    // close-interactive is not the only way out: the machine is already out,
+    // the Close is a dead no-op that changes nothing — and the machine is
+    // fully alive, the transcript sheet round-trips over the same package.
+    expect(player.dispatch({ type: 'close-interactive' })).toEqual(restarted);
+    expect(player.dispatch({ type: 'open-transcript' }).state).toBe('transcript');
+    expect(player.dispatch({ type: 'close-transcript' }).state).toBe('poster');
+
+    // The refusal field survives the restart no more than the sandbox: a
+    // refusal recorded while the video path stands is cleared too.
+    const refused = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          renditions: [],
+          interactive: { url: `${mediaBase(SCENARIO_ID)}/artifact.html`, sandbox: '' },
+        }),
+      }),
+      media: fakeMedia(),
+      reducedMotion: false,
+    });
+    await refused.start();
+    expect(refused.dispatch({ type: 'open-interactive' }).interactiveRefusal).toBe('sandbox-empty');
+    const refusedRestart = refused.restart();
+    expect(refusedRestart.state).toBe('poster');
+    expect(refusedRestart.interactiveRefusal).toBeNull();
+    expect(refusedRestart.interactiveSandbox).toBeNull();
+  });
+
+  it("r11 F2 (D05/D04): a chapter selected from the open interactive sheet seeks the real media and leaves the sheet open — decideSeek's interactive sheet-seek arm is live", async () => {
+    const { player, media } = await playerWithInteractive('allow-scripts');
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveSandbox).toBe('allow-scripts');
+
+    // The `interactive` arm of decideSeek's sheet-seek branch — every
+    // earlier sheet-seek test opened the transcript and this arm never ran.
+    const sought = player.dispatch({ type: 'select-chapter', label: 'The run' });
+    expect(media.calls).toContain('seekTo:30');
+    expect(sought.state).toBe('interactive'); // the sheet stays open
+    expect(sought.positionSeconds).toBe(30);
+
+    // The return target is intact: Close restores the control at the new
+    // place — paused, where the open captured it.
+    const closed = player.dispatch({ type: 'close-interactive' });
+    expect(closed.state).toBe('paused');
+    expect(closed.positionSeconds).toBe(30);
+  });
+
+  it('r11 F5 (D07): a media-error dispatched from the open interactive sheet lands on error with the sheet fields cleared — the artifact never renders over the error overlay', async () => {
+    const { player } = await playerWithInteractive('allow-scripts');
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveSandbox).toBe('allow-scripts'); // populated BEFORE the error
+
+    const errored = player.dispatch({ type: 'media-error', reason: 'network' });
+    expect(errored.state).toBe('error');
+    // The clears: a screen keying the iframe off `interactiveSandbox` must
+    // never render the artifact over the error overlay. `returnState` is
+    // closure-internal (not a snapshot field) and is cleared in the same
+    // step — its clearing is observable through the only things that read
+    // it: the sheet Closes are dead no-ops here, and the error state is
+    // self-contained (no Close is needed to leave it).
+    expect(errored.interactiveSandbox).toBeNull();
+    expect(errored.interactiveRefusal).toBeNull();
+    expect(player.dispatch({ type: 'close-interactive' })).toEqual(errored);
+    expect(player.dispatch({ type: 'close-transcript' })).toEqual(errored);
+  });
+
+  it('r11 F5 (D07): a media-error dispatched from the open transcript sheet lands on error with the sheet fields cleared — the recorded refusal does not survive into the error snapshot', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({
+          interactive: {
+            url: `${mediaBase(SCENARIO_ID)}/artifact.html`,
+            sandbox: 'allow-scripts allow-same-origin',
+          },
+        }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    // A refused open records the refusal while the video path keeps playing.
+    const refused = player.dispatch({ type: 'open-interactive' });
+    expect(refused.state).toBe('playing');
+    expect(refused.interactiveRefusal).toBe('sandbox-allows-same-origin');
+    // The transcript sheet over it, then the media fails under the sheet.
+    expect(player.dispatch({ type: 'open-transcript' }).state).toBe('transcript');
+    const errored = player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(errored.state).toBe('error');
+    expect(errored.interactiveSandbox).toBeNull();
+    expect(errored.interactiveRefusal).toBeNull(); // populated before the error
+    expect(player.dispatch({ type: 'close-transcript' })).toEqual(errored);
+    expect(player.dispatch({ type: 'close-interactive' })).toEqual(errored);
+  });
+
+  it('r11 F6 (behaviour 8): play over a zero-rendition playable presentation leaves the state unchanged and calls media.play() zero times — and the guard is exactly poster/paused, not widened', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable({ renditions: [] }) }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    expect(player.snapshot().state).toBe('poster');
+    // media.play() with no source would report `playing` over a no-media
+    // package. The transition is guarded on a live rendition: the state is
+    // left as it is — no throw, no new refusal value.
+    const played = player.dispatch({ type: 'play' });
+    expect(played.state).toBe('poster');
+    expect(media.calls.filter((call) => call === 'play')).toHaveLength(0);
+    expect(played.error).toBeNull();
+    expect(played.unplayableReason).toBeNull();
+
+    // The edge: play from `interactive` (reachable on this fixture) and
+    // from `error` (a no-rendition resolve failure) stay the no-ops they
+    // are — the guard's state set is exactly poster/paused and was NOT
+    // widened to them. `ended` is unreachable with zero renditions (every
+    // path to it runs through `playing`), so there is no zero-rendition
+    // `ended` case; the arm itself is untouched, pinned below.
+    player.dispatch({ type: 'open-interactive' });
+    expect(player.snapshot().state).toBe('interactive');
+    const fromInteractive = player.dispatch({ type: 'play' });
+    expect(fromInteractive.state).toBe('interactive');
+    expect(media.calls.filter((call) => call === 'play')).toHaveLength(0);
+
+    const erroredMedia = fakeMedia();
+    const errored = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: { state: 'invalid', reason: 'hash-mismatch' } }),
+      media: erroredMedia,
+      reducedMotion: false,
+    });
+    await errored.start();
+    expect(errored.snapshot().state).toBe('error');
+    expect(errored.dispatch({ type: 'play' }).state).toBe('error');
+    expect(erroredMedia.calls.filter((call) => call === 'play')).toHaveLength(0);
+
+    // Not widened in the other direction either: with real renditions, play
+    // from `ended` still replays at zero — behaviour 14's locked re-play
+    // (D03), pinned here so the guard's state set cannot drift either way.
+    const replayMedia = fakeMedia();
+    const replay = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({ [SCENARIO_ID]: playable() }),
+      media: replayMedia,
+      reducedMotion: false,
+    });
+    await replay.start();
+    replay.dispatch({ type: 'play' });
+    replay.dispatch({ type: 'ended' });
+    const replayed = replay.dispatch({ type: 'play' });
+    expect(replayed.state).toBe('playing');
+    expect(replayed.positionSeconds).toBe(0);
+    expect(replayMedia.calls).toContain('seekTo:0');
+  });
+});
