@@ -451,3 +451,29 @@ describe('demo captions — W0-05b-r4 (Apollo\'s last mile)', () => {
     expect(bareNote.skipped).toEqual([]);
   });
 });
+
+// W0-05b-r5 — Apollo's review of the r4 head: F2 on the cue parse — the
+// 'unreadable' verdict is the "nothing is ever thrown into the UI" contract
+// and must hold for every shape, not only for typed strings. These are the
+// red tests for round r5's fix; they guard the regression.
+describe('demo captions — W0-05b-r5 (Apollo\'s review of the r4 head)', () => {
+  const transcriptUrl = `${mediaBase}/transcript.html`;
+
+  it("r5 F2 (behaviour 20): an unreadable body is a named verdict, never a throw — null, undefined, a number and an object all return captions-failed with reason 'unreadable'", () => {
+    const unreadable: readonly string[] = [
+      null as unknown as string,
+      undefined as unknown as string,
+      42 as unknown as string,
+      { toString: () => 'WEBVTT' } as unknown as string,
+    ];
+    for (const raw of unreadable) {
+      expect(() => parseWebVTT(raw, transcriptUrl)).not.toThrow();
+      const parsed = parseWebVTT(raw, transcriptUrl);
+      expect(parsed).toMatchObject({ state: 'captions-failed', reason: 'unreadable' });
+      expect(parsed.cues).toEqual([]);
+      expect(parsed.skipped).toEqual([]);
+      // A captions failure never takes the transcript down with it.
+      expect(parsed.transcriptAvailable).toBe(true);
+    }
+  });
+});

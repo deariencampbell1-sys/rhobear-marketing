@@ -1926,3 +1926,161 @@ describe("demo player state machine — W0-05b-r4 (Apollo's last mile)", () => {
     expect(isMediaErrorReason(null)).toBe(false);
   });
 });
+
+// W0-05b-r5 — Apollo's review of the r4 head (2026-10-26 10:28:23Z): F1 (the
+// restart-from-resolve-error snapshot that contradicted itself), F3 (the
+// double resume seek after a lower-rendition switch) and F4 (open-interactive
+// mutating the snapshot from a state the board does not open it from). These
+// are the red tests for round r5's fix; they guard the regressions.
+describe("demo player state machine — W0-05b-r5 (Apollo's review of the r4 head)", () => {
+  it("r5 F1 (D01): restart() from a resolve-error keeps the error fields — the state stays 'error', the same reason stands, and the stale swap transition is cleared", async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable(),
+        [SWITCHED_SCENARIO_ID]: { state: 'invalid', reason: 'hash-mismatch' },
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    await player.switchScenario(SWITCHED_SCENARIO_ID);
+    const before = player.snapshot();
+    // A resolve-error with no rendition: the state stays 'error' on restart,
+    // and the swap away from playing media left its transition behind.
+    expect(before.state).toBe('error');
+    expect(before.error?.reason).toBe('hash-mismatch');
+    expect(before.swapTransition).toBe('crossfade');
+
+    const settled = player.restart();
+    // The error fields describe the state that stays: they are intact — the
+    // screen's error overlay renders on state === 'error' and must never be
+    // blank. Only the stale swap transition is cleared.
+    expect(settled.state).toBe('error');
+    expect(settled.error).toEqual(before.error);
+    expect(settled.unplayableReason).toBe('hash-mismatch');
+    expect(settled.swapTransition).toBeNull();
+    // The transcript return target is cleared with it: a Close after the
+    // restart has nothing dangling and the snapshot stands unchanged.
+    expect(player.dispatch({ type: 'close-transcript' })).toEqual(settled);
+  });
+
+  it('r5 F1 edge (D01): restart() from a media error with a rendition lands on poster and clears its error — the intact-error rule is only for a state that stays error', async () => {
+    const { player, media } = await playerInMediaError();
+    expect(player.snapshot().error?.reason).toBe('network');
+    const settled = player.restart();
+    expect(settled.state).toBe('poster');
+    expect(settled.error).toBeNull();
+    expect(settled.unplayableReason).toBeNull();
+    expect(settled.positionSeconds).toBe(0);
+    expect(media.calls).toContain('seekTo:0');
+  });
+
+  it('r5 F3 (behaviour 12): the retry after a lower-rendition switch seeks exactly once — its own seekTo is the resume, and a later playing never re-seeks', async () => {
+    const media = fakeMedia();
+    const player = createDemoPlayer({
+      scenarioId: SCENARIO_ID,
+      resolver: stubResolver({
+        [SCENARIO_ID]: playable({ renditions: [rendition(1280, 720, 42), rendition(854, 480, 42)] }),
+      }),
+      media,
+      reducedMotion: false,
+    });
+    await player.start();
+    player.dispatch({ type: 'play' });
+    player.dispatch({ type: 'timeupdate', positionSeconds: 9 });
+    player.dispatch({ type: 'media-error', reason: 'network' });
+    // The lower-rendition switch leaves the one-shot resume behind (F8) ...
+    player.dispatch({ type: 'lower-rendition' });
+    expect(player.snapshot().state).toBe('poster');
+    // ... and the media fails again before it ever fired.
+    player.dispatch({ type: 'media-error', reason: 'decode' });
+    expect(player.snapshot().state).toBe('error');
+
+    // The retry's immediate seekTo IS the resume: one seek and one play for
+    // the whole resume, and the one-shot is consumed with it.
+    const mark = media.calls.length;
+    await player.retry();
+    expect(player.snapshot().state).toBe('buffering');
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9', 'play']);
+    // The playing that ends the wait seeks nothing more ...
+    player.dispatch({ type: 'playing' });
+    expect(player.snapshot().state).toBe('playing');
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9', 'play']);
+    // ... and neither does any later playing: the one-shot fired exactly
+    // once, whether it is consumed by retry() or by the event handler.
+    player.dispatch({ type: 'playing' });
+    expect(media.calls.slice(mark)).toEqual(['seekTo:9', 'play']);
+  });
+
+  // F4: from a state the board does not open an interactive from, whatever
+  // the artifact carries, the snapshot is unchanged. These refuse shapes are
+  // F1's sandbox refusals from an allowed state — where they still record
+  // their reasons (behaviour 15 and the F1 casing tests above).
+  const refusedInteractives: ReadonlyArray<{
+    interactive: DemoInteractive | null;
+    reason: string;
+  }> = [
+    { interactive: null, reason: 'absent' },
+    {
+      interactive: { url: `${mediaBase(SCENARIO_ID)}/artifact.html`, sandbox: '   ' },
+      reason: 'sandbox-empty',
+    },
+    {
+      interactive: {
+        url: `http://media.example.com/demos/${SCENARIO_ID}/${PACKAGE_REVISION}/artifact.html`,
+        sandbox: 'allow-scripts',
+      },
+      reason: 'url-not-https',
+    },
+    {
+      interactive: {
+        url: `${mediaBase(SCENARIO_ID)}/artifact.html`,
+        sandbox: 'allow-scripts allow-same-origin',
+      },
+      reason: 'sandbox-allows-same-origin',
+    },
+  ];
+
+  it('r5 F4 (D05): open-interactive from error is a true no-op — an absent artifact and every refused shape leave the snapshot deep-equal to before', async () => {
+    for (const refusal of refusedInteractives) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: playable({ interactive: refusal.interactive }) }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      player.dispatch({ type: 'play' });
+      player.dispatch({ type: 'media-error', reason: 'network' });
+      expect(player.snapshot().state).toBe('error');
+      const before = player.snapshot();
+      const callsBefore = media.calls.length;
+      expect(player.dispatch({ type: 'open-interactive' })).toEqual(before);
+      expect(media.calls.length).toBe(callsBefore);
+    }
+  });
+
+  it('r5 F4 (D05): open-interactive from transcript is a true no-op — the same, whatever the artifact carries', async () => {
+    for (const refusal of refusedInteractives) {
+      const media = fakeMedia();
+      const player = createDemoPlayer({
+        scenarioId: SCENARIO_ID,
+        resolver: stubResolver({ [SCENARIO_ID]: playable({ interactive: refusal.interactive }) }),
+        media,
+        reducedMotion: false,
+      });
+      await player.start();
+      player.dispatch({ type: 'play' });
+      player.dispatch({ type: 'open-transcript' });
+      expect(player.snapshot().state).toBe('transcript');
+      const before = player.snapshot();
+      const callsBefore = media.calls.length;
+      expect(player.dispatch({ type: 'open-interactive' })).toEqual(before);
+      expect(media.calls.length).toBe(callsBefore);
+    }
+  });
+});
