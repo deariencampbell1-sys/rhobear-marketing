@@ -179,6 +179,30 @@
 //       explicit record) and `decideSeek` (`applySeek`'s transition table)
 //       are module-level pure functions; the closure keeps the mutable
 //       wiring only. No behaviour change.
+//   - W0-05b-r11 (Apollo's union review of the r10 head: the four
+//     non-blocking findings of 18:09:17Z plus the two still-open of
+//     17:07:39Z), one wedge fix and two hygiene fixes:
+//     - F1: the machine must never wedge (r3 F5's rule). restart()'s
+//       no-media path handles `interactive` exactly like `transcript` — the
+//       sheet lands on `returnState` when set, else the named state
+//       underneath (`poster`) — and clears `interactiveSandbox`,
+//       `interactiveRefusal` and `returnState` there, as the media path
+//       always has. Without it a zero-rendition presentation's interactive
+//       sheet survived the restart as `state = 'interactive'` with
+//       `returnState === null`, and `close-interactive` — gated on
+//       `returnState !== null` — became a permanent no-op.
+//     - F5: an error is the person's whole reality (r6 F4) — the error entry
+//       clears `interactiveSandbox`, `interactiveRefusal` and `returnState`
+//       together with the restart clear (F1). A screen keying the iframe off
+//       `interactiveSandbox` must never render the artifact over the error
+//       overlay, and no stale return target survives the error.
+//     - F6: `play` from `poster`/`paused` is guarded on
+//       `activeRendition() !== null` — a playable presentation with zero
+//       renditions has nothing for `media.play()` to start, and the machine
+//       must not report `playing` over a no-media package. The state is
+//       left as it is: no throw, no new refusal value. The guard's state set
+//       is exactly `poster`/`paused` (not widened): `error` and `interactive`
+//       stay the no-ops they are, and `ended` keeps behaviour 14's re-play.
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -664,6 +688,15 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     // itself: `performSwap` cleared the pending switch and recorded the swap
     // before that answer's error ever reaches this line.
     pendingSwitch = null;
+    // r11 F5: the error is the person's whole reality — the sheet fields are
+    // stale the moment it lands. A screen keying the iframe off
+    // `interactiveSandbox` must never render the artifact over the error
+    // overlay, and no return target may survive for a sheet Close to be
+    // gated on: all three are cleared here, together with the restart clear
+    // (r11 F1).
+    interactiveSandbox = null;
+    interactiveRefusal = null;
+    returnState = null;
     episode = enterError(episode, kind, mintSupportReference);
     error = { reason, supportReferenceId: episode.supportReferenceId, offers: offersFor() };
     state = 'error';
@@ -999,12 +1032,19 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       return snapshot();
     }
     // The state itself does not move from a named no-media state —
-    // `pending` restarts as `pending`. The transcript sheet over one is the
-    // single exception to holding still: its return target is cleared here,
-    // so it lands back on the named state underneath rather than lingering
-    // with a Close that has nowhere to go (r3 F5: the machine never wedges).
-    if (state === 'transcript' && returnState !== null) state = returnState;
+    // `pending` restarts as `pending`. The transcript and interactive sheets
+    // over one are the single exception to holding still: their return
+    // target is read here and cleared, so they land back on the named state
+    // underneath rather than lingering with a Close that has nowhere to go
+    // (r3 F5: the machine never wedges). r11 F1: `interactive` is handled
+    // exactly like `transcript` — land on `returnState` when set, else the
+    // named state underneath (`poster`) — and the sheet fields are cleared
+    // here too, as the media path above always has: `interactiveSandbox`
+    // and `interactiveRefusal` must not survive a restart.
+    if (state === 'transcript' || state === 'interactive') state = returnState ?? 'poster';
     returnState = null;
+    interactiveSandbox = null;
+    interactiveRefusal = null;
     // r5 F1: when the state stays `error` (the resolve-error, no-rendition
     // case), its error fields stay with it — `error`, `unplayableReason`,
     // `errorCount` and `supportReferenceId` describe the state that stands.
@@ -1024,7 +1064,14 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     swapTransition = null;
     switch (event.type) {
       case 'play': {
-        if (state === 'poster' || state === 'paused') {
+        // r11 F6: the poster/paused transition is guarded on media that
+        // exists — a playable presentation with zero renditions has nothing
+        // for `media.play()` to start, and the machine must not report
+        // `playing` over a no-media package. The state is left as it is: no
+        // throw, no new refusal value. The guard's state set is exactly
+        // `poster`/`paused` (not widened): `error` and `interactive` stay
+        // the no-ops they are, and `ended` keeps behaviour 14's re-play.
+        if ((state === 'poster' || state === 'paused') && activeRendition() !== null) {
           media.play();
           state = 'playing';
         } else if (state === 'ended') {

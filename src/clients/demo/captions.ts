@@ -15,7 +15,11 @@
 //   - The body must begin with the `WEBVTT` signature — the word followed by
 //     whitespace or the end of the line (`WEBVTT - some note` is the spec's
 //     noted form; `WEBVTTX` is not a signature) — with a leading BOM
-//     tolerated; anything else is `not-webvtt`.
+//     tolerated; anything else is `not-webvtt`. r11 F3: "begin with" is the
+//     truth the code now tells — the signature is required on the very first
+//     line after the tolerated BOM (a browser's grammar agrees), a preamble
+//     of blank lines is never skipped to the first non-blank line, and the
+//     BOM is stripped exactly once, so `\uFEFF\uFEFFWEBVTT` is `not-webvtt`.
 //   - Cues are blocks separated by blank lines. A block may carry a cue
 //     identifier line before its timing line; the timing line is
 //     `start --> end` with optional settings after the end timestamp, and
@@ -257,11 +261,15 @@ export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCa
       transcriptAvailable,
     };
   }
-  // One canonical line ending, and a tolerated BOM: hostile whitespace
-  // never changes a verdict.
+  // One canonical line ending, and one tolerated BOM on the very first line:
+  // hostile whitespace never changes a verdict.
   const body = raw.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const lines = body.split('\n');
-  const first = lines.find((line) => line.trim() !== '') ?? '';
+  // r11 F3: the signature must be on the VERY FIRST line — the header says
+  // "the body must begin with the signature" and the browser's grammar
+  // agrees. The old `find` skipped a preamble of blank lines the grammar
+  // refuses; a body whose first line is not the signature is `not-webvtt`.
+  const first = lines[0] ?? '';
   // The signature is the word WEBVTT and nothing longer: a line that merely
   // starts with those letters (`WEBVTTX`) is not a WebVTT header.
   if (!/^WEBVTT(\s|$)/.test(first)) {
@@ -274,7 +282,7 @@ export function parseWebVTT(raw: string, transcriptUrl: string | null): ParsedCa
     };
   }
   // The header runs to the first blank line; everything after is cues.
-  let index = lines.indexOf(first) + 1;
+  let index = 1;
   while (index < lines.length && lines[index].trim() !== '') index += 1;
   const blocks: string[][] = [];
   let block: string[] = [];

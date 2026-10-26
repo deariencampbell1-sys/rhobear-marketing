@@ -7,7 +7,9 @@
 //     other path is `not-found`.
 //   - An unknown or non-allowlisted scenario is `not-found` — never a
 //     redirect, never a list of unapproved scenarios. The allowlist is the
-//     board's (`KNOWN_SCENARIO_IDS`) unless a caller names its own.
+//     board's (`KNOWN_SCENARIO_IDS`) unless a caller names its own (r11 F4:
+//     a caller's value that is not an array is no allowlist — the built-in
+//     list stands and nothing is thrown).
 //   - `t` must match the grammar — a number with at most three decimals and
 //     nothing else (F10) — and then be a finite number inside the media
 //     duration (`0 <= t < mediaDurationSeconds`, F11: a deep link starts a
@@ -87,7 +89,13 @@ export function parseDemoDeepLink(
   const match = ENGINES_ROUTE.exec(pathname);
   if (match === null) return { kind: 'not-found', reason: 'bad-path' };
   const rawId = match[1];
-  if (!isScenarioId(rawId) || !allowlist.includes(rawId)) {
+  // r11 F4: the allowlist is shape-guarded before it is used — the locked
+  // never-throw contract covers the parse's own parameters, and a JS caller's
+  // `null` or object escapes the default parameter only to throw out of
+  // `.includes`. Anything that is not an array falls back to the built-in
+  // list (`KNOWN_SCENARIO_IDS`): refuse nothing, never throw.
+  const allowed = Array.isArray(allowlist) ? allowlist : KNOWN_SCENARIO_IDS;
+  if (!isScenarioId(rawId) || !allowed.includes(rawId)) {
     return { kind: 'not-found', reason: 'unknown-scenario' };
   }
   const fragment = parseFragmentPosition(typeof parts.hash === 'string' ? parts.hash : '');
