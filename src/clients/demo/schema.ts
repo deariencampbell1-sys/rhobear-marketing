@@ -12,8 +12,11 @@
 //
 // Two conventions this module pins, both stated in the PR:
 //   - `contentHash` is the lowercase-hex SHA-256 of the serialized package with
-//     the `contentHash` key removed (a digest cannot cover itself). The
-//     resolver in `./resolve.ts` verifies exactly that form.
+//     the `contentHash` key removed (a digest cannot cover itself). Serialized
+//     means one canonical form — object keys sorted at every level, finite
+//     numbers as `JSON.stringify` writes them — defined in `./resolve.ts`, so
+//     key order and number spelling cannot change the digest. It is corruption
+//     detection, not a signature: the mirror host is the trust anchor.
 //   - Every URL in a package must be https, carry no credentials, carry no
 //     signed/expiring query parameter, and contain the package revision in its
 //     path — that anchoring is what makes a URL immutable.
@@ -146,7 +149,8 @@ export function isImmutableHttpsUrl(value: string, packageRevision: string): boo
   return url.pathname.includes(packageRevision);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+// One isRecord for the whole demo surface: `./resolve.ts` imports this copy.
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
