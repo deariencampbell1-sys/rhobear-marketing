@@ -98,6 +98,19 @@
 //       `dispatch`, `start`, `retry`, `switchScenario`, `restart` — so the
 //       value is non-null exactly in the snapshot returned by the call that
 //       performed the swap (see the field's doc).
+//   - W0-05b-r7 (Apollo's review of the r6 head), one D07 contradiction:
+//     - F1: the `playing` event ALWAYS ends the failure episode. The event's
+//       meaning is "the media is playing" — exactly D07's "playback ever
+//       resumed" fact — whatever state the machine is in. The old
+//       `state === 'buffering'` condition never fired on the lower-rendition
+//       resume (that path leaves the machine in `poster` and the `play`
+//       dispatch lands it in `playing` without touching `buffering`), so a
+//       later failure produced a support reference id even though playback
+//       had resumed — the exact outcome D07 forbids, and only when the
+//       element did not happen to emit `waiting` first. Only the episode
+//       counters reset on that event; the state transition stays
+//       `buffering` → `playing` only, and the error state keeps its fields
+//       (r5 F1).
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -770,11 +783,17 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
           resumeSeekPending = false;
           media.seekTo(positionSeconds);
         }
+        // r7 F1: the `playing` event ALWAYS ends the failure episode — the
+        // event means the media is playing, which is D07's "playback ever
+        // resumed" fact, whatever state the machine is in (the
+        // lower-rendition resume arrives here through `poster`/`playing` and
+        // never through `buffering`, which is how the episode used to leak).
+        // Only the episode counters reset; the error state and its fields
+        // are the state's own and are untouched (r5 F1).
+        errorCount = 0;
+        supportReferenceId = null;
         if (state === 'buffering') {
           state = 'playing';
-          // Playback resumed: the failure episode is over.
-          errorCount = 0;
-          supportReferenceId = null;
         }
         break;
       }

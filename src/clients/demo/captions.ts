@@ -78,19 +78,30 @@ export type ParsedCaptions =
  * never captions, whatever its path ends in. r6 F6: a leading `//` is a
  * scheme-relative absolute reference — the scheme rule applies to it, so a
  * protocol-relative URL is never one of the front door's own captions).
+ * r7 F2: the string is read the way a browser resolves it — `\` is `/` — so
+ * the scheme-relative disguises `\\host/x.vtt` and `/\host/x.vtt` cannot
+ * slip past the `//` rule; and cross-origin http(s) is accepted as it always
+ * has been (a URL names WebVTT wherever it points — pinned, so
+ * `https:\\host\x.vtt` is the ordinary absolute https URL it normalises to).
  */
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
+  // r7 F2: a browser reads `\` as `/` before it resolves, so the guard does
+  // too — one normalisation at the entry, and every rule below sees the
+  // browser's own reading of the string. A Windows-style RELATIVE path
+  // (`.\captions.vtt` → `./captions.vtt`) is still a relative path: the
+  // guard refuses scheme-relative absolutes, not odd relative spellings.
+  const normalised = value.replace(/\\/g, '/');
   // r6 F6: `//host/x.vtt` is neither http(s) nor a relative path — it names
   // another host and is refused before any parsing can wave it through.
-  if (value.startsWith('//')) return false;
+  if (normalised.startsWith('//')) return false;
   // The extension is a rule about the path, not about absolute URLs: an
   // absolute URL is parsed so a query or fragment can never forge the
   // suffix; a relative one — the front door's own captions — is cut at `?`
   // or `#` by hand, and only then checked.
-  let path = value;
+  let path = normalised;
   try {
-    const url = new URL(value);
+    const url = new URL(normalised);
     if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
     path = url.pathname;
   } catch {
