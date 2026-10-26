@@ -80,6 +80,24 @@
 //     entry point captures the scenario id (and a generation counter) before
 //     its await and discards an answer that lands after a switch or a restart
 //     moved the world — the answer is stale and is never applied.
+//   - W0-05b-r6 (Apollo's review of the r5 head), two owner-flagged
+//     decisions and one field lifecycle, flagged for the owner and stated
+//     here so they are not invented elsewhere:
+//     - F2: the transcript and interactive sheets are reachable from
+//       `buffering` and `seeking` — the board's transcript sheet can replace
+//       the video, and a stalled or scrubbing video is still the video. The
+//       rule there is the one from `playing`: the media is paused and the
+//       sheet returns to `paused` — never into a transient state, which
+//       could wedge the machine; the person resumes with one tap.
+//     - F4: an error is the person's reality and cancels a pending switch —
+//       the offers on it (retry, transcript) are their immediate business,
+//       and the picker works from every state (r2's F5) if they still want
+//       the switch. `enterError` clears the pending switch; a switch's own
+//       resolve error is not cancelling itself (its swap already happened).
+//     - F5: `swapTransition` is cleared at the entry of every public call —
+//       `dispatch`, `start`, `retry`, `switchScenario`, `restart` — so the
+//       value is non-null exactly in the snapshot returned by the call that
+//       performed the swap (see the field's doc).
 //
 // Two mapping notes for the PR, not edits to W0-05a's files:
 //   - `DemoPresentation` has five states; the locked machine has no
@@ -105,22 +123,23 @@ export type DemoMediaElement = {
 };
 
 /**
- * The actual reason a media request failed (D07): decode, network, http-<status>.
- * The status is an integer (`http-200`, `http-0`, `http-1000`): the template
- * can also match non-integers of shape like `http-1.5`, and
- * `isMediaErrorReason` refuses those — the guard accepts exactly the
- * `http-<integer>` members of this type (F9: the two agree).
+ * The actual reason a media request failed (D07): decode, network,
+ * `http-<status>`. The number is a non-negative HTTP status rendered in
+ * canonical decimal — `http-0`, `http-200`, `http-1000`: exactly what
+ * `http-${number}` produces for a non-negative integer. Spellings the
+ * template also matches but the wire never renders (`http-1.5`, `http-007`,
+ * `http-+200`) are not reasons and `isMediaErrorReason` refuses them
+ * (r6 F8: the guard and the type agree on exactly the canonical members).
  */
 export type MediaErrorReason = 'decode' | 'network' | `http-${number}`;
 
-// F9 (W0-05b-r4): the guard and the type agree on the integers. The type is
-// `http-${number}` and admits `http-0`, `http-007`, `http-1000` and
-// `http-200` — all four are `http-<integer>` and all four are accepted; the
-// template's non-integers (`http-1.5`) are not status codes and are refused.
-// Widening the guard, not narrowing the type: the template is the wire shape
-// the surrounding modules already speak, so the guard moves to it — the
-// status is written as an integer (an optional sign and digits).
-const HTTP_STATUS_REASON = /^http-[+-]?[0-9]+$/;
+// F9 (W0-05b-r4) kept the guard and the type in agreement on the integers;
+// r6 F8 narrows the guard to the canonical renderings `http-${number}`
+// produces for non-negative integers — `0`, or a positive integer with no
+// leading zero. The r4 widening (`/^http-[+-]?[0-9]+$/`, which admitted
+// `http-+200`, `http--200` and `http-007`) is gone: those are spellings the
+// type does not canonically produce and the wire never renders.
+const HTTP_STATUS_REASON = /^http-(0|[1-9][0-9]*)$/;
 
 export function isMediaErrorReason(value: unknown): value is MediaErrorReason {
   return (
@@ -175,7 +194,15 @@ export type DemoPlayerSnapshot = {
   renditionIndex: number;
   /** The scenario a switch is waiting on, while the old one keeps playing. */
   pendingSwitchTo: string | null;
-  /** How the last completed scenario swap was presented (behaviour 9). */
+  /**
+   * How the last completed scenario swap was presented (behaviour 9).
+   * Cleared at the entry of every public call — `dispatch`, `start`, `retry`,
+   * `switchScenario`, `restart` — so the value is non-null exactly in the
+   * snapshot returned by the call that performed the swap (a plain
+   * `snapshot()` read is pure and reports it until the next call). The very
+   * next call carries `null`: a screen keying its animation off this field
+   * never re-applies it on an unrelated render (r6 F5).
+   */
   swapTransition: 'crossfade' | 'none' | null;
   /** The canonicalised sandbox to apply as the iframe sandbox attribute. */
   interactiveSandbox: string | null;
@@ -347,6 +374,15 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   type PlayerFailureReason = MediaErrorReason | InvalidReason | 'superseded';
 
   function enterError(reason: PlayerFailureReason, kind: 'media' | 'resolve'): void {
+    // r6 F4: an error is the person's reality and cancels a pending switch —
+    // the offers on it (retry, transcript) are their immediate business, and
+    // the picker works from every state (r2's F5) if they still want the
+    // switch. The cancellation leaves no half-state: the swap transition is
+    // untouched (a cancellation is no swap) and the switch's own late answer
+    // is stale from here. A switch's own resolve error is not cancelling
+    // itself: `performSwap` cleared the pending switch and recorded the swap
+    // before that answer's error ever reaches this line.
+    pendingSwitch = null;
     lastErrorKind = kind;
     errorCount += 1;
     // A repeated failure — an error reached again before playback ever
@@ -523,6 +559,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   async function start(): Promise<DemoPlayerSnapshot> {
+    // r6 F5: every public call clears the swap transition on entry (field doc).
+    swapTransition = null;
     if (state !== 'resolve' || resolving) return snapshot();
     resolving = true;
     const capturedScenarioId = scenarioId;
@@ -540,6 +578,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   async function retry(): Promise<DemoPlayerSnapshot> {
+    // r6 F5: every public call clears the swap transition on entry (field doc).
+    swapTransition = null;
     if (state !== 'error' || resolving) return snapshot();
     if (lastErrorKind === 'media' && activeRendition() !== null) {
       // A failed media request is retried as a media request — real playback
@@ -573,6 +613,8 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   async function switchScenario(nextScenarioId: string): Promise<DemoPlayerSnapshot> {
+    // r6 F5: every public call clears the swap transition on entry (field doc).
+    swapTransition = null;
     // A person can always pick another scenario (behaviour 13): the picker
     // works from every state — pending, revoked and resolve-error included —
     // so only a scenario id the board does not have is refused (F3): the
@@ -617,6 +659,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   function restart(): DemoPlayerSnapshot {
+    // r6 F5: the swap transition is cleared at every public call's entry
+    // (field doc) — a swap that is history: a screen must never re-apply its
+    // animation.
+    swapTransition = null;
     // Restart lands (F1): every in-flight answer is stale from here, and an
     // in-flight switch this restart abandons leaves nothing dangling behind
     // it. restart() is the only reset of the person's place (S1), so it is
@@ -626,12 +672,10 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
     pendingSwitch = null;
     // r4 F2: the stale fields are cleared from EVERY state, not only the
     // media-bearing one — a restart from `pending` or `revoked` must not
-    // leave a swap transition, a return target or an error behind for the
-    // next screen to re-apply. A swap that is history: a screen must never
-    // re-apply its animation. r5 F1 narrows one case of that rule: the error
-    // fields of a restart that leaves the state as `error` describe the
-    // state that stays and stay with it (below).
-    swapTransition = null;
+    // leave a return target or an error behind for the next screen to
+    // re-apply. r5 F1 narrows one case of that rule: the error fields of a
+    // restart that leaves the state as `error` describe the state that stays
+    // and stay with it (below).
     if (activeRendition() !== null) {
       // The media-bearing path (r4 F2, unchanged): a media error restarts to
       // `poster` and its error fields are stale.
@@ -671,6 +715,9 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
   }
 
   function dispatch(event: DemoPlayerEvent): DemoPlayerSnapshot {
+    // r6 F5: every public call clears the swap transition on entry (field
+    // doc) — a swap performed by THIS dispatch records its own below.
+    swapTransition = null;
     switch (event.type) {
       case 'play': {
         if (state === 'poster' || state === 'paused') {
@@ -750,17 +797,31 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         break;
       }
       case 'open-transcript': {
+        // r6 F2: the sheet is reachable from `buffering` and `seeking` too —
+        // a stalled or scrubbing video is still the video (the board's
+        // transcript sheet can replace it), and a silent dead button is worst
+        // exactly where it is most likely to be reached. From those transient
+        // states the rule is the one from `playing`: the media is paused and
+        // the sheet returns to `paused` — returning into a transient state
+        // could wedge the machine; the person resumes with one tap. The
+        // in-flight `seeked` of a scrub that lands while the sheet is open
+        // changes nothing here (its handler only moves the `seeking` state).
         if (
           transcriptUrlOf() !== null &&
           (state === 'poster' ||
             state === 'playing' ||
             state === 'paused' ||
             state === 'ended' ||
+            state === 'buffering' ||
+            state === 'seeking' ||
             state === 'error' ||
             state === 'revoked')
         ) {
-          returnState = state === 'playing' ? 'paused' : state;
-          if (state === 'playing') media.pause();
+          returnState =
+            state === 'playing' || state === 'buffering' || state === 'seeking'
+              ? 'paused'
+              : state;
+          if (state === 'playing' || state === 'buffering' || state === 'seeking') media.pause();
           state = 'transcript';
         }
         break;
@@ -775,13 +836,19 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
       case 'open-interactive': {
         // r5 F4: the whole action — a refusal recorded or the artifact
         // opened — is gated on the states the board opens an interactive
-        // from. From any other state the snapshot is unchanged, whatever the
-        // artifact carries: `open-interactive` is a true no-op there.
+        // from. r6 F2 adds the transient media states `buffering` and
+        // `seeking`, with the `playing` rule: the media is paused and the
+        // sheet returns to `paused`, never into a transient state (see
+        // `open-transcript`). From any other state the snapshot is unchanged,
+        // whatever the artifact carries: `open-interactive` is a true no-op
+        // there.
         if (
           state !== 'poster' &&
           state !== 'playing' &&
           state !== 'paused' &&
-          state !== 'ended'
+          state !== 'ended' &&
+          state !== 'buffering' &&
+          state !== 'seeking'
         ) {
           break;
         }
@@ -816,8 +883,11 @@ export function createDemoPlayer(config: DemoPlayerConfig): DemoPlayer {
         // `./schema.ts` normalises the wire value: lowercased,
         // single-space tokens — never a mixed-case string.
         interactiveSandbox = sandboxTokens.join(' ');
-        returnState = state === 'playing' ? 'paused' : state;
-        if (state === 'playing') media.pause();
+        returnState =
+          state === 'playing' || state === 'buffering' || state === 'seeking'
+            ? 'paused'
+            : state;
+        if (state === 'playing' || state === 'buffering' || state === 'seeking') media.pause();
         state = 'interactive';
         break;
       }

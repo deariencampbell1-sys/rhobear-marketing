@@ -46,14 +46,17 @@ const ENGINES_ROUTE = /^\/engines\/([^/]+)$/;
 
 /**
  * The fragment rule: empty means no position; `t=<value>` is the one thing a
- * fragment may carry, and <value> must match the grammar (F10) — an optional
- * sign, digits, at most three decimal digits, nothing else. Anything else —
- * a second `#`, a unit suffix, whitespace beyond the grammar, an empty value
- * — is not our format and is refused as `bad-fragment`. A number the grammar
- * allows but the media duration does not is ignored instead: the link still
- * opens the player, at no position (behaviour 18's rule).
+ * fragment may carry, and <value> must match the grammar (F10) — unsigned
+ * digits, at most three decimal digits, nothing else. r6 F7 dropped the r3
+ * grammar's sign extension: the board's position is unsigned ("a valid
+ * `0 <= t < duration` position in seconds"), so `#t=+42`, `#t=-5` and
+ * `#t=+0` are outside the grammar entirely. Anything else — a second `#`, a
+ * unit suffix, whitespace beyond the grammar, an empty value, a signed
+ * literal — is not our format and is refused as `bad-fragment`. A number the
+ * grammar allows but the media duration does not is ignored instead: the link
+ * still opens the player, at no position (behaviour 18's rule).
  */
-const FRAGMENT_SECONDS = /^[+-]?\d+(\.\d{1,3})?$/;
+const FRAGMENT_SECONDS = /^\d+(\.\d{1,3})?$/;
 
 function parseFragmentPosition(hash: string): { position: number | null } | { refused: true } {
   const raw = hash.startsWith('#') ? hash.slice(1) : hash;

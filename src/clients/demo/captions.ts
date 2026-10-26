@@ -75,10 +75,15 @@ export type ParsedCaptions =
  * it points. The resolver already refuses a package without one; this states
  * the same rule for a URL a screen is about to read — http(s) or relative
  * (F9: the scheme is part of the rule — a `javascript:` or `data:` URL is
- * never captions, whatever its path ends in).
+ * never captions, whatever its path ends in. r6 F6: a leading `//` is a
+ * scheme-relative absolute reference — the scheme rule applies to it, so a
+ * protocol-relative URL is never one of the front door's own captions).
  */
 export function isWebVttUrl(value: string | null): boolean {
   if (typeof value !== 'string') return false;
+  // r6 F6: `//host/x.vtt` is neither http(s) nor a relative path — it names
+  // another host and is refused before any parsing can wave it through.
+  if (value.startsWith('//')) return false;
   // The extension is a rule about the path, not about absolute URLs: an
   // absolute URL is parsed so a query or fragment can never forge the
   // suffix; a relative one — the front door's own captions — is cut at `?`
