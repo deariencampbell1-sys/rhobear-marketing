@@ -20,7 +20,13 @@ import {
 } from '../src/clients/demo/player';
 import { createDemoResolver, type DemoPresentation } from '../src/clients/demo/resolve';
 import { parseDemoDeepLink } from '../src/clients/demo/deeplink';
-import type { DemoChapter, DemoInteractive, DemoRendition } from '../src/clients/demo/schema';
+import {
+  DEMO_PACKAGE_SCHEMA,
+  parseDemoPackage,
+  type DemoChapter,
+  type DemoInteractive,
+  type DemoRendition,
+} from '../src/clients/demo/schema';
 
 const PACKAGE_REVISION = 'rev-2026-10-25-1';
 const SOURCE_REVISION = 'a'.repeat(40);
@@ -3231,6 +3237,10 @@ describe("demo player state machine — W0-05b-r9 (Apollo's review of the r8 hea
 // comment) with the cheap hardening it asked for beside it: the
 // `allow-same-origin` refusal covering decorated spellings, and the
 // verbatim-application contract pinned. F3 is the http reason constructor.
+// (W1-01-r1 FU-1: the r10 verbatim-application expectation that admitted
+// `allow-top-navigation`/`allow-popups-to-escape-sandbox` is replaced by the
+// FU-1 block at the bottom of this file — owner decision B moved schema
+// admission and player refusal together.)
 // These were the red tests for round r10's fix (the F2 spelling table and the
 // F3 tests; F5/F6/F8/F1 live in tests/demo-deeplink.test.ts).
 describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 head)", () => {
@@ -3249,22 +3259,6 @@ describe("demo player state machine — W0-05b-r10 (Apollo's review of the r9 he
       expect(player.snapshot().interactiveSandbox).toBeNull();
       expect(media.calls.length).toBe(callsBefore);
     }
-  });
-
-  it("r10 F2 (D05): the verbatim-application contract holds — every token the schema allows survives to the sandbox string unchanged (the sandbox policy is the schema's, applied verbatim)", async () => {
-    // `allow-modals`, `allow-popups-to-escape-sandbox` and
-    // `allow-top-navigation` are on the schema's sandbox allow-list by the
-    // board's design (`schema.ts`'s SANDBOX_TOKENS, "the known iframe sandbox
-    // tokens minus `allow-same-origin`"). A player-side refusal of them would
-    // make a schema-valid package render wrongly — the player applies the
-    // validated list verbatim, and this test pins that contract.
-    const sandbox = 'allow-modals allow-popups-to-escape-sandbox allow-top-navigation';
-    const { player } = await playerWithInteractive(sandbox);
-    player.dispatch({ type: 'open-interactive' });
-    const snapshot = player.snapshot();
-    expect(snapshot.state).toBe('interactive');
-    expect(snapshot.interactiveRefusal).toBeNull();
-    expect(snapshot.interactiveSandbox).toBe(sandbox);
   });
 
   it('r10 F3 (behaviour 12): httpReason(200) produces a reason the guard accepts — dispatched, the machine errors with the canonical rendering http-200', async () => {
@@ -3755,5 +3749,139 @@ describe("demo player state machine — W0-05b-r12 (Apollo's review of the r11 h
     await player.retry();
     expect(media.calls.slice(mark)).toEqual(['seekTo:9', 'play']);
     expect(player.snapshot().positionSeconds).toBe(9);
+  });
+});
+
+// W1-01-r1 FU-1 — the owner's must-fix security ruling, decision B: schema
+// admission and player refusal move together. `allow-top-navigation`,
+// `allow-top-navigation-by-user-activation` and
+// `allow-popups-to-escape-sandbox` are dropped from `schema.ts`'s
+// SANDBOX_TOKENS (each now `bad-interactive`) and refused by the player with
+// the new `sandbox-token-refused` reason, immediately after the existing
+// `allow-same-origin` check (its precedence is untouched). This block
+// replaces r10's verbatim-application expectation, which admitted the
+// now-forbidden tokens; the surviving-token verbatim contract is pinned
+// here unchanged in meaning.
+
+/** The three tokens owner decision B drops from both gates. */
+const DROPPED_SANDBOX_TOKENS = [
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-popups-to-escape-sandbox',
+] as const;
+
+const TRY_URL = `${mediaBase(SCENARIO_ID)}/try.html`;
+
+/**
+ * A contract-complete package body, in the shape of
+ * tests/demo-schema.test.ts's wellFormed(): real `teams-01`, the real
+ * `rev-2026-10-25-1`, immutable HTTPS URLs and complete evidence, approval
+ * and hash fields. Local to this file so the six-file limit holds.
+ */
+function wellFormed(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    schema: DEMO_PACKAGE_SCHEMA,
+    engineOrProduct: 'teams',
+    scenarioId: SCENARIO_ID,
+    packageRevision: PACKAGE_REVISION,
+    publicationState: 'approved',
+    sourceApp: 'capturd',
+    sourceRevision: SOURCE_REVISION,
+    renditions: [
+      {
+        url: `${mediaBase(SCENARIO_ID)}/clip-720.mp4`,
+        mime: 'video/mp4',
+        width: 1280,
+        height: 720,
+        durationSeconds: 42,
+        chapters: [{ label: 'Intro', startSeconds: 0 }],
+      },
+    ],
+    posterUrl: `${mediaBase(SCENARIO_ID)}/poster.png`,
+    captionsUrl: `${mediaBase(SCENARIO_ID)}/captions.vtt`,
+    transcriptUrl: `${mediaBase(SCENARIO_ID)}/transcript.html`,
+    evidence: {
+      inputs: ['stdin.json'],
+      runIds: ['run-1'],
+      logs: [],
+      artifactHashes: ['c'.repeat(64)],
+    },
+    approval: { approvedBy: 'Owner', approvedAt: '2026-10-25T12:00:00Z', watchedComplete: true },
+    contentHash: 'd'.repeat(64),
+    immutableUrls: true,
+    ...overrides,
+  };
+}
+
+/** The DemoProblem code a body produces, or 'parsed'. */
+const problemOf = (raw: unknown): string => {
+  const parsed = parseDemoPackage(raw);
+  return 'problem' in parsed ? parsed.problem : 'parsed';
+};
+
+describe('demo player state machine — W1-01-r1 FU-1 sandbox policy (owner decision B)', () => {
+  it('FU-1 schema refuses each dropped token as bad-interactive', () => {
+    for (const token of DROPPED_SANDBOX_TOKENS) {
+      for (const sandbox of [token, `${token} allow-scripts`, `allow-scripts ${token}`]) {
+        expect(
+          problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox } })),
+          sandbox,
+        ).toBe('bad-interactive');
+      }
+    }
+    // Edge: more than one forbidden token in one string fails closed too.
+    expect(
+      problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: DROPPED_SANDBOX_TOKENS.join(' ') } })),
+      'all three at once',
+    ).toBe('bad-interactive');
+  });
+
+  it('FU-1 player refuses each dropped token without touching media', async () => {
+    for (const sandbox of [...DROPPED_SANDBOX_TOKENS, DROPPED_SANDBOX_TOKENS.join(' ')]) {
+      const { player, media } = await playerWithInteractive(sandbox);
+      const callsBefore = [...media.calls];
+      const opened = player.dispatch({ type: 'open-interactive' });
+      // The existing non-interactive media path stands: nothing opens, the
+      // video keeps playing, and no media call fires.
+      expect(opened.state, sandbox).toBe('playing');
+      expect(opened.interactiveSandbox, sandbox).toBeNull();
+      expect(opened.interactiveRefusal, sandbox).toBe('sandbox-token-refused');
+      expect([...media.calls], sandbox).toEqual(callsBefore);
+    }
+  });
+
+  it('FU-1 surviving sandbox tokens parse and apply verbatim', async () => {
+    const sandbox = 'allow-modals allow-popups allow-scripts';
+    const parsed = parseDemoPackage(wellFormed({ interactive: { url: TRY_URL, sandbox } }));
+    if (!('package' in parsed)) throw new Error('expected the surviving sandbox to parse');
+    expect(parsed.package.interactive?.sandbox).toBe(sandbox);
+    const { player } = await playerWithInteractive(sandbox);
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('interactive');
+    expect(opened.interactiveRefusal).toBeNull();
+    // The iframe sandbox attribute is the validated list verbatim.
+    expect(opened.interactiveSandbox).toBe(sandbox);
+  });
+
+  it('FU-1 preserves allow-same-origin precedence', async () => {
+    for (const sandbox of [
+      'allow-same-origin',
+      'allow-scripts allow-same-origin',
+      'ALLOW-SAME-ORIGIN',
+      'allow-forms \u0000allow-same-origin',
+      // Beside a newly refused token the ORIGINAL reason is returned: the
+      // allow-same-origin check runs first and keeps its precedence.
+      'allow-top-navigation allow-same-origin',
+      'allow-same-origin allow-popups-to-escape-sandbox',
+      'allow-top-navigation-by-user-activation allow-scripts ALLOW-SAME-ORIGIN',
+    ]) {
+      const { player, media } = await playerWithInteractive(sandbox);
+      const callsBefore = media.calls.length;
+      const opened = player.dispatch({ type: 'open-interactive' });
+      expect(opened.state, sandbox).toBe('playing');
+      expect(opened.interactiveRefusal, sandbox).toBe('sandbox-allows-same-origin');
+      expect(opened.interactiveSandbox, sandbox).toBeNull();
+      expect(media.calls.length, sandbox).toBe(callsBefore);
+    }
   });
 });

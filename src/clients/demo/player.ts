@@ -51,7 +51,14 @@
 //     let the framed page act as the front-door origin — remote code). The
 //     token set is ASCII case-insensitive, like HTML's `sandbox` attribute, so the
 //     refusal fires on `ALLOW-SAME-ORIGIN`, `Allow-Same-Origin` and any other
-//     casing inside a multi-token string. Anything else keeps the video path
+//     casing inside a multi-token string. Under W1-01-r1 FU-1 (owner decision
+//     B) the sandbox must also contain none of `allow-top-navigation`,
+//     `allow-top-navigation-by-user-activation` or
+//     `allow-popups-to-escape-sandbox` — top navigation would let the framed
+//     artifact navigate the front door and escaped popups would open outside
+//     the sandbox — refused as `sandbox-token-refused` immediately after the
+//     `allow-same-origin` check, whose precedence is unchanged. Anything else
+//     keeps the video path
 //     and records the named reason. The sandbox is applied as the iframe
 //     sandbox attribute canonicalised the way `./schema.ts` normalises the
 //     wire value — lowercased, single-space tokens, never a mixed-case
@@ -165,11 +172,13 @@
 //       edge: a later start() still lands).
 //   - W0-05b-r10 (Apollo's review of the r9 head), one answer and three
 //     structural fixes:
-//     - F2 is ANSWERED, not changed: the sandbox policy is the locked
-//       W0-05a schema's — its `SANDBOX_TOKENS` allow-list, applied verbatim
-//       as the iframe sandbox attribute — and a player-side refusal of a
-//       token the schema admits would make a schema-valid package render
-//       wrongly. The only change here is beside the policy: the existing
+//     - F2 is ANSWERED, not changed (its policy half is SUPERSEDED by
+//       W1-01-r1 FU-1, owner decision B: schema admission and player refusal
+//       move together, and `allow-top-navigation`,
+//       `allow-top-navigation-by-user-activation` and
+//       `allow-popups-to-escape-sandbox` are refused here as
+//       `sandbox-token-refused` after the `allow-same-origin` check). What
+//       stands from r10 is beside the policy: the existing
 //       `allow-same-origin` refusal now covers the token's case-normalised,
 //       whitespace-padded and C0-padded spellings (r10 F2's hardening).
 //     - F3: `MediaErrorReason`'s http arm is built by `httpReason()` alone —
@@ -340,7 +349,13 @@ export type InteractiveRefusalReason =
   | 'absent'
   | 'sandbox-empty'
   | 'url-not-https'
-  | 'sandbox-allows-same-origin';
+  | 'sandbox-allows-same-origin'
+  // W1-01-r1 FU-1 (owner decision B): a sandbox naming one of the three
+  // dropped tokens (`allow-top-navigation`,
+  // `allow-top-navigation-by-user-activation`,
+  // `allow-popups-to-escape-sandbox`). Schema admission refuses the same
+  // tokens in `./schema.ts`; this is the player-side half of that one policy.
+  | 'sandbox-token-refused';
 
 /** The board's twelve player states, and no state the board does not have. */
 export type DemoPlayerStateName =
@@ -457,9 +472,12 @@ export type DemoPlayer = {
  * whitespace-padded and C0-padded spellings (the decoration class
  * `./captions.ts` normalises): the token set is ASCII case-insensitive, like
  * HTML's `sandbox` attribute, and no decoration of the refused token
- * survives it. The policy beside it — which tokens may appear at all — is
- * W0-05a's schema allow-list and this function refuses nothing it admits:
- * the validated list is applied verbatim (r10 F2's answer and contract).
+ * survives it. W1-01-r1 FU-1 (owner decision B) refuses
+ * `allow-top-navigation`, `allow-top-navigation-by-user-activation` and
+ * `allow-popups-to-escape-sandbox` here as `sandbox-token-refused`,
+ * immediately after the `allow-same-origin` check — schema admission and
+ * this refusal move together (`./schema.ts` drops the same three tokens), so
+ * a token the schema admits still reaches the applied sandbox verbatim.
  */
 export function openInteractive(
   sandbox: unknown,
@@ -482,10 +500,21 @@ export function openInteractive(
   // Any `allow-same-origin` token is refused outright — with `allow-scripts`
   // or without: it would let the framed page act as this origin: remote code.
   if (names.includes('allow-same-origin')) return { reason: 'sandbox-allows-same-origin' };
+  // W1-01-r1 FU-1 (owner decision B): the tokens `./schema.ts` no longer
+  // admits are refused here too — schema admission and player refusal move
+  // together, with tests in both directions.
+  const REFUSED_SANDBOX_TOKENS = new Set([
+    'allow-top-navigation',
+    'allow-top-navigation-by-user-activation',
+    'allow-popups-to-escape-sandbox',
+  ]);
+  if (names.some((name) => REFUSED_SANDBOX_TOKENS.has(name))) {
+    return { reason: 'sandbox-token-refused' };
+  }
   // Applied as the iframe sandbox attribute, canonicalised the way
   // `./schema.ts` normalises the wire value: lowercased, single-space tokens
-  // — never a mixed-case string. On a schema-valid input this is the string
-  // verbatim (r10 F2's contract).
+  // — never a mixed-case string. On a schema-valid input whose tokens survive
+  // the refusals above this is the string verbatim.
   return { sandbox: tokens.join(' ') };
 }
 
