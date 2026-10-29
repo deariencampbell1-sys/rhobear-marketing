@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createElement, type ReactElement } from 'react';
+import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 // W1-03-r1: Plans (P01/P02/P04), the Get shelf (T01/T03/G01) and the Herald /
 // Regent commercial additions (P03), through the real App where the brief
@@ -86,7 +86,9 @@ function tableMatrix(html: string): string[][] {
 function primaryContainer(html: string): string {
   const parts = html.split('data-primary="true"');
   expect(parts.length - 1, 'exactly one data-primary container').toBe(1);
-  return parts[1].slice(0, parts[1].indexOf('</div>'));
+  const rest = parts[1];
+  const ends = [rest.indexOf('</div>'), rest.indexOf('</li>')].filter((index) => index >= 0);
+  return rest.slice(0, Math.min(...ends));
 }
 
 /** The main region of a rendered document (the owned content, not the shell). */
@@ -130,7 +132,9 @@ function wireCatalog(over: Record<string, unknown> = {}): Record<string, unknown
     region: 'US',
     generatedAt: GENERATED_AT,
     plans: catalogPlanRows.map((plan) => ({ ...plan })),
-    capabilities: [{ product: 'builds', capability: 'apollo', plans: ['shell'], state: 'included' }],
+    capabilities: [
+      { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+    ],
     ...over,
   };
 }
@@ -238,7 +242,7 @@ const buildsReleases: readonly Release[] = [
 describe('W1-03-r1 plans, commercial routes and get', () => {
   it('plans render approved prices credit and monthly terms without arithmetic', () => {
     const { PlansPage } = requireScreens();
-    const html = render(createElement(PlansPage));
+    const html = render(<PlansPage />);
     // Exactly the four plans, in the owner's order, and no fifth plan row.
     const headings = [...html.matchAll(/<h3>([^<]+)<\/h3>/g)].map((match) => match[1]);
     expect(headings).toEqual(['Free', 'Shell', 'Shell Plus', 'Space']);
@@ -260,16 +264,17 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const topUp = approvedPriceList.find((row) => row.kind === 'add-on');
     expect(topUp).toBeDefined();
     expect(html).toContain(`$${topUp?.monthly} adds $${topUp?.includedCredit}; plan required`);
-    // One launch headline, one launch body, and monthly only.
-    expect(occurrences(html, launchOffer.headline)).toBe(1);
-    expect(occurrences(html, launchOffer.body)).toBe(1);
+    // One launch headline, one launch body (decoded: renderToStaticMarkup
+    // escapes the apostrophe in "Captur'd"), and monthly only.
+    expect(occurrences(decodeEntities(html), launchOffer.headline)).toBe(1);
+    expect(occurrences(decodeEntities(html), launchOffer.body)).toBe(1);
     expect(occurrences(html, `Renews ${billingTerms.interval}`)).toBe(4);
     expect(html).not.toMatch(/annual|yearly|\b12 months?\b|\b\d+ ?months? free\b/i);
   });
 
   it('checkout remains closed beside the disabled action', () => {
     const { PlansPage } = requireScreens();
-    const html = render(createElement(PlansPage));
+    const html = render(<PlansPage />);
     expect(html).toContain(
       'Prices are the approved list; the amount and tax are confirmed at checkout.',
     );
@@ -289,7 +294,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('capability matrix uses words and unknown stays unknown', async () => {
     const { PlansPage } = requireScreens();
-    const html = render(createElement(PlansPage));
+    const html = render(<PlansPage />);
     const matrix = tableMatrix(html);
     expect(matrix).toHaveLength(8);
     expect(matrix[0]).toEqual(['Capability', 'Free', 'Shell', 'Shell Plus', 'Space']);
@@ -327,7 +332,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
         capabilities: [{ product: 'builds', capability: 'zeus', plans: [], state: 'unknown' }],
       }),
     );
-    const unknownHtml = render(createElement(PlansPage, { catalog: view }));
+    const unknownHtml = render(<PlansPage catalog={view} />);
     const unknownMatrix = tableMatrix(unknownHtml);
     expect(unknownMatrix[3]).toEqual([
       'Zeus',
@@ -343,7 +348,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const { PlansPage } = requireScreens();
     // A matching, fresh catalog is attributed with its version and the exact
     // generation timestamp, and checkout is still closed under checkoutState.
-    const matching = render(createElement(PlansPage, { catalog: await viewOf() }));
+    const matching = render(<PlansPage catalog={await viewOf()} />);
     expect(matching).not.toContain('Catalog mismatch; purchase is blocked.');
     expect(matching).toContain(CATALOG_VERSION);
     expect(matching).toContain(new Date(GENERATED_AT).toISOString());
@@ -383,7 +388,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       ],
     ];
     for (const [name, view] of blockedCases) {
-      const html = render(createElement(PlansPage, { catalog: view }));
+      const html = render(<PlansPage catalog={view} />);
       expect(html, name).toContain('Catalog mismatch; purchase is blocked.');
       expect(html, name).not.toMatch(/<button[^>]*>Continue<\/button>/);
       expect(html, name).not.toContain('data-primary="true"');
@@ -395,7 +400,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('free and Reviews copy makes no hosted or bundled claim', () => {
     const { PlansPage } = requireScreens();
-    const html = render(createElement(PlansPage));
+    const html = render(<PlansPage />);
     expect(html).toContain(
       'Free is local only: pocket models, the harness and Verifier on your own machine. No hosted credit, engine usage, or trial is included.',
     );
@@ -493,7 +498,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect((appHtml.match(/<h1[\s>]/g) ?? []).length).toBe(1);
 
     const { GetPage } = requireScreens();
-    const html = render(createElement(GetPage));
+    const html = render(<GetPage />);
     for (const product of products) {
       const section = sectionOf(html, product.publicName);
       for (const platform of platforms) {
@@ -515,9 +520,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const allUnavailable: readonly Release[] = products.map((product) =>
       releaseRow(product.id, 'windows', { availability: 'unavailable' }),
     );
-    const unknown = render(
-      createElement(GetPage, { releases: allUnavailable, hints: unknownHints }),
-    );
+    const unknown = render(<GetPage releases={allUnavailable} hints={unknownHints} />);
     expect(unknown).toContain('We could not identify your device; no platform is selected.');
     for (const product of products) {
       const section = sectionOf(unknown, product.publicName);
@@ -531,9 +534,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('known OS features only a real downloadable or store row', () => {
     const { GetPage } = requireScreens();
-    const html = render(
-      createElement(GetPage, { releases: buildsReleases, hints: { userAgent: WINDOWS_UA } }),
-    );
+    const html = render(<GetPage releases={buildsReleases} hints={{ userAgent: WINDOWS_UA }} />);
     const builds = sectionOf(html, 'Builds');
     // The current device's row comes first and is the only primary row.
     expect(builds.indexOf('>windows<')).toBeLessThan(builds.indexOf('>macos<'));
@@ -555,9 +556,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     // Named reasons of the non-featured rows are visible in words.
     expect(builds).toContain('marked-unavailable');
     // An unknown OS renders every row with no featured (primary) row at all.
-    const unknown = render(
-      createElement(GetPage, { releases: buildsReleases, hints: unknownHints }),
-    );
+    const unknown = render(<GetPage releases={buildsReleases} hints={unknownHints} />);
     expect(unknown).not.toContain('data-primary="true"');
     expect(unknown).not.toContain('Current device');
     expect(unknown).toContain('We could not identify your device; no platform is selected.');
@@ -579,17 +578,15 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const cases: readonly (readonly [string, Release, string])[] = [
       ['owner pulled', releaseRow('builds', 'windows', { availability: 'unavailable' }), 'marked-unavailable'],
       ['superseded', releaseRow('builds', 'windows', { supersededBy: '1.5.0' }), 'superseded'],
-      ['signer missing', releaseRow('builds', 'windows', { signer: null }), 'signer-missing'],
-      ['incomplete artifact', releaseRow('builds', 'windows', { sha256: null }), 'incomplete-artifact'],
+      ['signer missing', releaseRow('builds', 'windows', { artifactUrl: ARTIFACT.windows, signer: null }), 'signer-missing'],
+      ['incomplete artifact', releaseRow('builds', 'windows', { artifactUrl: ARTIFACT.windows, sha256: null }), 'incomplete-artifact'],
       ['insecure artifact', releaseRow('builds', 'windows', { artifactUrl: 'http://releases.example.com/x.zip' }), 'insecure-artifact'],
-      ['notarization incomplete', releaseRow('builds', 'macos', { notarization: 'required' }), 'notarization-incomplete'],
+      ['notarization incomplete', releaseRow('builds', 'macos', { artifactUrl: ARTIFACT.macos, notarization: 'required' }), 'notarization-incomplete'],
       ['no artifact', releaseRow('builds', 'windows'), 'no-artifact'],
       ['waitlist', releaseRow('builds', 'windows', { availability: 'waitlist' }), 'waitlist'],
     ];
     for (const [name, release, reason] of cases) {
-      const html = render(
-        createElement(GetPage, { releases: [release], hints: { userAgent: WINDOWS_UA } }),
-      );
+      const html = render(<GetPage releases={[release]} hints={{ userAgent: WINDOWS_UA }} />);
       const builds = sectionOf(html, 'Builds');
       expect(builds, name).toContain(reason);
       expect(builds, name).not.toMatch(/href="https?:\/\//);
@@ -599,10 +596,10 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     }
     // The waitlist row says joining is closed and offers no form.
     const waitlist = render(
-      createElement(GetPage, {
-        releases: [releaseRow('builds', 'windows', { availability: 'waitlist' })],
-        hints: { userAgent: WINDOWS_UA },
-      }),
+      <GetPage
+        releases={[releaseRow('builds', 'windows', { availability: 'waitlist' })]}
+        hints={{ userAgent: WINDOWS_UA }}
+      />,
     );
     expect(waitlist).toContain('Joining is not open yet.');
     expect(waitlist).not.toMatch(/<form|<input/i);
@@ -644,14 +641,10 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       expect(match[1].trim(), 'maxWidth is only the 100% wrap').toBe("'100%'");
     }
     // Every action keeps the kit's 44 px minima on every owned screen.
+    const { GetPage: GetShelf, PlansPage: Plans } = requireScreens();
     const screensHtml = [
-      render(createElement(requireScreens().PlansPage)),
-      render(
-        createElement(requireScreens().GetPage, {
-          releases: buildsReleases,
-          hints: { userAgent: WINDOWS_UA },
-        }),
-      ),
+      render(<Plans />),
+      render(<GetShelf releases={buildsReleases} hints={{ userAgent: WINDOWS_UA }} />),
       renderRoute('/herald'),
       renderRoute('/regent'),
     ];
