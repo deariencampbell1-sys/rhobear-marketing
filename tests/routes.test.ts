@@ -5,7 +5,7 @@ import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
 import { classifySharedLink, NotFound, type SharedLinkResult } from '../src/app/NotFound';
 import { parseIntent } from '../src/clients/intent/schema';
-import { brand, enginesDestination, productById, products } from '../src/data';
+import { brand, enginesDestination, heraldOffers, productById, products } from '../src/data';
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
 import { engineScenarios, engines, enginesById } from '../src/data/engines';
@@ -214,6 +214,33 @@ function approvedStrings(): string[] {
   }
   approved.push(enginesDestination.whatItIs);
   return approved;
+}
+
+// W1-03-r1 amendment 1 (Niobe, 2026-10-29): P03 puts Herald's own offers on
+// /herald, so those four P03 strings — `$49.00 per month`, `$99.00 per month`,
+// `$30.00 per month` and `$39.00 setup`, derived from the heraldOffers rows the
+// page renders, never retyped — are the only dollar strings that page may show
+// and the only price text it may invent. The texting row renders both of its
+// charges in one visible run joined by the page's own "plus", so that composed
+// run is derived from the same offer here as well. Approved for /herald only.
+function heraldApprovedTexts(): string[] {
+  const texts: string[] = [];
+  for (const offer of heraldOffers) {
+    const monthly = `$${offer.monthly} per month`;
+    texts.push(monthly);
+    if (offer.setup === null) continue;
+    const setup = `$${offer.setup} setup`;
+    texts.push(setup);
+    texts.push(`${monthly} plus ${setup}`);
+  }
+  return texts;
+}
+
+// Amendment 1: strip /herald's four approved P03 prices and leave everything
+// else byte-identical — every other owned page keeps the blanket no-price rule.
+function withoutHeraldPrices(path: string, text: string): string {
+  if (path !== '/herald') return text;
+  return heraldApprovedTexts().reduce((rest, price) => rest.split(price).join(''), text);
 }
 
 // W1-01-r1 shared-link fixtures: built through parseIntent-valid fields and
@@ -521,8 +548,9 @@ describe('W1-01-r1 screens', () => {
         expect(html, `${path}: ${label}`).toContain(label);
         expect(html, `${path}: ${label}`).toContain(`href="${href}"`);
       }
-      // No price on any owned page.
-      expect(html, path).not.toMatch(/\$\d/);
+      // No price on any owned page — /herald alone shows its own P03 offer
+      // strings (amendment 1); once they are removed no other price remains.
+      expect(withoutHeraldPrices(path, html), path).not.toMatch(/\$\d/);
     }
 
     // Forge: a real #kits section holding Forge's own availability facts —
@@ -721,15 +749,20 @@ describe('W1-01-r1 anti-invention and composition', () => {
       ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
     ];
     for (const path of owned) {
+      // Amendment 1: the approved-text list gains those four P03 strings for
+      // /herald only; every other path is checked against the same list as ever.
+      const approvedFor = path === '/herald'
+        ? [...approved, ...heraldApprovedTexts()]
+        : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
-        const hit = approved.some((approvedText) =>
+        const hit = approvedFor.some((approvedText) =>
           approvedText.toLowerCase().includes(run.toLowerCase()),
         );
         expect(hit, `${path}: unapproved text node "${run}"`).toBe(true);
       }
       const html = renderRoute(path);
       const text = visibleText(html);
-      expect(text, path).not.toMatch(/\$\d/);
+      expect(withoutHeraldPrices(path, text), path).not.toMatch(/\$\d/);
       expect(text, path).not.toMatch(/\bImagine\b|\bLabs\b|Blueprint mode|\bNeo\b/);
       expect(text, path).not.toMatch(
         /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
