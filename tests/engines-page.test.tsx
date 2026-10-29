@@ -164,6 +164,7 @@ describe('W1-02-r1 engines and proof states', () => {
       'Live samples',
       'Try a sample',
       'Samples open when the engine service and quota are live.',
+      'Plans',
     ];
     const approved = [
       enginesDestination.whatItIs,
@@ -342,7 +343,11 @@ describe('W1-02-r1 engines and proof states', () => {
     expect(engineScenarios.length).toBe(7);
     for (const row of engineScenarios) {
       const engine = enginesById[row.engineId];
-      const html = renderToStaticMarkup(createElement(ScenarioPage, { scenarioId: row.scenarioId }));
+      // decodeEntities: engine names carry real punctuation (Captur'd) that
+      // renderToStaticMarkup escapes.
+      const html = decodeEntities(
+        renderToStaticMarkup(createElement(ScenarioPage, { scenarioId: row.scenarioId })),
+      );
       // Its own engine, its own MCP handle, the pending proof state.
       expect(html, row.scenarioId).toContain(engine.publicName);
       expect(html, row.scenarioId).toContain(engine.mcpHandle);
