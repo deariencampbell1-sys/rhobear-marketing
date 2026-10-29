@@ -149,8 +149,11 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
       </section>
       <section style={pagePadding}>
         <h2>Included in each plan</h2>
+        {/* overflow-wrap: anywhere keeps the five-column table inside the
+            gutter at 200% text: cells break and stack their words instead of
+            widening the page — no fixed sizing, no horizontal scroll. */}
         <div style={fullWidth}>
-          <table style={fullWidth}>
+          <table style={{ ...fullWidth, overflowWrap: 'anywhere' }}>
             <thead>
               <tr>
                 <th scope="col">Capability</th>
