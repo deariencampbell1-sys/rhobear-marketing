@@ -1,5 +1,8 @@
 // W0-01: the canonical route table. Single source of truth for App.tsx,
 // prerender output and sitemap.xml. Wave 1 fills pages; paths never move.
+// W1-02: the seven scenario routes derive from the engines registry below.
+
+import { engineScenarios, enginesById } from '../data/engines';
 
 export type RouteKind = 'static' | 'dynamic';
 
@@ -17,7 +20,7 @@ export interface Route {
   group: 'product' | 'platform' | 'commerce' | 'about' | 'account' | 'home';
 }
 
-export const routes: readonly Route[] = [
+const baseRoutes: readonly Route[] = [
   { path: '/', title: 'Home', kind: 'static', group: 'home' },
   { path: '/builds', title: 'Builds', kind: 'static', group: 'product' },
   { path: '/forge', title: 'Forge', kind: 'static', group: 'product' },
@@ -32,6 +35,21 @@ export const routes: readonly Route[] = [
   { path: '/privacy', title: 'Privacy', kind: 'static', group: 'about' },
   { path: '/terms', title: 'Terms', kind: 'static', group: 'about' },
 ] as const;
+
+/**
+ * W1-02: one static route per registry scenario, derived from
+ * `engineScenarios` — ids, order and titles come from the registry, never
+ * from a hand-copied list. With the seven board scenarios this makes 20
+ * canonical routes; `/account` stays the only dynamic one.
+ */
+const scenarioRoutes: readonly Route[] = engineScenarios.map((scenario) => ({
+  path: `/engines/${scenario.scenarioId}`,
+  title: `${enginesById[scenario.engineId].publicName} proof`,
+  kind: 'static',
+  group: 'platform',
+}));
+
+export const routes: readonly Route[] = [...baseRoutes, ...scenarioRoutes];
 
 /** The not-found case: rendered for unknown paths, prerendered to dist/404.html. */
 export const notFoundRoute: Route = {
