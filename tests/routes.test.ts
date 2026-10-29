@@ -6,6 +6,9 @@ import { renderRoute } from '../src/app/render';
 import { classifySharedLink, NotFound, type SharedLinkResult } from '../src/app/NotFound';
 import { parseIntent } from '../src/clients/intent/schema';
 import { brand, enginesDestination, productById, products } from '../src/data';
+// W1-02-r1: the scenario routes and their titles derive from the real
+// registry — ids and order are imported here, never hand-written.
+import { engineScenarios, engines, enginesById } from '../src/data/engines';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
 import notFoundSource from '../src/app/NotFound.tsx?raw';
@@ -58,6 +61,9 @@ const CANONICAL_PATHS = [
   '/support',
   '/privacy',
   '/terms',
+  // W1-02-r1: one canonical path per registry scenario, derived — this is
+  // never a second handwritten id list.
+  ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
 ];
 
 function visibleText(html: string): string {
@@ -102,10 +108,18 @@ const SCREEN_ACTIONS: Record<string, readonly (readonly [string, string])[]> = {
   ],
 };
 
+/** The entity spellings renderToStaticMarkup emits, decoded back to text. */
+function decodeEntities(text: string): string {
+  return text
+    .replace(/&#x27;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&amp;/g, '&');
+}
+
 /** The visible text runs of a markup fragment, each one normalised. */
 function visibleRuns(fragment: string): string[] {
   return [...fragment.matchAll(/>([^<>]+)</g)]
-    .map((match) => match[1].trim().replace(/^·\s*/, ''))
+    .map((match) => decodeEntities(match[1]).trim().replace(/^·\s*/, ''))
     .filter((text) => text !== '');
 }
 
@@ -159,6 +173,16 @@ const PINNED_LABELS = [
   'Zeus',
   'Offline',
   'You can still use these page links. Cached information may be stale; nothing here infers your balance, subscription, installation, payment, or job success.',
+  // W1-02-r1: the tiny allowlist of labels and sentences the engines/proof
+  // brief pins verbatim — nothing else is admitted.
+  'Builds mini app',
+  '@ MCP',
+  'The real recording, captions and transcript appear after approval. No mock or stock clip is shown.',
+  'Open proof shell',
+  'Live samples',
+  'Try a sample',
+  'Samples open when the engine service and quota are live.',
+  'Back to Engines',
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */
@@ -183,6 +207,12 @@ function approvedStrings(): string[] {
       product.availability.reason,
     );
   }
+  // W1-02-r1: approved engine facts — names and MCP handles only; engines
+  // carry no public description beyond the pending state.
+  for (const engine of engines) {
+    approved.push(engine.publicName, engine.mcpHandle);
+  }
+  approved.push(enginesDestination.whatItIs);
   return approved;
 }
 
@@ -209,12 +239,29 @@ function validIntent(overrides: Record<string, unknown> = {}) {
 }
 
 describe('route table', () => {
-  it('has exactly the 13 canonical paths plus the 404 case, each once', () => {
+  it('route table has 13 canonical section routes plus seven registry scenarios', () => {
     const paths = routes.map((r) => r.path);
+    // Exact ordered paths: the 13 canonical section routes plus one route per
+    // registry scenario, each exactly once.
+    expect(CANONICAL_PATHS).toHaveLength(20);
     expect(paths).toEqual(CANONICAL_PATHS);
     expect(new Set(paths).size).toBe(paths.length);
     expect(notFoundRoute.path).toBe('/404');
     expect(notFoundRoute.kind).toBe('static');
+    // The scenario half derives from the registry: ids, order and titles.
+    expect(CANONICAL_PATHS.slice(13)).toEqual(
+      engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
+    );
+    for (const scenario of engineScenarios) {
+      const route = routes.find((r) => r.path === `/engines/${scenario.scenarioId}`);
+      expect(route?.title, scenario.scenarioId).toBe(
+        `${enginesById[scenario.engineId].publicName} proof`,
+      );
+      expect(route?.group, scenario.scenarioId).toBe('platform');
+      expect(route?.kind, scenario.scenarioId).toBe('static');
+    }
+    // Only /account receives a client bundle.
+    expect(routes.filter((r) => r.kind === 'dynamic').map((r) => r.path)).toEqual(['/account']);
   });
 
   it('marks only /account dynamic and keeps kinds and groups valid', () => {
@@ -250,13 +297,21 @@ describe('prerender output', () => {
     fs.rmSync(`.cache/prerender-${DIST}`, { recursive: true, force: true });
   });
 
-  it('writes an index.html for every route, 404.html, sitemap.xml and robots.txt', () => {
+  it('prerender emits 20 routes plus 404 and the sitemap matches exactly', () => {
+    expect(routes).toHaveLength(20);
     for (const route of routes) {
       expect(fs.existsSync(pageFor(route.path)), pageFor(route.path)).toBe(true);
     }
     for (const file of [`${DIST}/404.html`, `${DIST}/sitemap.xml`, `${DIST}/robots.txt`]) {
       expect(fs.existsSync(file), file).toBe(true);
     }
+    const sitemap = fs.readFileSync(`${DIST}/sitemap.xml`, 'utf8');
+    const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
+    expect(locs).toEqual(CANONICAL_PATHS.map((p) => `${ORIGIN}${p}`));
+    // No invented scenario: every /engines/ page is a registry scenario page.
+    expect(locs.filter((loc) => loc.includes('/engines/'))).toEqual(
+      engineScenarios.map((scenario) => `${ORIGIN}/engines/${scenario.scenarioId}`),
+    );
   });
 
   it('renders every page readable with JavaScript disabled', () => {
@@ -280,12 +335,6 @@ describe('prerender output', () => {
     for (const file of [`${DIST}/index.html`, `${DIST}/plans/index.html`, `${DIST}/404.html`]) {
       expect(fs.readFileSync(file, 'utf8'), file).not.toContain('<script');
     }
-  });
-
-  it('lists exactly the canonical routes in sitemap.xml', () => {
-    const sitemap = fs.readFileSync(`${DIST}/sitemap.xml`, 'utf8');
-    const locs = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1]);
-    expect(locs).toEqual(CANONICAL_PATHS.map((p) => `${ORIGIN}${p}`));
   });
 
   it('allows all in robots.txt and points at the sitemap', () => {
@@ -315,6 +364,35 @@ describe('prerender output', () => {
       }
     }
   });
+
+  it('engines and every scenario are substantive static HTML', () => {
+    const enginesHtml = decodeEntities(fs.readFileSync(pageFor('/engines'), 'utf8'));
+    const enginesText = visibleText(enginesHtml);
+    expect((enginesHtml.match(/<h1[\s>]/g) ?? []).length, '/engines: one h1').toBe(1);
+    expect(enginesText.length, '/engines: meaningful text').toBeGreaterThan(800);
+    expect(enginesHtml, '/engines: no script').not.toContain('<script');
+    expect(enginesHtml, '/engines: no undefined').not.toContain('undefined');
+    expect(enginesHtml, '/engines: no NaN').not.toContain('NaN');
+    for (const engine of engines) {
+      expect(enginesHtml, engine.publicName).toContain(engine.publicName);
+      expect(enginesHtml, engine.mcpHandle).toContain(engine.mcpHandle);
+    }
+    expect(enginesHtml, '/engines: pending state').toContain('Recording in review');
+    for (const scenario of engineScenarios) {
+      const path = `/engines/${scenario.scenarioId}`;
+      const engine = enginesById[scenario.engineId];
+      const html = decodeEntities(fs.readFileSync(pageFor(path), 'utf8'));
+      const text = visibleText(html);
+      expect((html.match(/<h1[\s>]/g) ?? []).length, `${path}: one h1`).toBe(1);
+      expect(text.length, `${path}: meaningful text`).toBeGreaterThan(150);
+      expect(html, `${path}: no script`).not.toContain('<script');
+      expect(html, `${path}: no undefined`).not.toContain('undefined');
+      expect(html, `${path}: no NaN`).not.toContain('NaN');
+      expect(html, `${path}: engine`).toContain(engine.publicName);
+      expect(html, `${path}: mcp`).toContain(engine.mcpHandle);
+      expect(html, `${path}: pending state`).toContain('Recording in review');
+    }
+  });
 });
 
 describe('unknown route', () => {
@@ -327,6 +405,30 @@ describe('unknown route', () => {
     expect(html).toContain('href="/plans"');
     expect(html).toContain('href="/support"');
     expect(html).toContain('href="/"');
+  });
+
+  it('unknown scenario renders 404 without redirect', () => {
+    // A known scenario page is a real page — the 404 is only for unknowns.
+    expect(renderRoute('/engines/teams-01')).not.toContain('Page not found');
+    const html = renderRoute('/engines/invented-99');
+    expect(html).toContain('Page not found');
+    // Six destinations plus support, in the shared 404 shell.
+    for (const href of [
+      '/',
+      '/builds',
+      '/forge',
+      '/herald',
+      '/regent',
+      '/reviews',
+      '/engines',
+      '/support',
+    ]) {
+      expect(html, href).toContain(`href="${href}"`);
+    }
+    expect(html).toContain('href="/plans"');
+    // The unknown id is never reflected and nothing redirects.
+    expect(html).not.toContain('invented-99');
+    expect(html).not.toMatch(/http-equiv|window\.location|location\.(href|replace|assign)|<script/i);
   });
 });
 
@@ -611,7 +713,13 @@ describe('W1-01-r1 offline and recovery shell', () => {
 describe('W1-01-r1 anti-invention and composition', () => {
   it('anti-invention allows only approved data and pinned labels', () => {
     const approved = approvedStrings();
-    const owned = ['/', ...products.map((product) => `/${product.id}`)];
+    const owned = [
+      '/',
+      ...products.map((product) => `/${product.id}`),
+      // W1-02-r1: the check extends to Engines and every scenario page.
+      '/engines',
+      ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
+    ];
     for (const path of owned) {
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         const hit = approved.some((approvedText) =>
@@ -623,7 +731,10 @@ describe('W1-01-r1 anti-invention and composition', () => {
       const text = visibleText(html);
       expect(text, path).not.toMatch(/\$\d/);
       expect(text, path).not.toMatch(/\bImagine\b|\bLabs\b|Blueprint mode|\bNeo\b/);
-      expect(text, path).not.toMatch(/\b\d[\d,]*\s+(downloads|users|installs|customers)\b/i);
+      expect(text, path).not.toMatch(
+        /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
+      );
+      expect(text, path).not.toMatch(/\btestimonial\b/i);
     }
   });
 
