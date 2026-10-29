@@ -236,6 +236,15 @@ function heraldApprovedTexts(): string[] {
   return texts;
 }
 
+// W1-03-r1 amendment 2 (Niobe, 2026-10-29): P03 also mandates Herald's row
+// labels, derived from the heraldOffers ids exactly as the page derives them —
+// never retyped. Approved for /herald only.
+function heraldOfferLabels(): string[] {
+  return heraldOffers.map((offer) =>
+    offer.id.split('-').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '),
+  );
+}
+
 // Amendment 1: strip /herald's four approved P03 prices and leave everything
 // else byte-identical — every other owned page keeps the blanket no-price rule.
 function withoutHeraldPrices(path: string, text: string): string {
@@ -749,11 +758,15 @@ describe('W1-01-r1 anti-invention and composition', () => {
       ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
     ];
     for (const path of owned) {
-      // Amendment 1: the approved-text list gains those four P03 strings for
-      // /herald only; every other path is checked against the same list as ever.
+      // Amendment 1 + 2: the approved-text list gains the four P03 price
+      // strings, the derived offer labels and Contact for /herald only, and
+      // Guided setup only / Request setup for /regent only; every other path is
+      // checked against the same list as ever.
       const approvedFor = path === '/herald'
-        ? [...approved, ...heraldApprovedTexts()]
-        : approved;
+        ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
+        : path === '/regent'
+          ? [...approved, 'Guided setup only', 'Request setup']
+          : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         const hit = approvedFor.some((approvedText) =>
           approvedText.toLowerCase().includes(run.toLowerCase()),
