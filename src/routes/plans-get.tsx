@@ -83,20 +83,23 @@ const CAPABILITY_ROWS: readonly CapabilityRow[] = [
 ];
 
 /**
- * The approved copy draws the table; the catalog may only confirm it. A
- * capability the catalog reports as 'unknown' fails its whole row closed, and
- * a claimed cell ('Included' / 'Included by plan') whose catalog state is
- * anything but 'included' fails closed too: the shipped matrix is never
- * printed as-is over a catalog that does not say so, and no unknown cell ever
- * becomes a claim. Rendered without a catalog, the approved copy stands.
+ * The approved copy draws the table; the catalog may only confirm it. With no
+ * catalog the approved matrix stands. With a catalog present, a capability the
+ * catalog does not carry at all and one it reports as 'unknown' each fail the
+ * whole row closed; a claimed cell ('Included' / 'Included by plan') whose
+ * state is 'not-included' fails closed too while its unclaimed cells keep
+ * their approved words. The shipped matrix is never printed as-is over a
+ * catalog that does not say so, and no absent or unknown cell ever becomes a
+ * claim.
  */
 function capabilityRow(view: CatalogView | null, token: string, cells: readonly string[]): string[] {
-  const entry = view === null ? undefined
-    : view.capabilities.find((item) => item.product === 'builds' && item.capability === token);
-  if (entry?.state === 'unknown') return cells.map(() => NOT_IN_CHECKOUT);
+  if (view === null) return [...cells];
+  const entry = view.capabilities.find((item) => item.product === 'builds' && item.capability === token);
+  // Absence from a present catalog is as fail-closed as 'unknown': the row
+  // still renders, but no cell in it keeps a claim the catalog never made.
+  if (entry === undefined || entry.state === 'unknown') return cells.map(() => NOT_IN_CHECKOUT);
   const claimed = (cell: string): boolean => cell === 'Included' || cell === 'Included by plan';
-  return cells.map((cell) => (claimed(cell) && entry !== undefined && entry.state !== 'included')
-    ? NOT_IN_CHECKOUT : cell);
+  return cells.map((cell) => (claimed(cell) && entry.state !== 'included') ? NOT_IN_CHECKOUT : cell);
 }
 
 export interface PlansPageProps {
@@ -161,14 +164,19 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
               </tr>
             </thead>
             <tbody>
-              {CAPABILITY_ROWS.map(([label, token, ...cells]) => (
-                <tr key={token}>
-                  <th scope="row">{label}</th>
-                  {capabilityRow(catalog, token, cells).map((cell, index) => (
-                    <td key={approvedPlans[index].id}>{cell}</td>
-                  ))}
-                </tr>
-              ))}
+              {CAPABILITY_ROWS.map(([label, token, ...cells]) => {
+                const row = capabilityRow(catalog, token, cells);
+                return (
+                  <tr key={token}>
+                    <th scope="row">{label}</th>
+                    {/* Columns derive from the approved plan rows; a missing
+                        positional cell fails closed, never undefined. */}
+                    {approvedPlans.map((plan, index) => (
+                      <td key={plan.id}>{row[index] ?? NOT_IN_CHECKOUT}</td>
+                    ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -224,6 +232,9 @@ export function GetPage({ releases = [], hints }: GetPageProps = {}): JSX.Elemen
   // (every fallback section does), so it reads exactly once per page.
   const androidAt = shelves.findIndex((shelf) =>
     shelf.result.ok ? shelf.result.rows.some((row) => row.platform === 'android') : true);
+  // -1 means every shelf resolved with no Android row at all: the note falls
+  // back to the first product section, still exactly once and never twice.
+  const androidNoteAt = androidAt === -1 ? 0 : androidAt;
   const deviceUnknown = shelves.some((shelf) =>
     (!shelf.result.ok && shelf.result.reason === 'device-unknown') ||
     (shelf.result.ok && shelf.result.featuredReason === 'device-unknown'));
@@ -252,7 +263,8 @@ export function GetPage({ releases = [], hints }: GetPageProps = {}): JSX.Elemen
               ))}
             </ul>
           )}
-          {index === androidAt && !shelf.result.ok ? <p>{ANDROID_NOTE}</p> : null}
+          {index === androidNoteAt && (androidAt === -1 || !shelf.result.ok)
+            ? <p>{ANDROID_NOTE}</p> : null}
         </section>
       ))}
     </>
