@@ -344,6 +344,64 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect(unknownHtml).not.toMatch(/[✓✔☑]/);
   });
 
+  it('catalog capability states and missing entries fail closed', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // One render of the default fixture (only Apollo is carried): 'included'
+    // keeps the three claimed Apollo cells as shipped, while the absent Zeus
+    // entry fails its whole row closed instead of printing the approved claim.
+    const defaultHtml = render(<PlansPage catalog={await viewOf(wireCatalog())} />);
+    const matrix = tableMatrix(defaultHtml);
+    expect(matrix).toHaveLength(8);
+    expect(matrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
+    expect(matrix[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+    // 'not-included' is a real parser state: it flips only the three claimed
+    // Apollo cells; Free's unclaimed cell keeps its approved word.
+    const notIncluded = tableMatrix(render(
+      <PlansPage
+        catalog={await viewOf(wireCatalog({
+          capabilities: [
+            {
+              product: 'builds',
+              capability: 'apollo',
+              plans: ['shell', 'shell-plus', 'space'],
+              state: 'not-included',
+            },
+          ],
+        }))}
+      />,
+    ));
+    expect(notIncluded[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+    expect(notIncluded[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+  });
+
+  it('capability table follows approved plan count and order', () => {
+    const { PlansPage } = requireScreens();
+    // The columns derive from the approved plan rows themselves: exactly four,
+    // in the owner's data order, and the header mirrors those labels.
+    expect(approvedPlanRows).toHaveLength(4);
+    expect(approvedPlanRows.map((plan) => plan.id)).toEqual([
+      'free',
+      'shell',
+      'shell-plus',
+      'space',
+    ]);
+    const html = render(<PlansPage />);
+    const matrix = tableMatrix(html);
+    expect(matrix).toHaveLength(8);
+    expect(matrix[0]).toEqual(['Capability', ...approvedPlanRows.map((plan) => plan.label)]);
+    // Five cells in every row (row label + one per approved plan) and no
+    // undefined cell anywhere — a missing capability cell fails closed.
+    for (const row of matrix) {
+      expect(row).toHaveLength(5);
+      for (const cell of row) {
+        expect(cell).not.toContain('undefined');
+        expect(cell).not.toBe('');
+      }
+    }
+    expect(html).not.toContain('undefined');
+  });
+
   it('matching catalog is attributed and mismatch blocks purchase', async () => {
     const { PlansPage } = requireScreens();
     // A matching, fresh catalog is attributed with its version and the exact
@@ -603,6 +661,35 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     );
     expect(waitlist).toContain('Joining is not open yet.');
     expect(waitlist).not.toMatch(/<form|<input/i);
+  });
+
+  it('android disclosure appears once without an android row', () => {
+    const { GetPage } = requireScreens();
+    // One complete Windows release per product and no Android release: the
+    // known device keeps every resolver result ok, so no shelf has an Android
+    // row and the disclosure must still read once, in the first section.
+    const windowsOnly = products.map((product) =>
+      releaseRow(product.id, 'windows', { artifactUrl: ARTIFACT.windows }),
+    );
+    const hints: DeviceHints = { userAgent: WINDOWS_UA };
+    for (const product of products) {
+      expect(resolveReleases(product.id, windowsOnly, hints).ok, product.id).toBe(true);
+    }
+    const html = render(<GetPage releases={windowsOnly} hints={hints} />);
+    expect(html).not.toContain('>android<');
+    expect(
+      occurrences(html, 'Android purchase is not available; use the web alternative.'),
+    ).toBe(1);
+    // The ordinary Android-row shelf and the no-release fallback shelf each
+    // keep their single note — never twice.
+    const withAndroid = render(<GetPage releases={buildsReleases} hints={hints} />);
+    expect(
+      occurrences(withAndroid, 'Android purchase is not available; use the web alternative.'),
+    ).toBe(1);
+    const noReleases = render(<GetPage />);
+    expect(
+      occurrences(noReleases, 'Android purchase is not available; use the web alternative.'),
+    ).toBe(1);
   });
 
   it('owned static screens are substantive and fail closed', () => {

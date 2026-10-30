@@ -762,6 +762,7 @@ describe('W1-01-r1 anti-invention and composition', () => {
       // strings, the derived offer labels and Contact for /herald only, and
       // Guided setup only / Request setup for /regent only; every other path is
       // checked against the same list as ever.
+      // Regent disclosure strings are already approved in PINNED_LABELS; they are pinned copy, not src/data facts.
       const approvedFor = path === '/herald'
         ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
         : path === '/regent'
