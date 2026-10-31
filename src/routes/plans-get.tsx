@@ -13,7 +13,7 @@ import type { CSSProperties } from 'react';
 import type { CatalogView } from '../clients/money/catalog';
 import { resolveReleases, type DeviceHints, type ReleaseRow } from '../clients/release/resolve';
 import { platforms, type Release } from '../clients/release/schema';
-import { checkoutState } from '../data/legal';
+import { CheckoutClosedNotice } from '../app/CheckoutClosedNotice';
 import {
   approvedPriceList,
   billingTerms,
@@ -221,7 +221,7 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
         {blocked ? null : (
           <div data-primary="true" style={stack}>
             <Button disabled>Continue</Button>
-            <p>{checkoutState.reason}</p>
+            <CheckoutClosedNotice />
           </div>
         )}
       </section>

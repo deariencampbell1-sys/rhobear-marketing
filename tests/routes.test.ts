@@ -25,6 +25,11 @@ import {
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
 import { engineLabels, engineScenarios, engines, enginesById } from '../src/data/engines';
+// From #75: the legal/support surface's own data. `checkoutState` is NOT re-imported here — main's
+// '../src/data' import above already carries it (src/data/index.ts re-exports it from './legal'), and a
+// second import of the same binding is a duplicate identifier, not a union.
+import { legalPages, legalStatus, retention } from '../src/data/legal';
+// From main (#72): the release-platform fixtures the /get oracle needs.
 import { platforms } from '../src/clients/release/schema';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
@@ -237,7 +242,7 @@ const PINNED_LABELS = [
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */
-function approvedStrings(): string[] {
+function approvedStrings(includeLegal = false): string[] {
   const approved = [
     brand.name,
     brand.tagline,
@@ -264,6 +269,16 @@ function approvedStrings(): string[] {
     approved.push(engine.publicName, engine.mcpHandle);
   }
   approved.push(enginesDestination.whatItIs);
+  if (includeLegal) {
+    approved.push(
+      legalStatus.reason,
+      checkoutState.reason,
+      retention.afterPaidPeriod,
+      retention.then,
+      retention.deletion,
+      ...legalPages.map((page) => page.summary),
+    );
+  }
   return approved;
 }
 
@@ -1038,12 +1053,16 @@ describe('W1-01-r1 offline and recovery shell', () => {
 describe('W1-01-r1 anti-invention and composition', () => {
   it('anti-invention allows only approved data and pinned labels', () => {
     const approved = approvedStrings();
+    const legalApproved = approvedStrings(true);
     const owned = [
       '/',
       ...products.map((product) => `/${product.id}`),
       // W1-02-r1: the check extends to Engines and every scenario page.
       '/engines',
       ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
+      '/privacy',
+      '/terms',
+      '/support',
       // W1-05-r1 F17: /plans and /get join the same oracle with their own
       // approved-string sets (data-derived plus pinned vocabulary).
       '/plans',
@@ -1060,11 +1079,13 @@ describe('W1-01-r1 anti-invention and composition', () => {
         ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
         : path === '/regent'
           ? [...approved, 'Guided setup only', 'Request setup']
-          : path === '/plans'
-            ? [...approved, ...plansApprovedTexts()]
-            : path === '/get'
-              ? [...approved, ...getApprovedTexts()]
-              : approved;
+          : path === '/privacy' || path === '/terms' || path === '/support'
+            ? legalApproved
+            : path === '/plans'
+              ? [...approved, ...plansApprovedTexts()]
+              : path === '/get'
+                ? [...approved, ...getApprovedTexts()]
+                : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         expect(isApprovedText(run, approvedFor), `${path}: unapproved text node "${run}"`).toBe(true);
       }
