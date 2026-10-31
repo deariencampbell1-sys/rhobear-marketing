@@ -10,6 +10,7 @@ const list: CSSProperties = {
   margin: 0,
   padding: '16px',
 };
+const link: CSSProperties = { display: 'inline-flex', alignItems: 'center' };
 
 export function Footer(): JSX.Element {
   return (
@@ -18,14 +19,14 @@ export function Footer(): JSX.Element {
         <ul style={list}>
           {products.map((product) => (
             <li key={product.id}>
-              <Button as="a" href={`/${product.id}`} variant="quiet">{product.publicName} page</Button>
+              <Button as="a" href={`/${product.id}`} variant="quiet" style={link}>{product.publicName} page</Button>
             </li>
           ))}
-          <li><Button as="a" href="/plans" variant="quiet">Plans and prices page</Button></li>
-          <li><Button as="a" href="/get" variant="quiet">Get the apps page</Button></li>
-          <li><Button as="a" href="/support" variant="quiet">Support page</Button></li>
-          <li><Button as="a" href="/privacy" variant="quiet">Privacy page</Button></li>
-          <li><Button as="a" href="/terms" variant="quiet">Terms page</Button></li>
+          <li><Button as="a" href="/plans" variant="quiet" style={link}>Plans and prices page</Button></li>
+          <li><Button as="a" href="/get" variant="quiet" style={link}>Get the apps page</Button></li>
+          <li><Button as="a" href="/support" variant="quiet" style={link}>Support page</Button></li>
+          <li><Button as="a" href="/privacy" variant="quiet" style={link}>Privacy page</Button></li>
+          <li><Button as="a" href="/terms" variant="quiet" style={link}>Terms page</Button></li>
         </ul>
       </nav>
     </footer>
