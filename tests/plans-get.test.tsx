@@ -413,6 +413,37 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect(html).not.toContain('undefined');
   });
 
+  it('a real client-built view is attributed, and a mismatching built view blocks (H2)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // H2: parseCatalog -> createCatalogClient -> buildView -> PlansPage. The
+    // view comes from the client's own builder over a real wire payload, with
+    // nothing hand-attached: this is exactly the state production reaches, so
+    // a view the builder produces must satisfy the page's sell gate.
+    const matched = render(<PlansPage catalog={await viewOf()} />);
+    expect(matched).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(matched).toContain(CATALOG_VERSION);
+    expect(matched).toContain(new Date(GENERATED_AT).toISOString());
+    expect(matched).toMatch(/<button[^>]*disabled[^>]*>Continue<\/button>/);
+    expect(matched).toContain('data-primary="true"');
+    // The fixture's Apollo entry is genuinely included, so its three claimed
+    // cells may carry the approved confirming word.
+    expect(tableMatrix(matched)[2]).toEqual([
+      'Apollo', 'Not included', 'Included', 'Included', 'Included',
+    ]);
+
+    // The same public path, with parsed plan rows that no longer match the
+    // approved prices: the page must state the mismatch, render no Continue
+    // block, and no matrix cell may keep the approved confirming word.
+    const mismatched = render(<PlansPage catalog={await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+    }))} />);
+    expect(mismatched).toContain('Catalog mismatch; purchase is blocked.');
+    expect(mismatched).not.toMatch(/<button[^>]*>Continue<\/button>/);
+    expect(mismatched).not.toContain('data-primary="true"');
+    expect(tableMatrix(mismatched)[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+  });
+
   it('matching catalog is attributed and mismatch blocks purchase', async () => {
     const { PlansPage } = requireScreens();
     // A matching, fresh catalog is attributed with its version and the exact
