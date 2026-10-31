@@ -11,7 +11,17 @@
 // Everything is server-rendered and readable with JavaScript disabled.
 import type { CSSProperties, ReactNode } from 'react';
 import type { DemoPackage, DemoPresentation, ScenarioRegistryRow } from '../clients/demo';
-import { engineScenarios, engines, enginesById, enginesDestination } from '../data/engines';
+import {
+  engineLabels,
+  engineScenarios,
+  engines,
+  enginesById,
+  enginesDestination,
+  pendingProofPresentation,
+  runLabels,
+  scenarioPresentation,
+  unknownScenarioPresentation,
+} from '../data/engines';
 import { Button, InfoList, InfoRow } from '../kit';
 
 // Structural layout only: wrapping flex for action rows, page padding and the
@@ -19,16 +29,6 @@ import { Button, InfoList, InfoRow } from '../kit';
 const pagePadding: CSSProperties = { paddingInline: '16px', paddingBlock: '24px' };
 const actionRow: CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: '8px' };
 const responsiveMedia: CSSProperties = { maxWidth: '100%' };
-
-/** The locked proof state: nothing plays until an approved recording exists. */
-const FOOTAGE_PENDING: DemoPresentation = { state: 'footage-pending', reason: 'footage-pending' };
-
-// The run locations, shown as the labels the brief pins — derived from the
-// registry's runsIn, never restated per engine.
-const RUN_LABELS: Readonly<Record<'builds-mini-app' | 'mcp', string>> = {
-  'builds-mini-app': 'Builds mini app',
-  mcp: '@ MCP',
-};
 
 /**
  * The page's main action container. `data-primary="true"` marks it for the
@@ -65,11 +65,8 @@ export function ProofBlock(props: {
     case 'footage-pending':
       return (
         <div style={pagePadding}>
-          <p>Recording in review</p>
-          <p>
-            The real recording, captions and transcript appear after approval. No mock or stock
-            clip is shown.
-          </p>
+          <p>{engineLabels.pendingTitle}</p>
+          <p>{engineLabels.pendingBody}</p>
         </div>
       );
     case 'playable': {
@@ -108,10 +105,10 @@ export function ProofBlock(props: {
           </InfoList>
           <p>
             <Button as="a" href={presentation.captionsUrl} variant="secondary">
-              Captions
+              {engineLabels.captions}
             </Button>{' '}
             <Button as="a" href={presentation.transcriptUrl} variant="secondary">
-              Transcript
+              {engineLabels.transcript}
             </Button>
           </p>
           {showPackageMetadata && pkg !== undefined ? (
@@ -127,12 +124,12 @@ export function ProofBlock(props: {
     case 'revoked':
       return (
         <div style={pagePadding}>
-          <p>Recording revoked</p>
-          <p>This proof has been revoked.</p>
+          <p>{engineLabels.revokedTitle}</p>
+          <p>{engineLabels.revokedBody}</p>
           {presentation.transcriptUrl !== null ? (
             <p>
               <Button as="a" href={presentation.transcriptUrl} variant="secondary">
-                Transcript
+                {engineLabels.transcript}
               </Button>
             </p>
           ) : null}
@@ -141,18 +138,18 @@ export function ProofBlock(props: {
     case 'superseded':
       return (
         <div style={pagePadding}>
-          <p>Recording superseded</p>
-          <p>This proof is historical and is not current proof.</p>
+          <p>{engineLabels.supersededTitle}</p>
+          <p>{engineLabels.supersededBody}</p>
         </div>
       );
     case 'invalid':
       return (
         <div style={pagePadding}>
-          <p>Proof unavailable</p>
+          <p>{engineLabels.invalidTitle}</p>
           <p>{presentation.reason}</p>
           <p>
             <Button as="a" href="/support" variant="secondary">
-              Support
+              {engineLabels.support}
             </Button>
           </p>
         </div>
@@ -181,7 +178,7 @@ export function EnginesPage(): JSX.Element {
           <>
             {engine.scenarioIds.map((scenarioId) => (
               <Button key={scenarioId} as="a" href={`/engines/${scenarioId}`}>
-                Open proof shell
+                {engineLabels.openProofShell}
               </Button>
             ))}
           </>
@@ -193,11 +190,11 @@ export function EnginesPage(): JSX.Element {
               <p>{engine.mcpHandle}</p>
               <ul>
                 {engine.runsIn.map((run) => (
-                  <li key={run}>{RUN_LABELS[run]}</li>
+                  <li key={run}>{runLabels[run]}</li>
                 ))}
               </ul>
             </div>
-            <ProofBlock presentation={FOOTAGE_PENDING} />
+            <ProofBlock presentation={pendingProofPresentation} />
             <div style={pagePadding}>
               {index === 0 ? (
                 <MainActions>{actions}</MainActions>
@@ -209,12 +206,12 @@ export function EnginesPage(): JSX.Element {
         );
       })}
       <section style={pagePadding}>
-        <h2>Live samples</h2>
-        <p>Samples open when the engine service and quota are live.</p>
+        <h2>{engineLabels.liveSamples}</h2>
+        <p>{engineLabels.samplesPending}</p>
         <div style={actionRow}>
-          <Button disabled>Try a sample</Button>
+          <Button disabled>{engineLabels.trySample}</Button>
           <Button as="a" href="/plans" variant="secondary">
-            Plans
+            {engineLabels.plans}
           </Button>
         </div>
       </section>
@@ -223,24 +220,11 @@ export function EnginesPage(): JSX.Element {
 }
 
 /**
- * W1-07-r1 (F12): the route-table title for one registry scenario, resolved
- * through a guard rather than an index that can throw. An engineId the
- * registry does not hold — one malformed row — gets the same fail-closed
- * wording the page itself renders, so the row fails alone and the route table
- * still imports.
- */
-export function scenarioRouteTitle(engineId: string): string {
-  const engine = engines.find((candidate) => candidate.id === engineId);
-  return engine === undefined ? 'Proof unavailable' : `${engine.publicName} proof`;
-}
-
-/**
  * The scenario shell: only ids already found through the static route table
  * reach this screen. It renders the engine's name and MCP handle and the
- * registry's current publication state through the footage-pending proof
- * block — it never fetches or resolves a package. A direct call with an
- * unknown id fails closed to safe copy and support; normal App routing sends
- * unknown paths to the 404 page.
+ * registry's own publication state through the derivation — it never fetches
+ * or resolves a package. A direct call with an unknown id fails closed to safe
+ * copy and support; normal App routing sends unknown paths to the 404 page.
  */
 export function ScenarioPage({ scenarioId }: { scenarioId: string }): JSX.Element {
   const scenario = engineScenarios.find((row) => row.scenarioId === scenarioId);
@@ -248,16 +232,13 @@ export function ScenarioPage({ scenarioId }: { scenarioId: string }): JSX.Elemen
   if (!scenario || !engine) {
     return (
       <section>
-        <ProofBlock presentation={{ state: 'invalid', reason: 'unknown-scenario' }} />
+        <ProofBlock presentation={unknownScenarioPresentation} />
       </section>
     );
   }
-  // The registry's publication state is the presentation state: today that is
-  // the locked footage-pending proof, and nothing here plays anything.
-  const presentation: DemoPresentation = {
-    state: scenario.publicationState,
-    reason: 'footage-pending',
-  };
+  // F8: the registry row is the only source of the proof state — the page
+  // renders what the data says and never fabricates a state, reason or play.
+  const presentation = scenarioPresentation(scenario);
   return (
     <section>
       <div style={pagePadding}>
@@ -268,7 +249,7 @@ export function ScenarioPage({ scenarioId }: { scenarioId: string }): JSX.Elemen
       <div style={pagePadding}>
         <MainActions>
           <Button as="a" href="/engines">
-            Back to Engines
+            {engineLabels.backToEngines}
           </Button>
         </MainActions>
       </div>

@@ -13,9 +13,19 @@ function renderNotFound(recovery?: SharedLinkResult): string {
   return renderToStaticMarkup(createElement(NotFound, recovery ? { recovery } : {}));
 }
 
-/** Every rendered anchor, in document order, as its full markup. */
+/** Every rendered anchor, in document order, as its full markup. Fails
+ * loudly on an anchor whose content carries nested markup: the page's
+ * anchors are text-only by invariant, and the old `[^<]*` content rule
+ * silently skipped anything else, letting the sweeps below pass while a
+ * changed anchor went unseen. */
 function anchors(html: string): string[] {
-  return [...html.matchAll(/<a [^>]*>[^<]*<\/a>/g)].map((match) => match[0]);
+  const matches = [...html.matchAll(/<a [^>]*>([\s\S]*?)<\/a>/g)];
+  for (const match of matches) {
+    if (/[<>]/.test(match[1])) {
+      throw new Error(`anchor content must be text only, found nested markup: ${match[0]}`);
+    }
+  }
+  return matches.map((match) => match[0]);
 }
 
 /** The recovery note paragraph as markup, or '' when none was rendered. */
@@ -124,6 +134,18 @@ describe('F6 — a 404 destination link may only be labelled with its own route 
     // The page's own static links keep their existing labels.
     expect(html).toContain('<a href="/">Home</a>');
     expect(html).toContain('<a href="/support">Support</a>');
+  });
+
+  it('F33: an anchor whose content is nested markup fails the sweep loudly — never silently skipped', () => {
+    // The old `[^<]*` content rule matched nothing here and returned no
+    // anchor, so the sweep above would pass while this anchor went unseen.
+    // The page's real invariant is that its anchors carry text only; the
+    // helper must refuse this markup, not skip it.
+    const nested = renderToStaticMarkup(
+      createElement('a', { href: '/x' }, createElement('span', null, 'Y')),
+    );
+    expect(nested).toContain('<span>');
+    expect(() => anchors(nested)).toThrow(/nested markup/);
   });
 
   it('edge cases: trailing slash, wrong case, empty and whitespace destinations render no anchor', () => {

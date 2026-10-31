@@ -3,6 +3,13 @@
 // proved by a real-speed public recording. There are exactly seven. No engine
 // or scenario is described here: a scenario cannot be described in public
 // until its approved demo exists.
+//
+// W1-08-r1 (F8): this module also owns the one derivation from a scenario row
+// to a DemoPresentation, so no route fabricates a proof state or reason.
+// W1-08-r1 (F11): it owns the pinned label inventory the Engines surface
+// renders from, so the anti-invention oracle reads the same strings as the
+// page instead of a hand-typed copy.
+import type { DemoPresentation } from '../clients/demo';
 
 export type EngineRow = {
   id: string; // public id, lowercase
@@ -118,10 +125,105 @@ for (const engine of engines) {
 export const enginesById: Readonly<Record<EngineId, EngineRow>> =
   Object.freeze(enginesByIdUnfrozen);
 
+/**
+ * F8 (W1-08-r1): the registry's publication-state union, in one place. The
+ * runtime inventory and the type are the same list, so the sentinel suite
+ * iterates exactly the states the derivation below must cover. W3 owns
+ * widening it; until then the registry carries the locked pending proof only.
+ */
+export const SCENARIO_PUBLICATION_STATES = Object.freeze(['footage-pending'] as const);
+
+export type ScenarioPublicationState = (typeof SCENARIO_PUBLICATION_STATES)[number];
+
+/**
+ * F8 (W1-08-r1): the locked pending proof — the one answer for a scenario
+ * whose registry row is not an approved recording. Shared, so the index and
+ * the scenario derivation cannot disagree.
+ */
+export const pendingProofPresentation: DemoPresentation = Object.freeze({
+  state: 'footage-pending',
+  reason: 'footage-pending',
+});
+
+/** F8: the fail-closed proof for a scenario id the registry does not name. */
+export const unknownScenarioPresentation: DemoPresentation = Object.freeze({
+  state: 'invalid',
+  reason: 'unknown-scenario',
+});
+
+/** F8: the fail-closed proof for a registry row this build cannot render. */
+export const unsupportedStatePresentation: DemoPresentation = Object.freeze({
+  state: 'invalid',
+  reason: 'bad-publication-state',
+});
+
+/**
+ * F8 (W1-08-r1): the one derivation from a registry scenario row to the
+ * presentation the route may render. The switch is exhaustive over the real
+ * publication union — `satisfies never` makes a widened union a compile error
+ * until the new state has its own case — and the default fails closed for a
+ * value cast past the type system, so nothing renders as pending that the row
+ * did not say was pending.
+ */
+export function scenarioPresentation(scenario: {
+  scenarioId: string;
+  publicationState: ScenarioPublicationState;
+}): DemoPresentation {
+  switch (scenario.publicationState) {
+    case 'footage-pending':
+      return pendingProofPresentation;
+    default:
+      scenario.publicationState satisfies never;
+      return unsupportedStatePresentation;
+  }
+}
+
+/**
+ * F11 (W1-08-r1): the run-location labels, keyed by the `runsIn` tokens the
+ * registry carries. The Engines index renders this object and the
+ * anti-invention oracle reads the same object, so the two cannot drift.
+ */
+export const runLabels: Readonly<Record<EngineRow['runsIn'][number], string>> = Object.freeze({
+  'builds-mini-app': 'Builds mini app',
+  mcp: '@ MCP',
+});
+
+/**
+ * F11 (W1-08-r1): the engines surface's pinned label inventory — the one copy
+ * of every label and sentence the W1-02-r1 brief mandates verbatim for the
+ * Engines, proof-state and scenario shells. src/routes/engines.tsx renders
+ * from this object and the anti-invention oracle reads the same object, so a
+ * label cannot be added to the page without failing the oracle, and the oracle
+ * cannot drift from the page at green time. Data facts (engine names, MCP
+ * handles, the destination body) stay in the registry above and are added to
+ * the oracle separately.
+ */
+export const engineLabels = Object.freeze({
+  // Proof states, verbatim from the brief's ProofBlock precedence table.
+  pendingTitle: 'Recording in review',
+  pendingBody:
+    'The real recording, captions and transcript appear after approval. No mock or stock clip is shown.',
+  revokedTitle: 'Recording revoked',
+  revokedBody: 'This proof has been revoked.',
+  supersededTitle: 'Recording superseded',
+  supersededBody: 'This proof is historical and is not current proof.',
+  invalidTitle: 'Proof unavailable',
+  captions: 'Captions',
+  transcript: 'Transcript',
+  support: 'Support',
+  // Actions, sections and the permitted Plans link.
+  openProofShell: 'Open proof shell',
+  backToEngines: 'Back to Engines',
+  liveSamples: 'Live samples',
+  trySample: 'Try a sample',
+  samplesPending: 'Samples open when the engine service and quota are live.',
+  plans: 'Plans',
+});
+
 const engineScenariosUnfrozen: {
   scenarioId: string;
   engineId: EngineId;
-  publicationState: 'footage-pending';
+  publicationState: ScenarioPublicationState;
   source: { doc: string; section: string };
 }[] = engines.flatMap((engine) =>
   engine.scenarioIds.map((scenarioId) => ({
@@ -138,3 +240,17 @@ for (const scenario of engineScenariosUnfrozen) {
 
 export const engineScenarios: readonly (typeof engineScenariosUnfrozen)[number][] =
   Object.freeze(engineScenariosUnfrozen);
+
+/**
+ * W1-11-r1 (F26): the route-table title for one registry scenario. It lives
+ * in the data layer, not in src/routes/engines.tsx, so the metadata path
+ * (App.tsx, scripts/prerender.mjs, sitemap.xml) never imports a page module.
+ * Resolved through a guard rather than an index that can throw: an engineId
+ * the registry does not hold — one malformed row — gets the same fail-closed
+ * wording the page renders for an invalid proof, so the row fails alone and
+ * the route table still imports.
+ */
+export function scenarioRouteTitle(engineId: string): string {
+  const engine = engines.find((candidate) => candidate.id === engineId);
+  return engine === undefined ? engineLabels.invalidTitle : `${engine.publicName} proof`;
+}

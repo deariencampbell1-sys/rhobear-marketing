@@ -1,15 +1,36 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createElement } from 'react';
+import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
+// M4: /plans is rendered with a fixture catalog below, so the anti-invention
+// oracle covers the matched and mismatched catalog states, not just the
+// catalog-free static page.
+import { PlansPage } from '../src/routes/plans-get';
+import type { CatalogView } from '../src/clients/money/catalog';
 import { classifySharedLink, NotFound, type SharedLinkResult } from '../src/app/NotFound';
 import { parseIntent } from '../src/clients/intent/schema';
-import { brand, enginesDestination, heraldOffers, productById, products } from '../src/data';
+import {
+  approvedPriceList,
+  billingTerms,
+  brand,
+  checkoutState,
+  enginesDestination,
+  heraldOffers,
+  launchOffer,
+  planCopy,
+  productById,
+  products,
+} from '../src/data';
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
 import { engineScenarios, engines, enginesById } from '../src/data/engines';
-import { checkoutState, legalPages, legalStatus, retention } from '../src/data/legal';
+// From #75: the legal/support surface's own data. `checkoutState` is NOT re-imported here — main's
+// '../src/data' import above already carries it (src/data/index.ts re-exports it from './legal'), and a
+// second import of the same binding is a duplicate identifier, not a union.
+import { legalPages, legalStatus, retention } from '../src/data/legal';
+// From main (#72): the release-platform fixtures the /get oracle needs.
+import { platforms } from '../src/clients/release/schema';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
 import notFoundSource from '../src/app/NotFound.tsx?raw';
@@ -292,11 +313,111 @@ function heraldOfferLabels(): string[] {
   );
 }
 
-// Amendment 1: strip /herald's four approved P03 prices and leave everything
-// else byte-identical — every other owned page keeps the blanket no-price rule.
-function withoutHeraldPrices(path: string, text: string): string {
-  if (path !== '/herald') return text;
-  return heraldApprovedTexts().reduce((rest, price) => rest.split(price).join(''), text);
+// W1-05-r1 F17 / H1: a whole money token — `$`, digits, optional thousands
+// separators, optional decimals. Approved money is removed by token equality
+// on the amount, never by substring: an invented `$9.99` against an approved
+// `$9` stays `$9.99` and is caught by the caller's no-`$` assertion.
+const MONEY_TOKEN = /\$\d[\d,]*(?:\.\d+)?/g;
+
+// W1-05-r1 F17: /plans' approved money amounts (no `$`), from the rows alone.
+function plansApprovedAmounts(): string[] {
+  const amounts: string[] = [];
+  for (const row of approvedPriceList) {
+    amounts.push(row.monthly, row.includedCredit);
+  }
+  return amounts;
+}
+
+// Amendment 1: /herald's approved money amounts (no `$`), from its own rows.
+function heraldApprovedAmounts(): string[] {
+  const amounts: string[] = [];
+  for (const offer of heraldOffers) {
+    amounts.push(offer.monthly);
+    if (offer.setup !== null) amounts.push(offer.setup);
+  }
+  return amounts;
+}
+
+/**
+ * W1-05-r1 F17 / H1: strip approved money by whole token. A token is removed
+ * only when its amount (thousands separators removed) equals an approved
+ * amount; `$9.99` survives an approved `$9` and `$199` survives an approved
+ * `$19`, so a caller asserting "no `$` remains" catches both invented cases.
+ */
+function stripApprovedMoneyTokens(text: string, approvedAmounts: readonly string[]): string {
+  return text.replace(MONEY_TOKEN, (token) => {
+    const amount = token.slice(1).replace(/,/g, '');
+    return approvedAmounts.includes(amount) ? '' : token;
+  });
+}
+
+// Amendment 1: strip /herald's four approved P03 prices, and W1-05-r1 F17
+// strip /plans' approved prices, leaving everything else byte-identical —
+// every other owned page keeps the blanket no-price rule.
+function withoutApprovedPrices(path: string, text: string): string {
+  if (path === '/herald') return stripApprovedMoneyTokens(text, heraldApprovedAmounts());
+  if (path === '/plans') return stripApprovedMoneyTokens(text, plansApprovedAmounts());
+  return text;
+}
+
+// W1-05-r1 F17: /plans' approved strings. Every money string derives from the
+// approved rows (approvedPriceList / planCopy / launchOffer / checkoutState);
+// the rest is the page's pinned vocabulary from the W1-03 brief. None of it is
+// read back from rendered DOM (the F11 class). Approved for /plans only.
+function plansApprovedTexts(): string[] {
+  const texts = [
+    launchOffer.headline,
+    launchOffer.body,
+    checkoutState.reason,
+    'Plans',
+    'Checkout',
+    'Continue',
+    'Included in each plan',
+    'Capability',
+    'Reviews and Free',
+    'Prices are the approved list; the amount and tax are confirmed at checkout.',
+    'Catalog mismatch; purchase is blocked.',
+    'Standalone Reviews plans are separate and are published when their cost tests pass.',
+    'Free is local only: pocket models, the harness and Verifier on your own machine. No hosted credit, engine usage, or trial is included.',
+    'Get the local app',
+    'Not included in checkout yet',
+    'Included locally',
+    'Included',
+    'Not included',
+    'Allowed',
+    'Local only',
+    'Included by plan',
+    'Forge MCP',
+    'customer OpenRouter key',
+    'hosted models',
+    'engine samples',
+  ];
+  texts.push(...Object.values(planCopy));
+  for (const row of approvedPriceList) {
+    texts.push(row.label, row.notes);
+    texts.push(row.kind === 'plan'
+      ? `$${row.monthly} per month · $${row.includedCredit} included credit · Renews ${billingTerms.interval}`
+      : `${row.label}: $${row.monthly} adds $${row.includedCredit}; plan required`);
+  }
+  return texts;
+}
+
+// W1-05-r1 F17: /get's approved strings. Product facts come from src/data and
+// the platform vocabulary from the release schema; each availability run is
+// derived from that product's own label and reason. Approved for /get only.
+function getApprovedTexts(): string[] {
+  const texts = [
+    'unavailable',
+    'unavailable · Joining is not open yet.',
+    'Joining is not open yet.',
+    'Android purchase is not available; use the web alternative.',
+    'We could not identify your device; no platform is selected.',
+    ...platforms,
+  ];
+  for (const product of products) {
+    texts.push(`${product.availability.label} — ${product.availability.reason}`);
+  }
+  return texts;
 }
 
 // W1-01-r1 shared-link fixtures: built through parseIntent-valid fields and
@@ -402,6 +523,40 @@ describe('W1-07-r1 anti-invention oracle (F5/F13)', () => {
   it('accepts the approved string after whitespace normalisation', () => {
     expect(isApprovedText('Teams at work', APPROVED)).toBe(true);
     expect(isApprovedText('  Teams\n at   work  ', APPROVED)).toBe(true);
+  });
+});
+
+// W1-05-r1 F17 / H1: the no-price oracle strips by whole money token, never
+// by substring. With `$9` approved the old split/join deleted the `$9` inside
+// an invented `$9.99` (leaving `.99`) and the `$19` inside `$199` (leaving
+// `9`), so a `$`-free assertion passed; these cases fail that composition.
+describe('W1-05-r1 F17 money-token strip (H1)', () => {
+  it('leaves an invented $9.99 in place when $9 is approved, so the no-$ check fires', () => {
+    const stripped = stripApprovedMoneyTokens('Shell: $9.99 per month', ['9']);
+    expect(stripped, 'invented $9.99 must survive the strip').toContain('$9.99');
+    expect(stripped, 'the no-$ oracle must fire').toMatch(/\$/);
+  });
+
+  it('leaves an invented $199 in place when $19 is approved, so the no-$ check fires', () => {
+    const stripped = stripApprovedMoneyTokens('Space: $199 per month', ['19']);
+    expect(stripped, 'invented $199 must survive the strip').toContain('$199');
+    expect(stripped, 'the no-$ oracle must fire').toMatch(/\$/);
+  });
+
+  it('still removes genuine approved prices, with separators and decimals', () => {
+    expect(stripApprovedMoneyTokens('$9 per month', ['9'])).not.toMatch(/\$/);
+    expect(stripApprovedMoneyTokens('$19 per month', ['19'])).not.toMatch(/\$/);
+    expect(stripApprovedMoneyTokens('$1,299.00 per year', ['1299.00'])).not.toMatch(/\$/);
+    // A decimal-bearing approved amount does not bless its integer form.
+    expect(stripApprovedMoneyTokens('$1,299 per year', ['1299.00'])).toMatch(/\$/);
+  });
+
+  it('removes whole tokens in any order and never a bare dollar sign', () => {
+    expect(stripApprovedMoneyTokens('$9.99 and $9', ['19', '9'])).toBe('$9.99 and ');
+    expect(stripApprovedMoneyTokens('$9.99 and $9', ['9', '19'])).toBe('$9.99 and ');
+    // A `$` with no digits is not a money token: it is left for the caller's
+    // no-`$` assertion, never silently consumed.
+    expect(stripApprovedMoneyTokens('cost $ 9', ['9'])).toBe('cost $ 9');
   });
 });
 
@@ -699,7 +854,7 @@ describe('W1-01-r1 screens', () => {
       }
       // No price on any owned page — /herald alone shows its own P03 offer
       // strings (amendment 1); once they are removed no other price remains.
-      expect(withoutHeraldPrices(path, html), path).not.toMatch(/\$\d/);
+      expect(withoutApprovedPrices(path, html), path).not.toMatch(/\$/);
     }
 
     // Forge: a real #kits section holding Forge's own availability facts —
@@ -900,12 +1055,17 @@ describe('W1-01-r1 anti-invention and composition', () => {
       '/privacy',
       '/terms',
       '/support',
+      // W1-05-r1 F17: /plans and /get join the same oracle with their own
+      // approved-string sets (data-derived plus pinned vocabulary).
+      '/plans',
+      '/get',
     ];
     for (const path of owned) {
       // Amendment 1 + 2: the approved-text list gains the four P03 price
       // strings, the derived offer labels and Contact for /herald only, and
-      // Guided setup only / Request setup for /regent only; every other path is
-      // checked against the same list as ever.
+      // Guided setup only / Request setup for /regent only; W1-05-r1 F17 adds
+      // /plans and /get with their own approved-string sets; every other path
+      // is checked against the same list as ever.
       // Regent disclosure strings are already approved in PINNED_LABELS; they are pinned copy, not src/data facts.
       const approvedFor = path === '/herald'
         ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
@@ -913,18 +1073,89 @@ describe('W1-01-r1 anti-invention and composition', () => {
           ? [...approved, 'Guided setup only', 'Request setup']
           : path === '/privacy' || path === '/terms' || path === '/support'
             ? legalApproved
-            : approved;
+            : path === '/plans'
+              ? [...approved, ...plansApprovedTexts()]
+              : path === '/get'
+                ? [...approved, ...getApprovedTexts()]
+                : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         expect(isApprovedText(run, approvedFor), `${path}: unapproved text node "${run}"`).toBe(true);
       }
       const html = renderRoute(path);
       const text = visibleText(html);
-      expect(withoutHeraldPrices(path, text), path).not.toMatch(/\$\d/);
+      expect(withoutApprovedPrices(path, text), path).not.toMatch(/\$/);
       expect(text, path).not.toMatch(/\bImagine\b|\bLabs\b|Blueprint mode|\bNeo\b/);
       expect(text, path).not.toMatch(
         /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
       );
       expect(text, path).not.toMatch(/\btestimonial\b/i);
+    }
+  });
+
+  it('anti-invention holds for catalog-bearing /plans in both states (M4)', () => {
+    // M4: the F17 oracle only rendered renderRoute('/plans'), which passes no
+    // catalog, so the matched and mismatched catalog branches — including the
+    // catalog's own version and generation timestamp — were outside the check
+    // entirely. The fixture is built from approvedPriceList; the only extra
+    // approvals for the matched state are the page's two InfoRow labels and
+    // the fixture's own version and ISO timestamp, derived here, never typed
+    // into the page-facing allowlist.
+    const approved = approvedStrings();
+    const generatedAt = Date.parse('2026-10-29T12:00:00Z');
+    const fixture: CatalogView = {
+      purchasable: true,
+      catalogVersion: '2026-10-29.1',
+      sourceSha: 'a'.repeat(40),
+      generatedAt,
+      fetchedAt: generatedAt,
+      stale: false,
+      plans: approvedPriceList
+        .filter((row) => row.kind === 'plan')
+        .map((row) => ({
+          sku: row.id,
+          name: row.label,
+          monthlyPrice: row.monthly,
+          creditIncluded: row.includedCredit,
+          availability: 'available' as const,
+        })),
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'apollo',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'included' as const,
+        },
+      ],
+      currency: 'USD',
+      region: 'US',
+    } as CatalogView;
+    const mismatched: CatalogView = {
+      ...fixture,
+      plans: fixture.plans.map((plan) =>
+        plan.sku === 'shell' ? { ...plan, monthlyPrice: '24.00' } : plan,
+      ),
+    };
+    const states: readonly (readonly [string, CatalogView, readonly string[]])[] = [
+      [
+        'matched',
+        fixture,
+        // The page's two InfoRow labels, plus the fixture's own version and
+        // generation time — the only strings a matched catalog legitimately
+        // adds; all four are derived here, never retyped.
+        ['catalogVersion', 'generatedAt', fixture.catalogVersion, new Date(generatedAt).toISOString()],
+      ],
+      ['mismatched', mismatched, []],
+    ];
+    for (const [name, catalog, extra] of states) {
+      // React's createElement cannot infer the optional-props signature of
+      // PlansPage (the component defaults its props); pin it at the boundary.
+      const Page = PlansPage as ComponentType<{ catalog: CatalogView }>;
+      const html = `<main id="main">${renderToStaticMarkup(createElement(Page, { catalog }))}</main>`;
+      const approvedFor = [...approved, ...plansApprovedTexts(), ...extra];
+      for (const run of visibleRuns(mainRegion(html))) {
+        expect(isApprovedText(run, approvedFor), `${name}: unapproved text node "${run}"`).toBe(true);
+      }
+      expect(withoutApprovedPrices('/plans', visibleText(html)), name).not.toMatch(/\$/);
     }
   });
 

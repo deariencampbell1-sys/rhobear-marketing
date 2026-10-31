@@ -13,6 +13,15 @@ export type CatalogUnavailableReason =
 
 export type CatalogView = {
   purchasable: boolean;
+  // The parser's own money and region, required so no view can silently lack
+  // them: a hand-built view must say `null`, while buildView passes what
+  // parseCatalog admitted. Typed as the admitted literal unioned with null on
+  // purpose — a bare 'USD' / 'US' would make the page's comparison
+  // compile-time decidable and turn its runtime belt into dead code (the F31
+  // anti-pattern); `| null` keeps that gate live and failing closed if the
+  // parser ever admits another currency or region.
+  currency: 'USD' | null;
+  region: 'US' | null;
   catalogVersion: string;
   sourceSha: string;
   generatedAt: number;
@@ -116,6 +125,8 @@ export function createCatalogClient(transport: MoneyTransportGet, options: Catal
     const purchasable = !stale && allAvailable;
     return {
       purchasable,
+      currency: catalog.currency,
+      region: catalog.region,
       catalogVersion: catalog.catalogVersion,
       sourceSha: catalog.sourceSha,
       generatedAt: generatedBad ? 0 : generatedAt,

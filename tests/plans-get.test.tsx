@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 // W1-03-r1: Plans (P01/P02/P04), the Get shelf (T01/T03/G01) and the Herald /
@@ -13,6 +13,7 @@ import {
   heraldOffers,
   launchOffer,
   planCopy,
+  type PriceRow,
   type PriceRowId,
 } from '../src/data/offers';
 import { checkoutState } from '../src/data/legal';
@@ -113,7 +114,9 @@ const GENERATED_AT = '2026-10-29T12:00:00Z';
 const CLOCK = Date.parse('2026-10-29T12:05:00Z');
 const CATALOG_VERSION = '2026-10-29.1';
 
-const approvedPlanRows = approvedPriceList.filter((row) => row.kind === 'plan');
+const approvedPlanRows = approvedPriceList.filter(
+  (row): row is PriceRow & { id: Exclude<PriceRowId, 'top-up'> } => row.kind === 'plan',
+);
 
 const catalogPlanRows = approvedPlanRows.map((row) => ({
   sku: row.id,
@@ -249,7 +252,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     for (const plan of approvedPlanRows) {
       expect(html, plan.id).toContain(`$${plan.monthly} per month`);
       expect(html, plan.id).toContain(`$${plan.includedCredit} included credit`);
-      expect(html, plan.id).toContain(planCopy[plan.id as Exclude<PriceRowId, 'top-up'>]);
+      expect(html, plan.id).toContain(planCopy[plan.id]);
       expect(html, plan.id).toContain(plan.notes);
     }
     // Every dollar figure on the page is an approved decimal string: no
@@ -348,13 +351,14 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const { PlansPage } = requireScreens();
     const NIC = 'Not included in checkout yet';
     // One render of the default fixture (only Apollo is carried): 'included'
-    // keeps the three claimed Apollo cells as shipped, while the absent Zeus
-    // entry fails its whole row closed instead of printing the approved claim.
+    // keeps the three claimed Apollo cells as shipped; the absent Zeus entry
+    // fails closed only on the cells the matrix claims ('Included' for Shell
+    // Plus / Space) and keeps its two unclaimed 'Not included' words (F18).
     const defaultHtml = render(<PlansPage catalog={await viewOf(wireCatalog())} />);
     const matrix = tableMatrix(defaultHtml);
     expect(matrix).toHaveLength(8);
     expect(matrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
-    expect(matrix[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+    expect(matrix[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
     // 'not-included' is a real parser state: it flips only the three claimed
     // Apollo cells; Free's unclaimed cell keeps its approved word.
     const notIncluded = tableMatrix(render(
@@ -372,7 +376,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       />,
     ));
     expect(notIncluded[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
-    expect(notIncluded[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+    expect(notIncluded[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
   });
 
   it('capability table follows approved plan count and order', () => {
@@ -400,6 +404,37 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       }
     }
     expect(html).not.toContain('undefined');
+  });
+
+  it('a real client-built view is attributed, and a mismatching built view blocks (H2)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // H2: parseCatalog -> createCatalogClient -> buildView -> PlansPage. The
+    // view comes from the client's own builder over a real wire payload, with
+    // nothing hand-attached: this is exactly the state production reaches, so
+    // a view the builder produces must satisfy the page's sell gate.
+    const matched = render(<PlansPage catalog={await viewOf()} />);
+    expect(matched).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(matched).toContain(CATALOG_VERSION);
+    expect(matched).toContain(new Date(GENERATED_AT).toISOString());
+    expect(matched).toMatch(/<button[^>]*disabled[^>]*>Continue<\/button>/);
+    expect(matched).toContain('data-primary="true"');
+    // The fixture's Apollo entry is genuinely included, so its three claimed
+    // cells may carry the approved confirming word.
+    expect(tableMatrix(matched)[2]).toEqual([
+      'Apollo', 'Not included', 'Included', 'Included', 'Included',
+    ]);
+
+    // The same public path, with parsed plan rows that no longer match the
+    // approved prices: the page must state the mismatch, render no Continue
+    // block, and no matrix cell may keep the approved confirming word.
+    const mismatched = render(<PlansPage catalog={await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+    }))} />);
+    expect(mismatched).toContain('Catalog mismatch; purchase is blocked.');
+    expect(mismatched).not.toMatch(/<button[^>]*>Continue<\/button>/);
+    expect(mismatched).not.toContain('data-primary="true"');
+    expect(tableMatrix(mismatched)[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
   });
 
   it('matching catalog is attributed and mismatch blocks purchase', async () => {
@@ -744,6 +779,247 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
         expect(style, style).toContain('min-height:44px');
         expect(style, style).toContain('min-width:44px');
       }
+    }
+  });
+
+  // --------------------------------------- W1-05-r1 review fixes (F16-F22) ----
+
+  it('an unparseable or missing generatedAt blocks instead of throwing (F16)', async () => {
+    const { PlansPage } = requireScreens();
+    const view = await viewOf();
+    // The parser admits only RFC3339 timestamps, so these views model a
+    // corrupted or absent field reaching the page: the page must state the
+    // mismatch instead of calling toISOString() on an invalid date (RangeError
+    // would take the whole route down) and must not render a raw timestamp.
+    const broken: readonly (readonly [string, CatalogView])[] = [
+      ['unparseable timestamp', { ...view, generatedAt: Number.NaN }],
+      ['missing timestamp', { ...view, generatedAt: undefined as unknown as number }],
+    ];
+    for (const [name, catalog] of broken) {
+      expect(() => render(<PlansPage catalog={catalog} />), name).not.toThrow();
+      const html = render(<PlansPage catalog={catalog} />);
+      expect(html, name).toContain('Catalog mismatch; purchase is blocked.');
+      expect(html, name).not.toContain('data-primary="true"');
+      expect(html, name).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+      expect(html, name).not.toContain('generatedAt');
+    }
+    // A finite timestamp is still attributed: the guard rejects only doubt.
+    const ok = render(<PlansPage catalog={view} />);
+    expect(ok).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(ok).toContain(new Date(GENERATED_AT).toISOString());
+  });
+
+  it('catalog absence closes only checkout claims and keeps local facts (F18)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    const matrix = tableMatrix(render(<PlansPage catalog={await viewOf()} />));
+    // Verifier is the pinned case: the catalog never mentions it, so its three
+    // checkout claims fall closed while 'Included locally' — a local fact, not
+    // a purchase — keeps the approved words.
+    expect(matrix[1]).toEqual(['Verifier', 'Included locally', NIC, NIC, NIC]);
+    // The same rule applies to every absent entry: unclaimed words stay,
+    // claimed cells close.
+    expect(matrix[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
+    expect(matrix[4]).toEqual(['Forge MCP', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[6]).toEqual(['hosted models', 'Local only', NIC, NIC, NIC]);
+  });
+
+  it('Allowed is a checkout claim the catalog cannot withhold (F19)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // A catalog that withholds the capability cannot let the approved table
+    // keep reading 'Allowed' for the paid plans.
+    const denied = await viewOf(wireCatalog({
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'openrouter-key',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'not-included',
+        },
+      ],
+    }));
+    expect(tableMatrix(render(<PlansPage catalog={denied} />))[5]).toEqual([
+      'customer OpenRouter key', 'Not included', NIC, NIC, NIC,
+    ]);
+    // A catalog that explicitly includes it keeps the permitted wording.
+    const included = await viewOf(wireCatalog({
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'openrouter-key',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'included',
+        },
+      ],
+    }));
+    expect(tableMatrix(render(<PlansPage catalog={included} />))[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
+  it('non-USD or unapproved-region catalogs do not match (F20)', async () => {
+    const { PlansPage } = requireScreens();
+    // H1: a production view now carries the parser's own currency/region, so
+    // these cases are hand-built corrupt shapes production cannot produce —
+    // parseCatalog refuses anything but USD / US (src/clients/money/schema.ts)
+    // and buildView passes its admitted values through. The page must not
+    // bless a catalog whose money or region it cannot vouch for, whether the
+    // field is missing, explicitly null, or a value the parser would refuse.
+    const view = await viewOf();
+    const cases: readonly (readonly [string, CatalogView])[] = [
+      ['missing currency', { ...view, currency: undefined } as unknown as CatalogView],
+      ['missing region', { ...view, region: undefined } as unknown as CatalogView],
+      ['null currency', { ...view, currency: null }],
+      ['null region', { ...view, region: null }],
+      ['non-USD currency', { ...view, currency: 'EUR', region: 'US' } as unknown as CatalogView],
+      ['unapproved region', { ...view, currency: 'USD', region: 'CA' } as unknown as CatalogView],
+    ];
+    for (const [name, catalog] of cases) {
+      const html = render(<PlansPage catalog={catalog} />);
+      expect(html, name).toContain('Catalog mismatch; purchase is blocked.');
+      expect(html, name).not.toContain('data-primary="true"');
+      expect(html, name).not.toContain(CATALOG_VERSION);
+      expect(html, name).not.toContain(new Date(GENERATED_AT).toISOString());
+    }
+    // M3: the present-and-correct branch is the one that must keep rendering a
+    // legitimate catalog normally — the real built view is exactly that branch.
+    // Without this case a future rename of the admitted values would block
+    // every catalog and the suite would stay green.
+    const accepted = render(<PlansPage catalog={view} />);
+    expect(accepted).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(accepted).toContain(CATALOG_VERSION);
+    expect(accepted).toContain(new Date(GENERATED_AT).toISOString());
+    expect(accepted).toMatch(/<button[^>]*disabled[^>]*>Continue<\/button>/);
+  });
+
+  it('a mismatched catalog confirms nothing in the matrix (M2)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // The catalog vouches for Apollo and the OpenRouter key, but its price row
+    // does not match the approved list, so the page itself says purchase is
+    // blocked. That same catalog must not then confirm 'Included' / 'Allowed'
+    // beside the mismatch message.
+    const capabilities = [
+      { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+      { product: 'builds', capability: 'openrouter-key', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+    ];
+    const mismatched = await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+      capabilities,
+    }));
+    const html = render(<PlansPage catalog={mismatched} />);
+    expect(html).toContain('Catalog mismatch; purchase is blocked.');
+    expect(html).not.toMatch(/<button[^>]*>Continue<\/button>/);
+    const matrix = tableMatrix(html);
+    expect(matrix[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[5]).toEqual(['customer OpenRouter key', 'Not included', NIC, NIC, NIC]);
+    // The same capabilities on a matching catalog still confirm their cells.
+    const matched = await viewOf(wireCatalog({ capabilities }));
+    const matchedMatrix = tableMatrix(render(<PlansPage catalog={matched} />));
+    expect(matchedMatrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
+    expect(matchedMatrix[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
+  it('CapabilityTable withholds confirmation from an unvouched catalog by itself (M2)', async () => {
+    const { CapabilityTable } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    const capabilities = [
+      { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+      { product: 'builds', capability: 'openrouter-key', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+    ];
+    // A caller hands the exported seam a catalog directly, bypassing
+    // PlansPage's own attribution check. The component must apply the same
+    // gate itself: a mismatching catalog confirms nothing.
+    const mismatched = await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+      capabilities,
+    }));
+    const matrix = tableMatrix(render(<CapabilityTable catalog={mismatched} />));
+    expect(matrix[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[5]).toEqual(['customer OpenRouter key', 'Not included', NIC, NIC, NIC]);
+    // The same catalog shape with matching prices still confirms its cells, so
+    // the gate is a gate and not a blanket refusal.
+    const matched = await viewOf(wireCatalog({ capabilities }));
+    const matchedMatrix = tableMatrix(render(<CapabilityTable catalog={matched} />));
+    expect(matchedMatrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
+    expect(matchedMatrix[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
+  it('PlanList plans prop carries PlanId so a top-up cannot reach planCopyFor (M1)', () => {
+    const { PlanList } = requireScreens();
+    // Type-level proof: the exported prop type — not a cast at the call site —
+    // carries the plans-only invariant, so a top-up row is not assignable.
+    type PlanListPlans = Parameters<typeof PlanList>[0]['plans'];
+    type PlanElement = PlanListPlans[number];
+    expectTypeOf<PlanElement['id']>().toEqualTypeOf<Exclude<PriceRowId, 'top-up'>>();
+    expectTypeOf<PriceRow & { id: 'top-up' }>().not.toMatchTypeOf<PlanElement>();
+    // Runtime side: the approved plan rows never contain the add-on, and the
+    // component renders every plan's own copy.
+    expect(approvedPlanRows.map((plan) => plan.id)).not.toContain('top-up');
+    const html = render(<PlanList plans={approvedPlanRows} topUp={undefined} />);
+    expect((html.match(/<h3>/g) ?? [])).toHaveLength(4);
+    for (const plan of approvedPlanRows) {
+      expect(html).toContain(planCopy[plan.id]);
+    }
+  });
+
+  it('defensive branches render their fail-closed wording (F21)', () => {
+    const { PlanList, CapabilityTable, GetPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+
+    // 1. No add-on row: the four approved plans still render, no orphan line
+    //    and no empty list item.
+    const noTopUp = render(<PlanList plans={approvedPlanRows} topUp={undefined} />);
+    expect((noTopUp.match(/<h3>/g) ?? [])).toHaveLength(4);
+    expect(noTopUp).not.toContain('Top-up');
+    expect(noTopUp).not.toContain('undefined');
+
+    // 2. A short capability row: the positional fallback fills every missing
+    //    plan column with the fail-closed cell, never undefined.
+    const short = render(<CapabilityTable catalog={null} rows={[['Verifier', 'verifier']]} />);
+    const matrix = tableMatrix(short);
+    expect(matrix).toHaveLength(2);
+    expect(matrix[1]).toEqual(['Verifier', NIC, NIC, NIC, NIC]);
+    expect(short).not.toContain('undefined');
+
+    // 3. Every release unavailable and the device unknown: the device
+    //    sentence renders and no platform is featured.
+    const allUnavailable: readonly Release[] = products.map((product) =>
+      releaseRow(product.id, 'windows', { availability: 'unavailable' }),
+    );
+    const unknown = render(<GetPage releases={allUnavailable} hints={unknownHints} />);
+    expect(
+      occurrences(unknown, 'We could not identify your device; no platform is selected.'),
+    ).toBe(1);
+    expect(unknown).not.toContain('data-primary="true"');
+  });
+
+  it('planCopyFor has no top-up arm and plans never include the add-on (F22)', () => {
+    const { PlansPage } = requireScreens();
+    // Whole-definition proof: the copy resolver's own definition carries no
+    // 'top-up' branch, because the plans-only filter is the invariant. Match
+    // the body as a unit (lazy to its terminating `;`) rather than a single
+    // line, so reformatting the definition across lines cannot make the check
+    // vacuous or skip the body.
+    const definition = plansGetSource.match(/const planCopyFor =[\s\S]*?;/);
+    expect(definition).not.toBeNull();
+    expect(definition?.[0]).toContain('planCopy[');
+    expect(definition?.[0]).not.toContain("'top-up'");
+    // The filter's output never contains the add-on id, so the narrowed type
+    // is not papering over a live path.
+    expect(approvedPlanRows.map((plan) => plan.id)).not.toContain('top-up');
+    const html = render(<PlansPage />);
+    expect((html.match(/<h3>/g) ?? [])).toHaveLength(4);
+    const topUp = approvedPriceList.find((row) => row.kind === 'add-on');
+    if (topUp === undefined) throw new Error('the approved add-on row is missing');
+    expect(html).toContain(`${topUp.label}: $${topUp.monthly} adds $${topUp.includedCredit}; plan required`);
+    for (const copy of Object.values(planCopy)) {
+      expect(html).toContain(copy);
     }
   });
 });
