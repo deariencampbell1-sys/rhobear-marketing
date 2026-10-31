@@ -188,16 +188,6 @@ async function staleView(): Promise<CatalogView> {
   return view;
 }
 
-/**
- * M1: the attribution gate now requires the parser's admitted money and
- * region. `CatalogView` itself drops them (buildView in
- * src/clients/money/catalog.ts), so a fixture that models the parser-admitted
- * path attaches them here; the five-state F20 test pins absence as blocking.
- */
-function attributed(view: CatalogView): CatalogView {
-  return { ...view, currency: 'USD', region: 'US' } as CatalogView;
-}
-
 // --------------------------------------------------------------- releases ----
 // Complete Release rows in the shape tests/release-resolve.test.ts builds.
 
@@ -337,11 +327,11 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect(html).not.toMatch(/#[0-9A-Fa-f]{3,8}\b|rgba?\(|hsla?\(|background|color:/i);
     // A catalog capability in the unknown state renders the fail-closed cell
     // wording for that row — never a tick, never a guessed mapping.
-    const view = attributed(await viewOf(
+    const view = await viewOf(
       wireCatalog({
         capabilities: [{ product: 'builds', capability: 'zeus', plans: [], state: 'unknown' }],
       }),
-    ));
+    );
     const unknownHtml = render(<PlansPage catalog={view} />);
     const unknownMatrix = tableMatrix(unknownHtml);
     expect(unknownMatrix[3]).toEqual([
@@ -361,7 +351,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     // keeps the three claimed Apollo cells as shipped; the absent Zeus entry
     // fails closed only on the cells the matrix claims ('Included' for Shell
     // Plus / Space) and keeps its two unclaimed 'Not included' words (F18).
-    const defaultHtml = render(<PlansPage catalog={attributed(await viewOf(wireCatalog()))} />);
+    const defaultHtml = render(<PlansPage catalog={await viewOf(wireCatalog())} />);
     const matrix = tableMatrix(defaultHtml);
     expect(matrix).toHaveLength(8);
     expect(matrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
@@ -370,7 +360,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     // Apollo cells; Free's unclaimed cell keeps its approved word.
     const notIncluded = tableMatrix(render(
       <PlansPage
-        catalog={attributed(await viewOf(wireCatalog({
+        catalog={await viewOf(wireCatalog({
           capabilities: [
             {
               product: 'builds',
@@ -379,7 +369,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
               state: 'not-included',
             },
           ],
-        })))}
+        }))}
       />,
     ));
     expect(notIncluded[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
@@ -448,7 +438,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const { PlansPage } = requireScreens();
     // A matching, fresh catalog is attributed with its version and the exact
     // generation timestamp, and checkout is still closed under checkoutState.
-    const matching = render(<PlansPage catalog={attributed(await viewOf())} />);
+    const matching = render(<PlansPage catalog={await viewOf()} />);
     expect(matching).not.toContain('Catalog mismatch; purchase is blocked.');
     expect(matching).toContain(CATALOG_VERSION);
     expect(matching).toContain(new Date(GENERATED_AT).toISOString());
@@ -458,12 +448,12 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       expect(matching, plan.id).toContain(`$${plan.monthly} per month`);
     }
     const blockedCases: readonly (readonly [string, CatalogView])[] = [
-      ['changed price', attributed(await viewOf(wireCatalog({ plans: planRows({ shell: { monthlyPrice: '24.00' } }) })))],
-      ['changed credit', attributed(await viewOf(wireCatalog({ plans: planRows({ 'shell-plus': { creditIncluded: '40.00' } }) })))],
-      ['missing sku', attributed(await viewOf(wireCatalog({ plans: planRows({}, ['space']) })))],
+      ['changed price', await viewOf(wireCatalog({ plans: planRows({ shell: { monthlyPrice: '24.00' } }) }))],
+      ['changed credit', await viewOf(wireCatalog({ plans: planRows({ 'shell-plus': { creditIncluded: '40.00' } }) }))],
+      ['missing sku', await viewOf(wireCatalog({ plans: planRows({}, ['space']) }))],
       [
         'extra sku',
-        attributed(await viewOf(
+        await viewOf(
           wireCatalog({
             plans: planRows({}, [], [
               {
@@ -475,16 +465,16 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
               },
             ]),
           }),
-        )),
+        ),
       ],
-      ['stale view', attributed(await staleView())],
+      ['stale view', await staleView()],
       [
         'not purchasable',
-        attributed(await viewOf(
+        await viewOf(
           wireCatalog({
             plans: planRows({ space: { availability: 'unavailable', reason: 'renewal review' } }),
           }),
-        )),
+        ),
       ],
     ];
     for (const [name, view] of blockedCases) {
@@ -793,7 +783,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('an unparseable or missing generatedAt blocks instead of throwing (F16)', async () => {
     const { PlansPage } = requireScreens();
-    const view = attributed(await viewOf());
+    const view = await viewOf();
     // The parser admits only RFC3339 timestamps, so these views model a
     // corrupted or absent field reaching the page: the page must state the
     // mismatch instead of calling toISOString() on an invalid date (RangeError
@@ -819,7 +809,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
   it('catalog absence closes only checkout claims and keeps local facts (F18)', async () => {
     const { PlansPage } = requireScreens();
     const NIC = 'Not included in checkout yet';
-    const matrix = tableMatrix(render(<PlansPage catalog={attributed(await viewOf())} />));
+    const matrix = tableMatrix(render(<PlansPage catalog={await viewOf()} />));
     // Verifier is the pinned case: the catalog never mentions it, so its three
     // checkout claims fall closed while 'Included locally' — a local fact, not
     // a purchase — keeps the approved words.
@@ -836,7 +826,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const NIC = 'Not included in checkout yet';
     // A catalog that withholds the capability cannot let the approved table
     // keep reading 'Allowed' for the paid plans.
-    const denied = attributed(await viewOf(wireCatalog({
+    const denied = await viewOf(wireCatalog({
       capabilities: [
         {
           product: 'builds',
@@ -845,12 +835,12 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
           state: 'not-included',
         },
       ],
-    })));
+    }));
     expect(tableMatrix(render(<PlansPage catalog={denied} />))[5]).toEqual([
       'customer OpenRouter key', 'Not included', NIC, NIC, NIC,
     ]);
     // A catalog that explicitly includes it keeps the permitted wording.
-    const included = attributed(await viewOf(wireCatalog({
+    const included = await viewOf(wireCatalog({
       capabilities: [
         {
           product: 'builds',
@@ -859,7 +849,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
           state: 'included',
         },
       ],
-    })));
+    }));
     expect(tableMatrix(render(<PlansPage catalog={included} />))[5]).toEqual([
       'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
     ]);
@@ -867,14 +857,18 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('non-USD or unapproved-region catalogs do not match (F20)', async () => {
     const { PlansPage } = requireScreens();
+    // H1: a production view now carries the parser's own currency/region, so
+    // these cases are hand-built corrupt shapes production cannot produce —
+    // parseCatalog refuses anything but USD / US (src/clients/money/schema.ts)
+    // and buildView passes its admitted values through. The page must not
+    // bless a catalog whose money or region it cannot vouch for, whether the
+    // field is missing, explicitly null, or a value the parser would refuse.
     const view = await viewOf();
-    // The parser only admits USD / US (src/clients/money/schema.ts), so these
-    // views model the fields the review found unguarded: a page printing $ is
-    // never blessed by a catalog whose money or region it cannot vouch for.
-    // M1: absence is one of the unvouched states, not a pass.
     const cases: readonly (readonly [string, CatalogView])[] = [
-      ['missing currency', { ...view, region: 'US' } as unknown as CatalogView],
-      ['missing region', { ...view, currency: 'USD' } as unknown as CatalogView],
+      ['missing currency', { ...view, currency: undefined } as unknown as CatalogView],
+      ['missing region', { ...view, region: undefined } as unknown as CatalogView],
+      ['null currency', { ...view, currency: null }],
+      ['null region', { ...view, region: null }],
       ['non-USD currency', { ...view, currency: 'EUR', region: 'US' } as unknown as CatalogView],
       ['unapproved region', { ...view, currency: 'USD', region: 'CA' } as unknown as CatalogView],
     ];
@@ -886,11 +880,10 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       expect(html, name).not.toContain(new Date(GENERATED_AT).toISOString());
     }
     // M3: the present-and-correct branch is the one that must keep rendering a
-    // legitimate catalog normally. Without this case a future rename of the
-    // admitted values would block every catalog and the suite would stay green.
-    const accepted = render(
-      <PlansPage catalog={{ ...view, currency: 'USD', region: 'US' } as unknown as CatalogView} />,
-    );
+    // legitimate catalog normally — the real built view is exactly that branch.
+    // Without this case a future rename of the admitted values would block
+    // every catalog and the suite would stay green.
+    const accepted = render(<PlansPage catalog={view} />);
     expect(accepted).not.toContain('Catalog mismatch; purchase is blocked.');
     expect(accepted).toContain(CATALOG_VERSION);
     expect(accepted).toContain(new Date(GENERATED_AT).toISOString());
@@ -908,10 +901,10 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
       { product: 'builds', capability: 'openrouter-key', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
     ];
-    const mismatched = attributed(await viewOf(wireCatalog({
+    const mismatched = await viewOf(wireCatalog({
       plans: planRows({ shell: { monthlyPrice: '24.00' } }),
       capabilities,
-    })));
+    }));
     const html = render(<PlansPage catalog={mismatched} />);
     expect(html).toContain('Catalog mismatch; purchase is blocked.');
     expect(html).not.toMatch(/<button[^>]*>Continue<\/button>/);
@@ -919,7 +912,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect(matrix[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
     expect(matrix[5]).toEqual(['customer OpenRouter key', 'Not included', NIC, NIC, NIC]);
     // The same capabilities on a matching catalog still confirm their cells.
-    const matched = attributed(await viewOf(wireCatalog({ capabilities })));
+    const matched = await viewOf(wireCatalog({ capabilities }));
     const matchedMatrix = tableMatrix(render(<PlansPage catalog={matched} />));
     expect(matchedMatrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
     expect(matchedMatrix[5]).toEqual([

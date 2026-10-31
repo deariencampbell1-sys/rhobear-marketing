@@ -66,12 +66,13 @@ function catalogMatches(catalog: CatalogView): boolean {
   // states the mismatch instead of calling toISOString() on an invalid date.
   if (!Number.isFinite(catalog.generatedAt)) return false;
   // F20/M1: attribution needs the catalog's own money and region, and needs
-  // them present — a view that reaches the page without the parser's admitted
-  // values (USD / US, src/clients/money/schema.ts) is exactly the corrupt-view
-  // case, so absence closes checkout claims exactly as a wrong value does.
-  const attributed = catalog as CatalogView & { currency?: unknown; region?: unknown };
-  if (attributed.currency !== 'USD') return false;
-  if (attributed.region !== 'US') return false;
+  // them present — CatalogView declares `'USD' | null` / `'US' | null`, so a
+  // view that reaches the page without the parser's admitted values is exactly
+  // the corrupt-view case: absence closes checkout claims exactly as a wrong
+  // value does. The `| null` type is what keeps this a live runtime belt
+  // rather than a compile-time-decidable check.
+  if (catalog.currency !== 'USD') return false;
+  if (catalog.region !== 'US') return false;
   if (catalog.stale || !catalog.purchasable || catalog.plans.length !== approvedPlans.length) return false;
   return approvedPlans.every((plan) => {
     const row = catalog.plans.find((entry) => entry.sku === plan.id);
