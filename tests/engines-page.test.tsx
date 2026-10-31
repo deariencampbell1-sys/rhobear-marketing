@@ -511,6 +511,29 @@ describe('W1-07-r1 metadata gate (F9)', () => {
   });
 });
 
+/**
+ * W1-12-r1 (F29): the real content of the element carrying
+ * `data-primary="true"`, found by matching its closing tag — never the first
+ * nested `</div>`, which made the F10 oracle sensitive to markup nesting.
+ * Fails loudly unless the marker sits on a `<div>` open tag that is closed.
+ */
+function dataPrimaryContainer(html: string): string {
+  const marker = html.indexOf('data-primary="true"');
+  expect(marker, 'data-primary attribute').toBeGreaterThanOrEqual(0);
+  const open = html.lastIndexOf('<div', marker);
+  expect(open, 'data-primary sits on a <div>').toBeGreaterThanOrEqual(0);
+  const openEnd = html.indexOf('>', open);
+  expect(openEnd, 'marker inside the div open tag').toBeGreaterThan(marker);
+  let depth = 1;
+  const divTag = /<\/?div\b/g;
+  divTag.lastIndex = openEnd + 1;
+  for (let match = divTag.exec(html); match !== null; match = divTag.exec(html)) {
+    depth += match[0] === '</div' ? -1 : 1;
+    if (depth === 0) return html.slice(openEnd + 1, match.index);
+  }
+  throw new Error('unclosed data-primary <div>');
+}
+
 // W1-07-r1 (F10): the browser-acceptance contract — exactly one
 // data-primary="true" container per rendered page, wrapping the first engine's
 // action row on /engines and nothing else.
@@ -519,10 +542,20 @@ describe('W1-07-r1 data-primary contract (F10)', () => {
     const html = renderRoute('/engines');
     const parts = html.split('data-primary="true"');
     expect(parts.length - 1, 'exactly one data-primary container').toBe(1);
-    const container = parts[1].slice(0, parts[1].indexOf('</div>'));
+    const container = dataPrimaryContainer(html);
     const first = engines[0];
     expect(container).toContain('Open proof shell');
     expect(container).toContain(`href="/engines/${first.scenarioIds[0]}"`);
+    // W1-12-r1 (F29): the boundary is the container's own close tag, with and
+    // without a nested element — the first nested `</div>` is never used.
+    expect(
+      dataPrimaryContainer(
+        '<div data-primary="true"><div>nested</div>Open proof shell</div><p>after</p>',
+      ),
+    ).toBe('<div>nested</div>Open proof shell');
+    expect(dataPrimaryContainer('<div data-primary="true">Open proof shell</div>')).toBe(
+      'Open proof shell',
+    );
     // The container is inside the first engine's section, before the second's.
     const sectionStart = html.indexOf(`<h2>${first.publicName}</h2>`);
     const sectionEnd = html.indexOf('</section>', sectionStart);
