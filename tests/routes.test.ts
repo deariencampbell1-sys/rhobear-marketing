@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
@@ -124,9 +124,38 @@ function visibleRuns(fragment: string): string[] {
     .filter((text) => text !== '');
 }
 
-/** The main region of a rendered document (the owned content, not the shell). */
+/**
+ * The main region of a rendered document (the owned content, not the shell).
+ * W1-07-r1 (F4): exactly one <main> landmark is asserted before the slice, so
+ * the oracle can never silently read the first of several (or a missing) main
+ * region; zero, two and an incomplete landmark all fail loudly.
+ */
 function mainRegion(html: string): string {
-  return html.slice(html.indexOf('<main id="main">'), html.indexOf('</main>'));
+  const landmarks = html.match(/<main[\s>]/g) ?? [];
+  if (landmarks.length !== 1) {
+    throw new Error(`expected exactly one <main> landmark, found ${landmarks.length}`);
+  }
+  const start = html.indexOf('<main id="main">');
+  const end = html.indexOf('</main>', start);
+  if (start === -1 || end === -1) {
+    throw new Error('expected a complete <main id="main"> landmark');
+  }
+  return html.slice(start, end);
+}
+
+/** Whitespace-normalised, case-folded text: the unit approval is judged in. */
+function normaliseText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+/**
+ * W1-07-r1 (F5/F13): the anti-invention oracle. A visible run is approved
+ * only when it equals an approved string after whitespace normalisation —
+ * never because it contains, or is contained by, one.
+ */
+function isApprovedText(run: string, approved: readonly string[]): boolean {
+  const normalised = normaliseText(run);
+  return approved.some((approvedText) => normaliseText(approvedText) === normalised);
 }
 
 // The only non-data strings any owned screen may show: the labels and
@@ -184,6 +213,13 @@ const PINNED_LABELS = [
   'Try a sample',
   'Samples open when the engine service and quota are live.',
   'Back to Engines',
+  // W1-07-r1 (F5/F13): equality surfaced one string the containment matcher
+  // had been accepting indirectly — /engines renders the permitted Plans link
+  // with the exact label 'Plans' (W1-02's own pinned list already names it),
+  // while this inventory only carried 'Plans and prices' as the /plans route
+  // title. The label is copied from that existing approval, never invented;
+  // it is reported in this commit body rather than widened silently.
+  'Plans',
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */
@@ -320,6 +356,99 @@ describe('route table', () => {
     }
     expect(routes.find((r) => r.path === '/account')?.kind).toBe('dynamic');
     expect(routes.filter((r) => r.kind === 'dynamic').map((r) => r.path)).toEqual(['/account']);
+  });
+});
+
+// W1-07-r1 (F4): the anti-invention oracle must never silently read the wrong
+// region: mainRegion asserts exactly one <main> landmark per rendered page and
+// fails loudly on zero or two. A nested <main> still counts one.
+describe('W1-07-r1 main landmark guard (F4)', () => {
+  it('fails loudly on a page with zero <main> landmarks', () => {
+    expect(() => mainRegion('<div>no landmark here</div>')).toThrow(/<main>/);
+  });
+
+  it('fails loudly on a page with two <main> landmarks', () => {
+    const two = '<main id="main">first</main><main id="main">second</main>';
+    expect(() => mainRegion(two)).toThrow(/<main>/);
+  });
+
+  it('counts a <main> nested inside another element as exactly one', () => {
+    const nested = '<div><main id="main">the real region</main></div>';
+    expect(mainRegion(nested)).toContain('the real region');
+  });
+
+  it('every real page passes with exactly one <main>', () => {
+    for (const path of [...CANONICAL_PATHS, '/404']) {
+      expect(() => mainRegion(renderRoute(path)), path).not.toThrow();
+    }
+  });
+});
+
+// W1-07-r1 (F5/F13): the negative control that closes the substring hole.
+// Approval is equality after whitespace normalisation: a longer invented
+// string that contains an approved one, and a substring of an approved one,
+// both fail; the genuinely approved string still passes.
+describe('W1-07-r1 anti-invention oracle (F5/F13)', () => {
+  const APPROVED = ['Teams at work'];
+
+  it('rejects an invented string that contains an approved one', () => {
+    expect(isApprovedText('Teams at work — buy now', APPROVED)).toBe(false);
+  });
+
+  it('rejects a substring of an approved string', () => {
+    expect(isApprovedText('Teams', APPROVED)).toBe(false);
+  });
+
+  it('accepts the approved string after whitespace normalisation', () => {
+    expect(isApprovedText('Teams at work', APPROVED)).toBe(true);
+    expect(isApprovedText('  Teams\n at   work  ', APPROVED)).toBe(true);
+  });
+});
+
+// W1-07-r1 (F12): one malformed registry row must never kill the whole route
+// table at import. The mock replaces only engineScenarios (importActual +
+// spread), so the dynamic import below runs the real route derivation with one
+// bad row and proves the good page and the bad page both still exist.
+describe('W1-07-r1 registry robustness (F12)', () => {
+  it('imports cleanly with a malformed engineId and fails only that page closed', async () => {
+    vi.resetModules();
+    vi.doMock('../src/data/engines', async () => {
+      const actual = await vi.importActual<typeof import('../src/data/engines')>('../src/data/engines');
+      return {
+        ...actual,
+        engineScenarios: [
+          ...actual.engineScenarios,
+          {
+            scenarioId: 'malformed-01',
+            engineId: 'no-such-engine',
+            publicationState: 'footage-pending' as const,
+            source: actual.enginesDestination.source,
+          },
+        ],
+      };
+    });
+    try {
+      const [{ routes: guardedRoutes, findRoute: guardedFindRoute }, { renderRoute: renderGuarded }] =
+        await Promise.all([import('../src/app/routes'), import('../src/app/render')]);
+      // The table imports and serves both routes: no whole-table failure.
+      const paths = guardedRoutes.map((route) => route.path);
+      expect(paths).toContain('/engines/teams-01');
+      expect(paths).toContain('/engines/malformed-01');
+      // The bad row fails its own page closed with the page's own wording...
+      expect(guardedFindRoute('/engines/malformed-01')?.title).toBe('Proof unavailable');
+      const bad = renderGuarded('/engines/malformed-01');
+      expect(bad).toContain('Proof unavailable');
+      expect(bad).toContain('href="/support"');
+      // ...and the good page keeps its real registry title and content.
+      expect(guardedFindRoute('/engines/teams-01')?.title).toBe('Teams proof');
+      const good = renderGuarded('/engines/teams-01');
+      expect(good).toContain('Teams');
+      expect(good).toContain('Recording in review');
+      expect(good).not.toContain('Proof unavailable');
+    } finally {
+      vi.doUnmock('../src/data/engines');
+      vi.resetModules();
+    }
   });
 });
 
@@ -786,10 +915,7 @@ describe('W1-01-r1 anti-invention and composition', () => {
             ? legalApproved
             : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
-        const hit = approvedFor.some((approvedText) =>
-          approvedText.toLowerCase().includes(run.toLowerCase()),
-        );
-        expect(hit, `${path}: unapproved text node "${run}"`).toBe(true);
+        expect(isApprovedText(run, approvedFor), `${path}: unapproved text node "${run}"`).toBe(true);
       }
       const html = renderRoute(path);
       const text = visibleText(html);

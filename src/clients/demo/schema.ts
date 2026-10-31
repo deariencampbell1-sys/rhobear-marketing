@@ -30,10 +30,13 @@
 //   - `interactive.sandbox` is an allow-list of known sandbox tokens,
 //     normalized to a single-space token list; `allow-same-origin` is refused
 //     outright, and FU-1 (owner decision B) — widened by W1-03b-r1 FU-2 —
-//     also refuses the five tokens exported below as `REFUSED_SANDBOX_TOKENS`
-//     outright. W0-05b applies the surviving list verbatim as an iframe
-//     sandbox attribute and refuses the same tokens again at the player
-//     boundary (defence in depth), importing the set from here.
+//     also refuses the five tokens in `REFUSED_SANDBOX_TOKENS` outright. The
+//     admitted list is DERIVED from the one known-token list below (F23):
+//     `KNOWN_SANDBOX_TOKENS` minus `REFUSED_SANDBOX_TOKENS` minus
+//     `allow-same-origin`, so admission and refusal cannot drift. W0-05b
+//     applies the derived list verbatim as an iframe sandbox attribute and
+//     refuses the refused tokens again at the player boundary (defence in
+//     depth), importing the same policy from here.
 
 import { isRfc3339, isHttpsUrl } from '../release/schema';
 // The board names the scenarios; this client imports them rather than
@@ -44,12 +47,12 @@ export const DEMO_PACKAGE_SCHEMA = 'rhobear.demo-package.v1';
 
 export type PublicationState = 'pending' | 'approved' | 'superseded' | 'revoked';
 
-export const PUBLICATION_STATES: readonly PublicationState[] = [
+export const PUBLICATION_STATES: readonly PublicationState[] = Object.freeze([
   'pending',
   'approved',
   'superseded',
   'revoked',
-];
+]);
 
 const HEX40 = /^[0-9a-f]{40}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -59,32 +62,37 @@ const HEX64 = /^[0-9a-f]{64}$/;
 // wherever a revision is taken from a body.
 const PACKAGE_REVISION_PATTERN = /^rev-[A-Za-z0-9._-]+$/;
 
-// The sandbox tokens a package may name: the known iframe sandbox tokens
-// minus `allow-same-origin` — beside `allow-scripts` it would let the framed
-// page act as the front-door origin and escape the sandbox entirely — and
-// minus the five refused tokens of `REFUSED_SANDBOX_TOKENS` below (FU-1,
-// owner decision B, widened by W1-03b-r1 FU-2): a refused token may not be
-// named in a package at all. Schema admission and the player's refusal move
-// together — `./player.ts` imports `REFUSED_SANDBOX_TOKENS` and refuses it
-// again in `openInteractive`, with tests in both directions. An allow-list,
-// never a denylist: a token that is not here is `bad-interactive`.
-const SANDBOX_TOKENS: readonly string[] = [
+// The full known iframe sandbox token universe — the one literal list the
+// admitted list is derived from (F23). Every token here is a real HTML iframe
+// `sandbox` token; the admitted list below is DERIVED from it, so a token
+// added to the refused list is dropped from admission by the same expression
+// rather than by a second hand-edit. Frozen (F25): `readonly` is compile-time
+// only, so the runtime array is sealed too.
+export const KNOWN_SANDBOX_TOKENS: readonly string[] = Object.freeze([
   'allow-downloads',
+  'allow-downloads-without-user-activation',
   'allow-forms',
   'allow-modals',
   'allow-orientation-lock',
   'allow-pointer-lock',
   'allow-popups',
+  'allow-popups-to-escape-sandbox',
   'allow-presentation',
+  'allow-same-origin',
   'allow-scripts',
   'allow-storage-access-by-user-activation',
-];
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-top-navigation-to-custom-protocols',
+]);
 
 /**
- * The sandbox tokens refused everywhere — the one copy of the list (F2), so
- * the allow-list above and the player's refusal move together by
- * construction, not by hand. FU-1 (owner decision B) refused
- * `allow-top-navigation`, `allow-top-navigation-by-user-activation` and
+ * The sandbox tokens refused everywhere — the one copy of the refusal list
+ * (F2), exported frozen (F25: `readonly` is compile-time only, so the runtime
+ * array is sealed). The admitted list below is derived from this set, so the
+ * refusal and the allow-list move together by construction, not by hand
+ * (F23). FU-1 (owner decision B) refused `allow-top-navigation`,
+ * `allow-top-navigation-by-user-activation` and
  * `allow-popups-to-escape-sandbox`: top navigation would let the framed
  * artifact navigate the front door itself and escaped popups would open
  * outside the sandbox. FU-2 (W1-03b-r1) adds
@@ -96,13 +104,31 @@ const SANDBOX_TOKENS: readonly string[] = [
  * `sandbox-token-refused` immediately after its `allow-same-origin` check,
  * with tests in both directions.
  */
-export const REFUSED_SANDBOX_TOKENS: readonly string[] = [
+export const REFUSED_SANDBOX_TOKENS: readonly string[] = Object.freeze([
   'allow-top-navigation',
   'allow-top-navigation-by-user-activation',
   'allow-popups-to-escape-sandbox',
   'allow-top-navigation-to-custom-protocols',
   'allow-downloads-without-user-activation',
-];
+]);
+
+/**
+ * The sandbox tokens a package may name, DERIVED (F23): the known set minus
+ * `allow-same-origin` — beside `allow-scripts` it would let the framed page
+ * act as the front-door origin and escape the sandbox entirely — minus the
+ * refused tokens of `REFUSED_SANDBOX_TOKENS` (FU-1, owner decision B,
+ * widened by W1-03b-r1 FU-2): a refused token may not be named in a package
+ * at all. Schema admission and the player's refusal are one construction —
+ * `./player.ts` imports the same policy and refuses it again in
+ * `openInteractive`, with tests in both directions. An allow-list, never a
+ * denylist: a token that is not here is `bad-interactive`. The array is
+ * frozen (F25) and is a fresh array, not an alias of any list above.
+ */
+export const SANDBOX_TOKENS: readonly string[] = Object.freeze(
+  KNOWN_SANDBOX_TOKENS.filter(
+    (token) => token !== 'allow-same-origin' && !REFUSED_SANDBOX_TOKENS.includes(token),
+  ),
+);
 
 export type DemoChapter = { label: string; startSeconds: number };
 

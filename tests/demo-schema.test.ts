@@ -7,10 +7,18 @@ import { describe, expect, it } from 'vitest';
 import {
   DEMO_PACKAGE_SCHEMA,
   KNOWN_SCENARIO_IDS,
+  KNOWN_SANDBOX_TOKENS,
+  PUBLICATION_STATES,
+  REFUSED_SANDBOX_TOKENS,
+  SANDBOX_TOKENS,
   parseDemoPackage,
   parseScenarioRegistry,
   type DemoProblem,
 } from '../src/clients/demo/schema';
+// W1-06-r1 F25: the module namespace is imported so the immutability test can
+// walk EVERY export and prove each collection is frozen — a named import per
+// array would only prove the arrays this file already knows about.
+import * as schemaModule from '../src/clients/demo/schema';
 import { createDemoResolver, type FetchLike } from '../src/clients/demo/resolve';
 // The id-set test compares the client's table against the registry itself —
 // the registry is imported, never duplicated.
@@ -518,6 +526,142 @@ describe('content hash canonical form', () => {
     const b = await plays(reversed);
     expect(a.contentHash).toBe(contentHash);
     expect(b.contentHash).toBe(contentHash);
+  });
+});
+
+// W1-06-r1 — Apollo's F23/F24/F25, made construction rather than claim: the
+// admitted sandbox list is DERIVED from the known set (F23), the admitted
+// count and the refused set are pinned symmetrically (F24), and every
+// exported collection is frozen with no by-reference alias (F25). The
+// behaviour the construction must not change is pinned in
+// tests/demo-player.test.ts.
+
+/**
+ * The nine admitted tokens exactly as shipped at the base (a4f205e0), in
+ * order — a frozen literal here, never read from the module under test, so
+ * the derivation cannot silently change the policy.
+ */
+const BASE_ADMITTED_SANDBOX_TOKENS: readonly string[] = Object.freeze([
+  'allow-downloads',
+  'allow-forms',
+  'allow-modals',
+  'allow-orientation-lock',
+  'allow-pointer-lock',
+  'allow-popups',
+  'allow-presentation',
+  'allow-scripts',
+  'allow-storage-access-by-user-activation',
+]);
+
+/**
+ * The full known iframe sandbox token universe, as the base shipped it: the
+ * nine admitted tokens plus the five refused tokens plus `allow-same-origin`.
+ * Written out from the base, not read from the module under test.
+ */
+const BASE_KNOWN_SANDBOX_TOKENS: readonly string[] = Object.freeze([
+  'allow-downloads',
+  'allow-downloads-without-user-activation',
+  'allow-forms',
+  'allow-modals',
+  'allow-orientation-lock',
+  'allow-pointer-lock',
+  'allow-popups',
+  'allow-popups-to-escape-sandbox',
+  'allow-presentation',
+  'allow-same-origin',
+  'allow-scripts',
+  'allow-storage-access-by-user-activation',
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-top-navigation-to-custom-protocols',
+]);
+
+describe('demo sandbox policy — one construction (W1-06-r1)', () => {
+  it('F23: the admitted list is derived — known − refused − allow-same-origin — never a second hand-kept literal', () => {
+    // Both sides are written out from the base: the module's known set is
+    // pinned against the base universe, then the derivation is recomputed
+    // from that literal and compared with the module's admitted export.
+    expect([...KNOWN_SANDBOX_TOKENS]).toEqual([...BASE_KNOWN_SANDBOX_TOKENS]);
+    const derived = BASE_KNOWN_SANDBOX_TOKENS.filter(
+      (token) => token !== 'allow-same-origin' && !REFUSED_SANDBOX_TOKENS.includes(token),
+    );
+    expect([...SANDBOX_TOKENS]).toEqual([...derived]);
+    expect([...SANDBOX_TOKENS]).toEqual([...BASE_ADMITTED_SANDBOX_TOKENS]);
+  });
+
+  it('F24: the admitted set is exactly nine — the count is pinned, so a tenth token cannot slip in', () => {
+    expect(SANDBOX_TOKENS).toHaveLength(9);
+  });
+
+  it('F24: the refused set is exactly the five owner-refused tokens — pinned symmetrically', () => {
+    expect([...REFUSED_SANDBOX_TOKENS]).toEqual([
+      'allow-top-navigation',
+      'allow-top-navigation-by-user-activation',
+      'allow-popups-to-escape-sandbox',
+      'allow-top-navigation-to-custom-protocols',
+      'allow-downloads-without-user-activation',
+    ]);
+  });
+
+  it('F24: the two collections are disjoint — no refused token is admitted by the derivation', () => {
+    for (const token of REFUSED_SANDBOX_TOKENS) {
+      expect(SANDBOX_TOKENS, token).not.toContain(token);
+    }
+    expect(SANDBOX_TOKENS.filter((token) => REFUSED_SANDBOX_TOKENS.includes(token))).toEqual([]);
+  });
+
+  it('F23 edge: allow-same-origin is known but never admitted — the derivation drops it by name', () => {
+    expect([...KNOWN_SANDBOX_TOKENS]).toContain('allow-same-origin');
+    expect([...SANDBOX_TOKENS]).not.toContain('allow-same-origin');
+  });
+
+  it('F23: the known set is exactly admitted ∪ refused ∪ allow-same-origin — no token unaccounted for', () => {
+    const union = [
+      ...BASE_ADMITTED_SANDBOX_TOKENS,
+      ...REFUSED_SANDBOX_TOKENS,
+      'allow-same-origin',
+    ].sort();
+    expect([...KNOWN_SANDBOX_TOKENS].sort()).toEqual(union);
+    expect(new Set(KNOWN_SANDBOX_TOKENS).size).toBe(KNOWN_SANDBOX_TOKENS.length);
+  });
+
+  it('F25: every exported collection is frozen — strict-mode push, splice and index assignment all throw and leave the policy unchanged', () => {
+    // Every array the module exports, walked from its namespace: a new
+    // collection cannot be added export-unfrozen and hide from this test.
+    for (const [name, value] of Object.entries(schemaModule)) {
+      if (Array.isArray(value)) expect(Object.isFrozen(value), name).toBe(true);
+    }
+    for (const collection of [
+      KNOWN_SANDBOX_TOKENS,
+      REFUSED_SANDBOX_TOKENS,
+      SANDBOX_TOKENS,
+      PUBLICATION_STATES,
+      KNOWN_SCENARIO_IDS,
+    ]) {
+      expect(Object.isFrozen(collection)).toBe(true);
+    }
+
+    // Strict mode is the test module's mode (ESM): a silent no-op cannot
+    // mask a live mutation — each attempt must throw, and the values must be
+    // exactly what they were.
+    const before = [...SANDBOX_TOKENS];
+    const mutable = SANDBOX_TOKENS as unknown as string[];
+    expect(() => mutable.push('allow-same-origin'), 'push').toThrow(TypeError);
+    expect(() => mutable.splice(0, 1), 'splice').toThrow(TypeError);
+    expect(() => {
+      mutable[0] = 'allow-same-origin';
+    }, 'index assignment').toThrow(TypeError);
+    expect([...SANDBOX_TOKENS]).toEqual(before);
+  });
+
+  it('F25: no export is a live alias of another — copies mutate freely while the exported policy stays distinct and frozen', () => {
+    expect(SANDBOX_TOKENS).not.toBe(KNOWN_SANDBOX_TOKENS);
+    expect(SANDBOX_TOKENS).not.toBe(REFUSED_SANDBOX_TOKENS);
+    expect(KNOWN_SANDBOX_TOKENS).not.toBe(REFUSED_SANDBOX_TOKENS);
+    const copy = [...SANDBOX_TOKENS];
+    copy.push('allow-same-origin');
+    expect(copy).toHaveLength(10);
+    expect([...SANDBOX_TOKENS]).toEqual([...BASE_ADMITTED_SANDBOX_TOKENS]);
   });
 });
 
