@@ -1,8 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import { createElement } from 'react';
+import { createElement, type ComponentType } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
+// M4: /plans is rendered with a fixture catalog below, so the anti-invention
+// oracle covers the matched and mismatched catalog states, not just the
+// catalog-free static page.
+import { PlansPage } from '../src/routes/plans-get';
+import type { CatalogView } from '../src/clients/money/catalog';
 import { classifySharedLink, NotFound, type SharedLinkResult } from '../src/app/NotFound';
 import { parseIntent } from '../src/clients/intent/schema';
 import {
@@ -1063,6 +1068,73 @@ describe('W1-01-r1 anti-invention and composition', () => {
         /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
       );
       expect(text, path).not.toMatch(/\btestimonial\b/i);
+    }
+  });
+
+  it('anti-invention holds for catalog-bearing /plans in both states (M4)', () => {
+    // M4: the F17 oracle only rendered renderRoute('/plans'), which passes no
+    // catalog, so the matched and mismatched catalog branches — including the
+    // catalog's own version and generation timestamp — were outside the check
+    // entirely. The fixture is built from approvedPriceList; the only extra
+    // approvals for the matched state are the page's two InfoRow labels and
+    // the fixture's own version and ISO timestamp, derived here, never typed
+    // into the page-facing allowlist.
+    const approved = approvedStrings();
+    const generatedAt = Date.parse('2026-10-29T12:00:00Z');
+    const fixture: CatalogView = {
+      purchasable: true,
+      catalogVersion: '2026-10-29.1',
+      sourceSha: 'a'.repeat(40),
+      generatedAt,
+      fetchedAt: generatedAt,
+      stale: false,
+      plans: approvedPriceList
+        .filter((row) => row.kind === 'plan')
+        .map((row) => ({
+          sku: row.id,
+          name: row.label,
+          monthlyPrice: row.monthly,
+          creditIncluded: row.includedCredit,
+          availability: 'available' as const,
+        })),
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'apollo',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'included' as const,
+        },
+      ],
+      currency: 'USD',
+      region: 'US',
+    } as CatalogView;
+    const mismatched: CatalogView = {
+      ...fixture,
+      plans: fixture.plans.map((plan) =>
+        plan.sku === 'shell' ? { ...plan, monthlyPrice: '24.00' } : plan,
+      ),
+    };
+    const states: readonly (readonly [string, CatalogView, readonly string[]])[] = [
+      [
+        'matched',
+        fixture,
+        // The page's two InfoRow labels, plus the fixture's own version and
+        // generation time — the only strings a matched catalog legitimately
+        // adds; all four are derived here, never retyped.
+        ['catalogVersion', 'generatedAt', fixture.catalogVersion, new Date(generatedAt).toISOString()],
+      ],
+      ['mismatched', mismatched, []],
+    ];
+    for (const [name, catalog, extra] of states) {
+      // React's createElement cannot infer the optional-props signature of
+      // PlansPage (the component defaults its props); pin it at the boundary.
+      const Page = PlansPage as ComponentType<{ catalog: CatalogView }>;
+      const html = `<main id="main">${renderToStaticMarkup(createElement(Page, { catalog }))}</main>`;
+      const approvedFor = [...approved, ...plansApprovedTexts(), ...extra];
+      for (const run of visibleRuns(mainRegion(html))) {
+        expect(isApprovedText(run, approvedFor), `${name}: unapproved text node "${run}"`).toBe(true);
+      }
+      expect(withoutHeraldPrices('/plans', visibleText(html)), name).not.toMatch(/\$/);
     }
   });
 
