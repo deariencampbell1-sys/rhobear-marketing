@@ -101,6 +101,28 @@ describe('release guards', () => {
   });
 });
 
+// W1-07-r1 (F15): the storeUrl https-mirror property at the wire boundary. An
+// http or javascript store link is refused as bad-url, so it can never reach
+// the resolver; the allowed https link is the positive control that proves the
+// guard does not over-close.
+describe('parseRelease — storeUrl is https-only', () => {
+  it('rejects http and javascript store URLs at parse time', () => {
+    const unsafe = ['http://apps.apple.com/app/id1', 'javascript:alert(1)'] as const;
+    for (const storeUrl of unsafe) {
+      const row = wellFormedRow('ios', { artifactUrl: null, storeUrl, signer: null });
+      expect(parseRelease(row), storeUrl).toEqual({ problem: 'bad-url' });
+      expect('release' in parseRelease(row), storeUrl).toBe(false);
+    }
+  });
+
+  it('accepts the allowed https store URL', () => {
+    const row = wellFormedRow('ios', {
+      artifactUrl: null, storeUrl: 'https://apps.apple.com/app/id1', signer: null,
+    });
+    expect(parseRelease(row)).toHaveProperty('release');
+  });
+});
+
 describe('parseManifest', () => {
   it('parses a manifest with one row per platform', () => {
     const result = parseManifest({ schema: RELEASE_MANIFEST_SCHEMA, releases: platforms.map((p) => wellFormedRow(p)) });

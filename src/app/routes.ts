@@ -2,7 +2,8 @@
 // prerender output and sitemap.xml. Wave 1 fills pages; paths never move.
 // W1-02: the seven scenario routes derive from the engines registry below.
 
-import { engineScenarios, enginesById } from '../data/engines';
+import { engineScenarios } from '../data/engines';
+import { scenarioRouteTitle } from '../routes/engines';
 
 export type RouteKind = 'static' | 'dynamic';
 
@@ -44,7 +45,7 @@ const baseRoutes: readonly Route[] = [
  */
 const scenarioRoutes: readonly Route[] = engineScenarios.map((scenario) => ({
   path: `/engines/${scenario.scenarioId}`,
-  title: `${enginesById[scenario.engineId].publicName} proof`,
+  title: scenarioRouteTitle(scenario.engineId),
   kind: 'static',
   group: 'platform',
 }));
