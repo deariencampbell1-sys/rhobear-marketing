@@ -5,10 +5,8 @@ import { renderRoute } from '../src/app/render';
 import { CheckoutClosedNotice } from '../src/app/CheckoutClosedNotice';
 import { checkoutState, legalPages, legalStatus, retention } from '../src/data/legal';
 import { products } from '../src/data/products';
-import type { ServiceErrorProps, ServiceErrorStatus } from '../src/app/ServiceError';
+import { ServiceError, type ServiceErrorProps, type ServiceErrorStatus } from '../src/app/ServiceError';
 
-type ServiceErrorModule = typeof import('../src/app/ServiceError');
-const serviceError: ServiceErrorModule | null = await import('../src/app/ServiceError').catch(() => null);
 const errorSourceModules = import.meta.glob('../src/app/ServiceError.tsx', {
   query: '?raw',
   import: 'default',
@@ -21,11 +19,6 @@ const appSourceModules = import.meta.glob('../src/app/App.tsx', {
   eager: true,
 }) as Record<string, string>;
 const appSource = appSourceModules['../src/app/App.tsx'] ?? '';
-
-function requireServiceError(): ServiceErrorModule {
-  if (serviceError === null) throw new Error('src/app/ServiceError.tsx is not on this commit yet');
-  return serviceError;
-}
 
 function decodeEntities(text: string): string {
   return text
@@ -46,7 +39,6 @@ function sharedFooter(html: string): string {
 }
 
 function errorMarkup(props: ServiceErrorProps): string {
-  const { ServiceError } = requireServiceError();
   return renderToStaticMarkup(createElement(ServiceError, props));
 }
 
