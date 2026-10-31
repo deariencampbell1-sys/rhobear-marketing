@@ -2,8 +2,7 @@
 // prerender output and sitemap.xml. Wave 1 fills pages; paths never move.
 // W1-02: the seven scenario routes derive from the engines registry below.
 
-import { engineScenarios } from '../data/engines';
-import { scenarioRouteTitle } from '../routes/engines';
+import { engineScenarios, scenarioRouteTitle } from '../data/engines';
 
 export type RouteKind = 'static' | 'dynamic';
 

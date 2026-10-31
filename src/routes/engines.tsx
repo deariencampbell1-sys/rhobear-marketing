@@ -220,18 +220,6 @@ export function EnginesPage(): JSX.Element {
 }
 
 /**
- * W1-07-r1 (F12): the route-table title for one registry scenario, resolved
- * through a guard rather than an index that can throw. An engineId the
- * registry does not hold — one malformed row — gets the same fail-closed
- * wording the page itself renders, so the row fails alone and the route table
- * still imports.
- */
-export function scenarioRouteTitle(engineId: string): string {
-  const engine = engines.find((candidate) => candidate.id === engineId);
-  return engine === undefined ? 'Proof unavailable' : `${engine.publicName} proof`;
-}
-
-/**
  * The scenario shell: only ids already found through the static route table
  * reach this screen. It renders the engine's name and MCP handle and the
  * registry's own publication state through the derivation — it never fetches

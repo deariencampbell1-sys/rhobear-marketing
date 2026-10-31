@@ -240,3 +240,17 @@ for (const scenario of engineScenariosUnfrozen) {
 
 export const engineScenarios: readonly (typeof engineScenariosUnfrozen)[number][] =
   Object.freeze(engineScenariosUnfrozen);
+
+/**
+ * W1-11-r1 (F26): the route-table title for one registry scenario. It lives
+ * in the data layer, not in src/routes/engines.tsx, so the metadata path
+ * (App.tsx, scripts/prerender.mjs, sitemap.xml) never imports a page module.
+ * Resolved through a guard rather than an index that can throw: an engineId
+ * the registry does not hold — one malformed row — gets the same fail-closed
+ * wording the page renders for an invalid proof, so the row fails alone and
+ * the route table still imports.
+ */
+export function scenarioRouteTitle(engineId: string): string {
+  const engine = engines.find((candidate) => candidate.id === engineId);
+  return engine === undefined ? engineLabels.invalidTitle : `${engine.publicName} proof`;
+}
