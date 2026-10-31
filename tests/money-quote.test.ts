@@ -26,7 +26,7 @@ const fakeCatalog = (
     ? V extends { plans: infer P } ? P : never
     : never = [{ sku: 'shell', name: 'Shell', monthlyPrice: '19.99', creditIncluded: '0.00', availability: 'available' }] as never,
 ): CatalogClient => {
-  const view = { catalogVersion, sourceSha, purchasable: true, generatedAt: 0, fetchedAt: 0, stale: false, plans, capabilities: [] };
+  const view = { catalogVersion, sourceSha, purchasable: true, currency: 'USD' as const, region: 'US' as const, generatedAt: 0, fetchedAt: 0, stale: false, plans, capabilities: [] };
   return {
     async load() { return { ok: true as const, view }; },
     lastView() { return { ...view, stale: true, purchasable: false, reason: 'stale' as const }; },
@@ -121,6 +121,7 @@ describe('money quote reconfirm', () => {
   const liveCatalog = (catalogVersion = 'v1'): CatalogClient => {
     const view = {
       catalogVersion, sourceSha: 'a'.repeat(40), purchasable: true,
+      currency: 'USD' as const, region: 'US' as const,
       generatedAt: 0, fetchedAt: 0, stale: false, capabilities: [],
       plans: [{ sku: 'shell', name: 'Shell', monthlyPrice: '19.99', creditIncluded: '0.00', availability: 'available' as const }],
     };
@@ -190,6 +191,7 @@ describe('money quote live-catalog gate', () => {
   const catalogWith = (over: Record<string, unknown>): CatalogClient => {
     const view = {
       catalogVersion: 'v1', sourceSha: 'a'.repeat(40), purchasable: true,
+      currency: 'USD' as const, region: 'US' as const,
       generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [], ...over,
     };
     return {
@@ -234,6 +236,7 @@ describe('money quote live-catalog gate', () => {
 describe('money quote sell gate and binding limit', () => {
   const liveShape = {
     catalogVersion: 'v1', sourceSha: 'a'.repeat(40), purchasable: true,
+    currency: 'USD' as const, region: 'US' as const,
     generatedAt: 0, fetchedAt: 0, stale: false, plans: [], capabilities: [],
   };
 

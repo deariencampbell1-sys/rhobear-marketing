@@ -21,6 +21,7 @@ import {
   launchOffer,
   planCopy,
   type HeraldOffer,
+  type PriceRow,
   type PriceRowId,
 } from '../data/offers';
 import { products, type ProductEntry } from '../data/products';
@@ -45,11 +46,17 @@ const DEVICE_UNKNOWN = 'We could not identify your device; no platform is select
 const JOINING = 'Joining is not open yet.';
 const NOT_IN_CHECKOUT = 'Not included in checkout yet';
 
-// P02: only rows whose kind is 'plan' are plans — the top-up add-on renders as
-// its own line and can never become a fifth plan.
-const approvedPlans = approvedPriceList.filter((row) => row.kind === 'plan');
+// P02/F22: the plans-only filter is the invariant — the top-up add-on renders
+// as its own line, can never become a fifth plan and never reaches planCopyFor,
+// so the add-on id is excluded from the row type instead of being handled by an
+// unreachable arm. M1: the narrowing lives here and the PlanList prop carries
+// the narrowed row, so no call site needs `as PlanId`.
+type PlanId = Exclude<PriceRowId, 'top-up'>;
+type PlanRow = PriceRow & { id: PlanId };
+const isPlanRow = (row: PriceRow): row is PlanRow => row.kind === 'plan';
+const approvedPlans = approvedPriceList.filter(isPlanRow);
 const topUpRow = approvedPriceList.find((row) => row.kind === 'add-on');
-const planCopyFor = (id: PriceRowId): string => (id === 'top-up' ? '' : planCopy[id]);
+const planCopyFor = (id: PlanId): string => planCopy[id];
 
 /**
  * P02/P04's one sell gate: a catalog is attributable and actionable only when
@@ -58,6 +65,17 @@ const planCopyFor = (id: PriceRowId): string => (id === 'top-up' ? '' : planCopy
  * mismatch is stated, and no Continue is rendered at all.
  */
 function catalogMatches(catalog: CatalogView): boolean {
+  // F16: an unparseable or missing timestamp is not attributable — the page
+  // states the mismatch instead of calling toISOString() on an invalid date.
+  if (!Number.isFinite(catalog.generatedAt)) return false;
+  // F20/M1: attribution needs the catalog's own money and region, and needs
+  // them present — CatalogView declares `'USD' | null` / `'US' | null`, so a
+  // view that reaches the page without the parser's admitted values is exactly
+  // the corrupt-view case: absence closes checkout claims exactly as a wrong
+  // value does. The `| null` type is what keeps this a live runtime belt
+  // rather than a compile-time-decidable check.
+  if (catalog.currency !== 'USD') return false;
+  if (catalog.region !== 'US') return false;
   if (catalog.stale || !catalog.purchasable || catalog.plans.length !== approvedPlans.length) return false;
   return approvedPlans.every((plan) => {
     const row = catalog.plans.find((entry) => entry.sku === plan.id);
@@ -83,23 +101,94 @@ const CAPABILITY_ROWS: readonly CapabilityRow[] = [
 ];
 
 /**
- * The approved copy draws the table; the catalog may only confirm it. With no
- * catalog the approved matrix stands. With a catalog present, a capability the
- * catalog does not carry at all and one it reports as 'unknown' each fail the
- * whole row closed; a claimed cell ('Included' / 'Included by plan') whose
- * state is 'not-included' fails closed too while its unclaimed cells keep
- * their approved words. The shipped matrix is never printed as-is over a
- * catalog that does not say so, and no absent or unknown cell ever becomes a
- * claim.
+ * The approved copy draws the table; the catalog may only confirm it. A
+ * claimed cell ('Included', 'Included by plan', 'Allowed') whose state is
+ * anything but 'included' falls closed; an absent entry falls closed only on
+ * those claimed cells ('Included locally' / 'Local only' / 'Not included' are
+ * local facts). An 'unknown' entry closes the whole row: the catalog named
+ * the capability but could not vouch for any cell.
  */
 function capabilityRow(view: CatalogView | null, token: string, cells: readonly string[]): string[] {
   if (view === null) return [...cells];
   const entry = view.capabilities.find((item) => item.product === 'builds' && item.capability === token);
-  // Absence from a present catalog is as fail-closed as 'unknown': the row
-  // still renders, but no cell in it keeps a claim the catalog never made.
-  if (entry === undefined || entry.state === 'unknown') return cells.map(() => NOT_IN_CHECKOUT);
-  const claimed = (cell: string): boolean => cell === 'Included' || cell === 'Included by plan';
+  const claimed = (cell: string): boolean =>
+    cell === 'Included' || cell === 'Included by plan' || cell === 'Allowed';
+  if (entry === undefined) return cells.map((cell) => (claimed(cell) ? NOT_IN_CHECKOUT : cell));
+  if (entry.state === 'unknown') return cells.map(() => NOT_IN_CHECKOUT);
   return cells.map((cell) => (claimed(cell) && entry.state !== 'included') ? NOT_IN_CHECKOUT : cell);
+}
+
+/**
+ * Test seam (F21): exported so tests can drive the no-add-on branch directly.
+ * The prop type carries the plans-only invariant (`PlanRow` ids exclude
+ * 'top-up'), so a top-up row cannot be handed in as a plan and planCopyFor
+ * never needs a cast.
+ */
+export function PlanList({ plans, topUp }: { plans: readonly PlanRow[]; topUp: PriceRow | undefined }): JSX.Element {
+  return (
+    <ul>
+      {plans.map((plan) => (
+        <li key={plan.id} style={stack}>
+          <h3>{plan.label}</h3>
+          <p>${plan.monthly} per month · ${plan.includedCredit} included credit · Renews {billingTerms.interval}</p>
+          <p>{planCopyFor(plan.id)}</p>
+          <p>{plan.notes}</p>
+        </li>
+      ))}
+      {topUp === undefined ? null : (
+        <li style={stack}>
+          <p>{topUp.label}: ${topUp.monthly} adds ${topUp.includedCredit}; plan required</p>
+        </li>
+      )}
+    </ul>
+  );
+}
+
+/**
+ * Test seam (F21): exported so tests can drive the positional fail-closed cell
+ * directly. The component gates its own confirmation: a non-null catalog that
+ * fails `catalogMatches` is treated as unvouched — every claimed cell falls
+ * closed — so no caller can print confirmed checkout claims over a catalog the
+ * page would block. `null` is the static page, whose approved copy stands.
+ */
+export function CapabilityTable({ catalog, rows = CAPABILITY_ROWS }: {
+  catalog: CatalogView | null;
+  rows?: readonly (readonly string[])[];
+}): JSX.Element {
+  // M2: the gate lives here, in code, not in caller discipline. A mismatching
+  // non-null catalog is rendered as if it carried no capabilities; the static
+  // page (null) is untouched.
+  const vouched = catalog !== null && catalogMatches(catalog) ? catalog : null;
+  const cellsCatalog: CatalogView | null =
+    catalog !== null && vouched === null ? { ...catalog, capabilities: [] } : vouched;
+  return (
+    // overflow-wrap: anywhere keeps the five-column table inside the gutter at
+    // 200% text: cells break and stack their words instead of widening.
+    <div style={fullWidth}>
+      <table style={{ ...fullWidth, overflowWrap: 'anywhere' }}>
+        <thead>
+          <tr>
+            <th scope="col">Capability</th>
+            {approvedPlans.map((plan) => <th key={plan.id} scope="col">{plan.label}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(([label, token, ...cells]) => {
+            const row = capabilityRow(cellsCatalog, token, cells);
+            return (
+              <tr key={token}>
+                <th scope="row">{label}</th>
+                {/* Missing positional cells fail closed; never undefined. */}
+                {approvedPlans.map((plan, index) => (
+                  <td key={plan.id}>{row[index] ?? NOT_IN_CHECKOUT}</td>
+                ))}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
 }
 
 export interface PlansPageProps {
@@ -109,29 +198,15 @@ export interface PlansPageProps {
 
 /** P01/P02/P04: the plans page — approved prices, closed checkout, capabilities. */
 export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element {
-  const blocked = catalog !== null && !catalogMatches(catalog);
-  const attributed = catalog !== null && !blocked;
+  const attributed = catalog !== null && catalogMatches(catalog);
+  const blocked = catalog !== null && !attributed;
   return (
     <>
       <section style={pagePadding}>
         <h2>Plans</h2>
         <p>{launchOffer.headline}</p>
         <p>{launchOffer.body}</p>
-        <ul>
-          {approvedPlans.map((plan) => (
-            <li key={plan.id} style={stack}>
-              <h3>{plan.label}</h3>
-              <p>${plan.monthly} per month · ${plan.includedCredit} included credit · Renews {billingTerms.interval}</p>
-              <p>{planCopyFor(plan.id)}</p>
-              <p>{plan.notes}</p>
-            </li>
-          ))}
-          {topUpRow === undefined ? null : (
-            <li style={stack}>
-              <p>{topUpRow.label}: ${topUpRow.monthly} adds ${topUpRow.includedCredit}; plan required</p>
-            </li>
-          )}
-        </ul>
+        <PlanList plans={approvedPlans} topUp={topUpRow} />
       </section>
       <section style={pagePadding}>
         <h2>Checkout</h2>
@@ -152,34 +227,7 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
       </section>
       <section style={pagePadding}>
         <h2>Included in each plan</h2>
-        {/* overflow-wrap: anywhere keeps the five-column table inside the
-            gutter at 200% text: cells break and stack their words instead of
-            widening the page — no fixed sizing, no horizontal scroll. */}
-        <div style={fullWidth}>
-          <table style={{ ...fullWidth, overflowWrap: 'anywhere' }}>
-            <thead>
-              <tr>
-                <th scope="col">Capability</th>
-                {approvedPlans.map((plan) => <th key={plan.id} scope="col">{plan.label}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {CAPABILITY_ROWS.map(([label, token, ...cells]) => {
-                const row = capabilityRow(catalog, token, cells);
-                return (
-                  <tr key={token}>
-                    <th scope="row">{label}</th>
-                    {/* Columns derive from the approved plan rows; a missing
-                        positional cell fails closed, never undefined. */}
-                    {approvedPlans.map((plan, index) => (
-                      <td key={plan.id}>{row[index] ?? NOT_IN_CHECKOUT}</td>
-                    ))}
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <CapabilityTable catalog={catalog} />
       </section>
       <section style={pagePadding}>
         <h2>Reviews and Free</h2>
