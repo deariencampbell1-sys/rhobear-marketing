@@ -38,6 +38,14 @@ function safeToken(value: string): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value) ? value : null;
 }
 
+/**
+ * Renders a positive retry-after as a whole number of seconds. `BigInt` keeps
+ * a very large delay out of exponent notation instead of rendering `1e+21`.
+ */
+function wholeSeconds(value: number): string {
+  return BigInt(Math.floor(value)).toString();
+}
+
 export function ServiceError({
   status,
   requestRef,
@@ -46,10 +54,12 @@ export function ServiceError({
 }: ServiceErrorProps): JSX.Element {
   const message = messages[status];
   const reference = safeToken(requestRef) ?? 'not available';
+  // L1: only a positive, finite retry-after is a real instruction — 0 and
+  // negatives fall back to the shell's own next step, never a nonsense clause.
   const hasRetryAfter = retryAfterSeconds !== undefined &&
-    Number.isFinite(retryAfterSeconds) && retryAfterSeconds >= 0;
+    Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0;
   const next = status === 429 && hasRetryAfter
-    ? `Try again after ${retryAfterSeconds} seconds.`
+    ? `Try again after ${wholeSeconds(retryAfterSeconds)} seconds.`
     : message.next;
   const revision = lastCommitted === undefined ? null : safeToken(lastCommitted.revision);
   const committedTime = lastCommitted !== undefined && Number.isFinite(Date.parse(lastCommitted.time))

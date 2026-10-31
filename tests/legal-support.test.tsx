@@ -227,6 +227,21 @@ describe('E04 service error shell', () => {
     expect(html).not.toMatch(/Try again after -/);
   });
 
+  // L1: the boundary is positive-only. 0 is not a delay, so it falls back
+  // like a negative; a very large delay stays a readable whole number of
+  // seconds and never drops into exponent notation.
+  it('renders the seconds clause only for a positive retry-after', () => {
+    const zero = errorMarkup({ status: 429, requestRef: 'req-zero', retryAfterSeconds: 0 });
+    expect(zero).toContain('The service is busy.');
+    expect(zero).toContain('Try again shortly.');
+    expect(zero).not.toContain('0 seconds');
+
+    const huge = errorMarkup({ status: 429, requestRef: 'req-huge', retryAfterSeconds: 1e21 });
+    expect(huge).toContain(`Try again after ${'1' + '0'.repeat(21)} seconds.`);
+    expect(huge).not.toContain('NaN');
+    expect(huge).not.toMatch(/Try again after [\d.]+e[+-]?\d+/i);
+  });
+
   it('never renders hostile provider text stack hosts or paths', () => {
     const props = {
       status: 503,
