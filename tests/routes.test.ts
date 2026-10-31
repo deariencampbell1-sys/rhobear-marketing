@@ -5,10 +5,22 @@ import { routes, notFoundRoute, productPaths, ORIGIN } from '../src/app/routes';
 import { renderRoute } from '../src/app/render';
 import { classifySharedLink, NotFound, type SharedLinkResult } from '../src/app/NotFound';
 import { parseIntent } from '../src/clients/intent/schema';
-import { brand, enginesDestination, heraldOffers, productById, products } from '../src/data';
+import {
+  approvedPriceList,
+  billingTerms,
+  brand,
+  checkoutState,
+  enginesDestination,
+  heraldOffers,
+  launchOffer,
+  planCopy,
+  productById,
+  products,
+} from '../src/data';
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
 import { engineScenarios, engines, enginesById } from '../src/data/engines';
+import { platforms } from '../src/clients/release/schema';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
 import notFoundSource from '../src/app/NotFound.tsx?raw';
@@ -281,11 +293,87 @@ function heraldOfferLabels(): string[] {
   );
 }
 
-// Amendment 1: strip /herald's four approved P03 prices and leave everything
-// else byte-identical — every other owned page keeps the blanket no-price rule.
+// Amendment 1: strip /herald's four approved P03 prices, and W1-05-r1 F17
+// strip /plans' approved prices, leaving everything else byte-identical —
+// every other owned page keeps the blanket no-price rule.
 function withoutHeraldPrices(path: string, text: string): string {
-  if (path !== '/herald') return text;
-  return heraldApprovedTexts().reduce((rest, price) => rest.split(price).join(''), text);
+  if (path === '/herald') {
+    return heraldApprovedTexts().reduce((rest, price) => rest.split(price).join(''), text);
+  }
+  if (path === '/plans') {
+    return plansApprovedPrices().reduce((rest, price) => rest.split(price).join(''), text);
+  }
+  return text;
+}
+
+// W1-05-r1 F17: /plans' approved strings. Every money string derives from the
+// approved rows (approvedPriceList / planCopy / launchOffer / checkoutState);
+// the rest is the page's pinned vocabulary from the W1-03 brief. None of it is
+// read back from rendered DOM (the F11 class). Approved for /plans only.
+function plansApprovedTexts(): string[] {
+  const texts = [
+    launchOffer.headline,
+    launchOffer.body,
+    checkoutState.reason,
+    'Plans',
+    'Checkout',
+    'Continue',
+    'Included in each plan',
+    'Capability',
+    'Reviews and Free',
+    'Prices are the approved list; the amount and tax are confirmed at checkout.',
+    'Catalog mismatch; purchase is blocked.',
+    'Standalone Reviews plans are separate and are published when their cost tests pass.',
+    'Free is local only: pocket models, the harness and Verifier on your own machine. No hosted credit, engine usage, or trial is included.',
+    'Get the local app',
+    'Not included in checkout yet',
+    'Included locally',
+    'Included',
+    'Not included',
+    'Allowed',
+    'Local only',
+    'Included by plan',
+    'Forge MCP',
+    'customer OpenRouter key',
+    'hosted models',
+    'engine samples',
+  ];
+  texts.push(...Object.values(planCopy));
+  for (const row of approvedPriceList) {
+    texts.push(row.label, row.notes);
+    texts.push(row.kind === 'plan'
+      ? `$${row.monthly} per month · $${row.includedCredit} included credit · Renews ${billingTerms.interval}`
+      : `${row.label}: $${row.monthly} adds $${row.includedCredit}; plan required`);
+  }
+  return texts;
+}
+
+// W1-05-r1 F17: /plans' approved money, stripped before the blanket no-price
+// check so the page's own approved prices are not mistaken for invented ones.
+function plansApprovedPrices(): string[] {
+  const prices: string[] = [];
+  for (const row of approvedPriceList) {
+    prices.push(`$${row.monthly}`, `$${row.includedCredit}`);
+  }
+  return prices;
+}
+
+// W1-05-r1 F17: /get's approved strings. Product facts come from src/data and
+// the platform vocabulary from the release schema; each availability run is
+// derived from that product's own label and reason. Approved for /get only.
+function getApprovedTexts(): string[] {
+  const texts = [
+    'unavailable',
+    'unavailable · Joining is not open yet.',
+    'Joining is not open yet.',
+    'Android purchase is not available; use the web alternative.',
+    'We could not identify your device; no platform is selected.',
+    ...platforms,
+  ];
+  for (const product of products) {
+    texts.push(`${product.availability.label} — ${product.availability.reason}`);
+  }
+  return texts;
 }
 
 // W1-01-r1 shared-link fixtures: built through parseIntent-valid fields and
@@ -885,18 +973,27 @@ describe('W1-01-r1 anti-invention and composition', () => {
       // W1-02-r1: the check extends to Engines and every scenario page.
       '/engines',
       ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
+      // W1-05-r1 F17: /plans and /get join the same oracle with their own
+      // approved-string sets (data-derived plus pinned vocabulary).
+      '/plans',
+      '/get',
     ];
     for (const path of owned) {
       // Amendment 1 + 2: the approved-text list gains the four P03 price
       // strings, the derived offer labels and Contact for /herald only, and
-      // Guided setup only / Request setup for /regent only; every other path is
-      // checked against the same list as ever.
+      // Guided setup only / Request setup for /regent only; W1-05-r1 F17 adds
+      // /plans and /get with their own approved-string sets; every other path
+      // is checked against the same list as ever.
       // Regent disclosure strings are already approved in PINNED_LABELS; they are pinned copy, not src/data facts.
       const approvedFor = path === '/herald'
         ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
         : path === '/regent'
           ? [...approved, 'Guided setup only', 'Request setup']
-          : approved;
+          : path === '/plans'
+            ? [...approved, ...plansApprovedTexts()]
+            : path === '/get'
+              ? [...approved, ...getApprovedTexts()]
+              : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         expect(isApprovedText(run, approvedFor), `${path}: unapproved text node "${run}"`).toBe(true);
       }

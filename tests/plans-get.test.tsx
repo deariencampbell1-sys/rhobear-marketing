@@ -348,13 +348,14 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     const { PlansPage } = requireScreens();
     const NIC = 'Not included in checkout yet';
     // One render of the default fixture (only Apollo is carried): 'included'
-    // keeps the three claimed Apollo cells as shipped, while the absent Zeus
-    // entry fails its whole row closed instead of printing the approved claim.
+    // keeps the three claimed Apollo cells as shipped; the absent Zeus entry
+    // fails closed only on the cells the matrix claims ('Included' for Shell
+    // Plus / Space) and keeps its two unclaimed 'Not included' words (F18).
     const defaultHtml = render(<PlansPage catalog={await viewOf(wireCatalog())} />);
     const matrix = tableMatrix(defaultHtml);
     expect(matrix).toHaveLength(8);
     expect(matrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
-    expect(matrix[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+    expect(matrix[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
     // 'not-included' is a real parser state: it flips only the three claimed
     // Apollo cells; Free's unclaimed cell keeps its approved word.
     const notIncluded = tableMatrix(render(
@@ -372,7 +373,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       />,
     ));
     expect(notIncluded[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
-    expect(notIncluded[3]).toEqual(['Zeus', NIC, NIC, NIC, NIC]);
+    expect(notIncluded[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
   });
 
   it('capability table follows approved plan count and order', () => {
@@ -744,6 +745,154 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
         expect(style, style).toContain('min-height:44px');
         expect(style, style).toContain('min-width:44px');
       }
+    }
+  });
+
+  // --------------------------------------- W1-05-r1 review fixes (F16-F22) ----
+
+  it('an unparseable or missing generatedAt blocks instead of throwing (F16)', async () => {
+    const { PlansPage } = requireScreens();
+    const view = await viewOf();
+    // The parser admits only RFC3339 timestamps, so these views model a
+    // corrupted or absent field reaching the page: the page must state the
+    // mismatch instead of calling toISOString() on an invalid date (RangeError
+    // would take the whole route down) and must not render a raw timestamp.
+    const broken: readonly (readonly [string, CatalogView])[] = [
+      ['unparseable timestamp', { ...view, generatedAt: Number.NaN }],
+      ['missing timestamp', { ...view, generatedAt: undefined as unknown as number }],
+    ];
+    for (const [name, catalog] of broken) {
+      expect(() => render(<PlansPage catalog={catalog} />), name).not.toThrow();
+      const html = render(<PlansPage catalog={catalog} />);
+      expect(html, name).toContain('Catalog mismatch; purchase is blocked.');
+      expect(html, name).not.toContain('data-primary="true"');
+      expect(html, name).not.toMatch(/\d{4}-\d{2}-\d{2}T/);
+      expect(html, name).not.toContain('generatedAt');
+    }
+    // A finite timestamp is still attributed: the guard rejects only doubt.
+    const ok = render(<PlansPage catalog={view} />);
+    expect(ok).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(ok).toContain(new Date(GENERATED_AT).toISOString());
+  });
+
+  it('catalog absence closes only checkout claims and keeps local facts (F18)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    const matrix = tableMatrix(render(<PlansPage catalog={await viewOf()} />));
+    // Verifier is the pinned case: the catalog never mentions it, so its three
+    // checkout claims fall closed while 'Included locally' — a local fact, not
+    // a purchase — keeps the approved words.
+    expect(matrix[1]).toEqual(['Verifier', 'Included locally', NIC, NIC, NIC]);
+    // The same rule applies to every absent entry: unclaimed words stay,
+    // claimed cells close.
+    expect(matrix[3]).toEqual(['Zeus', 'Not included', 'Not included', NIC, NIC]);
+    expect(matrix[4]).toEqual(['Forge MCP', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[6]).toEqual(['hosted models', 'Local only', NIC, NIC, NIC]);
+  });
+
+  it('Allowed is a checkout claim the catalog cannot withhold (F19)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // A catalog that withholds the capability cannot let the approved table
+    // keep reading 'Allowed' for the paid plans.
+    const denied = await viewOf(wireCatalog({
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'openrouter-key',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'not-included',
+        },
+      ],
+    }));
+    expect(tableMatrix(render(<PlansPage catalog={denied} />))[5]).toEqual([
+      'customer OpenRouter key', 'Not included', NIC, NIC, NIC,
+    ]);
+    // A catalog that explicitly includes it keeps the permitted wording.
+    const included = await viewOf(wireCatalog({
+      capabilities: [
+        {
+          product: 'builds',
+          capability: 'openrouter-key',
+          plans: ['shell', 'shell-plus', 'space'],
+          state: 'included',
+        },
+      ],
+    }));
+    expect(tableMatrix(render(<PlansPage catalog={included} />))[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
+  it('non-USD or unapproved-region catalogs do not match (F20)', async () => {
+    const { PlansPage } = requireScreens();
+    const view = await viewOf();
+    // The parser only admits USD / US (src/clients/money/schema.ts), so these
+    // views model the fields the review found unguarded: a page printing $ is
+    // never blessed by a catalog whose money or region it cannot vouch for.
+    const cases: readonly (readonly [string, CatalogView])[] = [
+      ['non-USD currency', { ...view, currency: 'EUR' } as unknown as CatalogView],
+      ['unapproved region', { ...view, region: 'CA' } as unknown as CatalogView],
+    ];
+    for (const [name, catalog] of cases) {
+      const html = render(<PlansPage catalog={catalog} />);
+      expect(html, name).toContain('Catalog mismatch; purchase is blocked.');
+      expect(html, name).not.toContain('data-primary="true"');
+      expect(html, name).not.toContain(CATALOG_VERSION);
+      expect(html, name).not.toContain(new Date(GENERATED_AT).toISOString());
+    }
+  });
+
+  it('defensive branches render their fail-closed wording (F21)', () => {
+    const { PlanList, CapabilityTable, GetPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+
+    // 1. No add-on row: the four approved plans still render, no orphan line
+    //    and no empty list item.
+    const noTopUp = render(<PlanList plans={approvedPlanRows} topUp={undefined} />);
+    expect((noTopUp.match(/<h3>/g) ?? [])).toHaveLength(4);
+    expect(noTopUp).not.toContain('Top-up');
+    expect(noTopUp).not.toContain('undefined');
+
+    // 2. A short capability row: the positional fallback fills every missing
+    //    plan column with the fail-closed cell, never undefined.
+    const short = render(<CapabilityTable catalog={null} rows={[['Verifier', 'verifier']]} />);
+    const matrix = tableMatrix(short);
+    expect(matrix).toHaveLength(2);
+    expect(matrix[1]).toEqual(['Verifier', NIC, NIC, NIC, NIC]);
+    expect(short).not.toContain('undefined');
+
+    // 3. Every release unavailable and the device unknown: the device
+    //    sentence renders and no platform is featured.
+    const allUnavailable: readonly Release[] = products.map((product) =>
+      releaseRow(product.id, 'windows', { availability: 'unavailable' }),
+    );
+    const unknown = render(<GetPage releases={allUnavailable} hints={unknownHints} />);
+    expect(
+      occurrences(unknown, 'We could not identify your device; no platform is selected.'),
+    ).toBe(1);
+    expect(unknown).not.toContain('data-primary="true"');
+  });
+
+  it('planCopyFor has no top-up arm and plans never include the add-on (F22)', () => {
+    const { PlansPage } = requireScreens();
+    // Grep proof: the copy resolver's own definition carries no 'top-up'
+    // branch, because the plans-only filter is the invariant.
+    const definition = plansGetSource
+      .split('\n')
+      .find((line) => line.includes('const planCopyFor'));
+    expect(definition).toBeDefined();
+    expect(definition).not.toContain("'top-up'");
+    // The filter's output never contains the add-on id, so the narrowed type
+    // is not papering over a live path.
+    expect(approvedPlanRows.map((plan) => plan.id)).not.toContain('top-up');
+    const html = render(<PlansPage />);
+    expect((html.match(/<h3>/g) ?? [])).toHaveLength(4);
+    const topUp = approvedPriceList.find((row) => row.kind === 'add-on');
+    if (topUp === undefined) throw new Error('the approved add-on row is missing');
+    expect(html).toContain(`${topUp.label}: $${topUp.monthly} adds $${topUp.includedCredit}; plan required`);
+    for (const copy of Object.values(planCopy)) {
+      expect(html).toContain(copy);
     }
   });
 });
