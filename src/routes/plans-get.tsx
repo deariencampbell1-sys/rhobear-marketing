@@ -65,12 +65,13 @@ function catalogMatches(catalog: CatalogView): boolean {
   // F16: an unparseable or missing timestamp is not attributable — the page
   // states the mismatch instead of calling toISOString() on an invalid date.
   if (!Number.isFinite(catalog.generatedAt)) return false;
-  // F20: attribution needs the catalog's own money and region; a view that
-  // carries either must carry the parser's only admitted values (USD / US,
-  // src/clients/money/schema.ts).
+  // F20/M1: attribution needs the catalog's own money and region, and needs
+  // them present — a view that reaches the page without the parser's admitted
+  // values (USD / US, src/clients/money/schema.ts) is exactly the corrupt-view
+  // case, so absence closes checkout claims exactly as a wrong value does.
   const attributed = catalog as CatalogView & { currency?: unknown; region?: unknown };
-  if (attributed.currency !== undefined && attributed.currency !== 'USD') return false;
-  if (attributed.region !== undefined && attributed.region !== 'US') return false;
+  if (attributed.currency !== 'USD') return false;
+  if (attributed.region !== 'US') return false;
   if (catalog.stale || !catalog.purchasable || catalog.plans.length !== approvedPlans.length) return false;
   return approvedPlans.every((plan) => {
     const row = catalog.plans.find((entry) => entry.sku === plan.id);
