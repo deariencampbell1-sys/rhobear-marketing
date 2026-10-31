@@ -15,6 +15,12 @@ const errorSourceModules = import.meta.glob('../src/app/ServiceError.tsx', {
   eager: true,
 }) as Record<string, string>;
 const errorSource = errorSourceModules['../src/app/ServiceError.tsx'] ?? '';
+const appSourceModules = import.meta.glob('../src/app/App.tsx', {
+  query: '?raw',
+  import: 'default',
+  eager: true,
+}) as Record<string, string>;
+const appSource = appSourceModules['../src/app/App.tsx'] ?? '';
 
 function requireServiceError(): ServiceErrorModule {
   if (serviceError === null) throw new Error('src/app/ServiceError.tsx is not on this commit yet');
@@ -148,6 +154,36 @@ describe('shared footer', () => {
       expect(labels.length, path).toBeGreaterThan(0);
       for (const label of labels) expect(main, `${path}: ${label}`).not.toContain(label);
     }
+  });
+
+  // L2: the 404 path also composes the shared footer; pin the landmark and the
+  // exact approved destination set (anti-invention: no unapproved destination).
+  it('composes the 404 path with the same approved footer destinations', () => {
+    const expected = [
+      ...products.map((product) => `/${product.id}`),
+      '/plans',
+      '/get',
+      '/support',
+      '/privacy',
+      '/terms',
+    ];
+    const html = renderRoute('/404');
+    const footer = sharedFooter(html);
+    expect(footer).not.toBe('');
+    const targets = [...footer.matchAll(/href="([^"]+)"/g)].map((match) => match[1]);
+    expect(targets).toEqual(expected);
+    expect(targets).toEqual(
+      [...sharedFooter(renderRoute('/')).matchAll(/href="([^"]+)"/g)].map((match) => match[1]),
+    );
+    expect(footer).not.toMatch(/©|&copy;|trademark|company|social|newsletter|cookie/i);
+    expect(footer).not.toMatch(/<input|<form/i);
+  });
+});
+
+describe('App source', () => {
+  // L2: the published diff flagged a missing trailing newline at App.tsx EOF.
+  it('ends App.tsx with a trailing newline', () => {
+    expect(appSource.endsWith('\n')).toBe(true);
   });
 });
 
