@@ -14,13 +14,26 @@ import {
   type DemoPresentation,
   type ScenarioRegistryRow,
 } from '../src/clients/demo';
-import {
+// W1-08-r1: the registry is read through its namespace. The red commit runs on
+// a base whose module has no derivation yet; keeping the read dynamic lets the
+// existing tests run and lets each new test fail on its own missing export
+// instead of the whole file failing to load.
+import * as enginesData from '../src/data/engines';
+import type { ScenarioPublicationState } from '../src/data/engines';
+import enginesSource from '../src/routes/engines.tsx?raw';
+
+const {
   engineScenarios,
   engines,
   enginesById,
   enginesDestination,
-} from '../src/data/engines';
-import enginesSource from '../src/routes/engines.tsx?raw';
+  runLabels,
+  engineLabels,
+  scenarioPresentation,
+  pendingProofPresentation,
+  unknownScenarioPresentation,
+  SCENARIO_PUBLICATION_STATES,
+} = enginesData;
 
 // Fixed clock and contract-complete fixture fields, in the style of
 // tests/demo-schema.test.ts: immutable revision-anchored HTTPS URLs, complete
@@ -144,6 +157,16 @@ function isApprovedText(run: string, approved: readonly string[]): boolean {
   return approved.some((approvedText) => normaliseText(approvedText) === normalised);
 }
 
+/**
+ * F11 (W1-08-r1): the brief's engines/proof label inventory, read from the one
+ * product export src/routes/engines.tsx renders from. This is the oracle's
+ * only source of pinned vocabulary — never retyped here — so the page and the
+ * oracle cannot drift at green time.
+ */
+function pinnedLabels(): string[] {
+  return [...Object.values(runLabels), ...Object.values(engineLabels)];
+}
+
 describe('W1-02-r1 engines and proof states', () => {
   it('engines index renders exactly seven engines in registry order', () => {
     const html = renderToStaticMarkup(createElement(EnginesPage));
@@ -169,18 +192,9 @@ describe('W1-02-r1 engines and proof states', () => {
     const headings = [...decoded.matchAll(/<h2>([^<]+)<\/h2>/g)].map((match) => match[1]);
     expect(headings).toEqual([...engines.map((engine) => engine.publicName), 'Live samples']);
     // No invented description: every visible run is an approved data string
-    // or one of the labels/sentences the brief pins.
-    const pinned = [
-      'Builds mini app',
-      '@ MCP',
-      'Recording in review',
-      'The real recording, captions and transcript appear after approval. No mock or stock clip is shown.',
-      'Open proof shell',
-      'Live samples',
-      'Try a sample',
-      'Samples open when the engine service and quota are live.',
-      'Plans',
-    ];
+    // or one of the labels/sentences the brief pins (F11: derived, not a
+    // second hand-typed list).
+    const pinned = pinnedLabels();
     const approved = [
       enginesDestination.whatItIs,
       ...engines.flatMap((engine) => [engine.publicName, engine.mcpHandle]),
@@ -537,5 +551,130 @@ describe('W1-07-r1 anti-invention oracle (F13)', () => {
   it('accepts the approved string after whitespace normalisation', () => {
     expect(isApprovedText('Teams at work', APPROVED)).toBe(true);
     expect(isApprovedText('Teams\n at  work', APPROVED)).toBe(true);
+  });
+});
+
+// W1-08-r1 (F8): the presentation is derived from the registry row by one
+// function, exhaustive over the registry's publication union and failing closed
+// to `invalid` for anything that union does not name. The sentinel is driven by
+// the union itself, never a second hand-written list. W1-08-r1 (F11): the
+// anti-invention oracle's pinned vocabulary is read from the one product
+// inventory the route renders from, so page and oracle cannot drift.
+describe('W1-08-r1 derived presentation and oracle provenance (F8/F11)', () => {
+  const NO_PLAYABLE_AFFORDANCE = /<video|<iframe|<audio|<source|<button/i;
+
+  it('derives a defined, total proof for every publication state in the union', () => {
+    for (const state of SCENARIO_PUBLICATION_STATES) {
+      const row = { scenarioId: SCENARIO_ID, publicationState: state };
+      let presentation: DemoPresentation | undefined;
+      expect(() => {
+        presentation = scenarioPresentation(row);
+      }, `${state}: no throw`).not.toThrow();
+      expect(presentation, `${state}: presentation defined`).toBeDefined();
+      expect(typeof presentation?.state, `${state}: state is a string`).toBe('string');
+      // The derivation reads the row, not a hidden global: another row with the
+      // same state derives the same presentation.
+      expect(
+        scenarioPresentation({ ...row, scenarioId: 'other-01' }),
+        `${state}: pure in the row`,
+      ).toEqual(presentation);
+    }
+  });
+
+  it('renders the sentinel proof per state with no playable affordance', () => {
+    // One entry per union member. `Partial` keeps a widened union a *test*
+    // failure here as well as a compile error in the derivation.
+    const sentinels: Partial<
+      Record<
+        ScenarioPublicationState,
+        { state: DemoPresentation['state']; fragments: readonly string[] }
+      >
+    > = {
+      'footage-pending': {
+        state: 'footage-pending',
+        fragments: [engineLabels.pendingTitle, engineLabels.pendingBody],
+      },
+    };
+    for (const state of SCENARIO_PUBLICATION_STATES) {
+      const expected = sentinels[state];
+      expect(expected, `${state}: sentinel declared`).toBeDefined();
+      if (expected === undefined) continue;
+      const presentation = scenarioPresentation({ scenarioId: SCENARIO_ID, publicationState: state });
+      expect(presentation.state, `${state}: presentation state`).toBe(expected.state);
+      const html = renderToStaticMarkup(createElement(ProofBlock, { presentation }));
+      for (const fragment of expected.fragments) {
+        expect(html, `${state}: renders ${fragment}`).toContain(fragment);
+      }
+      expect(html, `${state}: no playable affordance`).not.toMatch(NO_PLAYABLE_AFFORDANCE);
+    }
+  });
+
+  it('fails closed for a registry row whose state is outside the union', () => {
+    // A hostile fixture: the cast is the only way a non-union value reaches the
+    // derivation, and it must not fabricate the pending proof for it.
+    const rogue = { scenarioId: SCENARIO_ID, publicationState: 'approved' as never };
+    const presentation = scenarioPresentation(rogue);
+    expect(presentation).toEqual({ state: 'invalid', reason: 'bad-publication-state' });
+    expect(presentation).not.toEqual(pendingProofPresentation);
+    const html = renderToStaticMarkup(createElement(ProofBlock, { presentation }));
+    expect(html).toContain(engineLabels.invalidTitle);
+    expect(html).toContain('bad-publication-state');
+    expect(html).not.toMatch(NO_PLAYABLE_AFFORDANCE);
+  });
+
+  it('keeps the unknown-scenario fail-closed presentation', () => {
+    expect(unknownScenarioPresentation).toEqual({ state: 'invalid', reason: 'unknown-scenario' });
+    const html = renderToStaticMarkup(createElement(ScenarioPage, { scenarioId: 'invented-99' }));
+    expect(html).toContain(engineLabels.invalidTitle);
+    expect(html).toContain('unknown-scenario');
+    expect(html).toContain('href="/support"');
+    expect(html).not.toMatch(NO_PLAYABLE_AFFORDANCE);
+  });
+
+  it('derives every presentation in the route; no literal or reason remains', () => {
+    // F8 structural proof: the route module constructs no DemoPresentation
+    // object literal and hard-codes no proof reason.
+    expect(enginesSource).not.toMatch(/\{\s*state\s*:\s*['"]/);
+    expect(enginesSource).not.toMatch(/reason\s*:\s*['"]/);
+    // ...because it consumes the registry's one derivation and fail-closed
+    // values. (A `case` over the presentation union is a discriminant, not a
+    // fabricated reason.)
+    expect(enginesSource).toContain('scenarioPresentation');
+    expect(enginesSource).toContain('pendingProofPresentation');
+    expect(enginesSource).toContain('unknownScenarioPresentation');
+  });
+
+  it('builds the oracle allowlist from the one label inventory (F11)', () => {
+    // The allowlist is the inventory plus the registry's data facts — read from
+    // the same export the route renders from, never a second hand-typed list.
+    const approved = [
+      enginesDestination.whatItIs,
+      ...engines.flatMap((engine) => [engine.publicName, engine.mcpHandle]),
+      ...pinnedLabels(),
+    ];
+    const html = renderToStaticMarkup(createElement(EnginesPage));
+    const rendered = [...new Set(visibleRuns(html))];
+    for (const run of rendered) {
+      expect(isApprovedText(run, approved), `unapproved text node "${run}"`).toBe(true);
+    }
+    // The index's rendered vocabulary is exactly the approved set: no run is
+    // accepted that the page does not render, and none is missing.
+    const expected = [
+      enginesDestination.whatItIs,
+      ...engines.flatMap((engine) => [engine.publicName, engine.mcpHandle]),
+      ...Object.values(runLabels),
+      engineLabels.pendingTitle,
+      engineLabels.pendingBody,
+      engineLabels.openProofShell,
+      engineLabels.liveSamples,
+      engineLabels.trySample,
+      engineLabels.samplesPending,
+      engineLabels.plans,
+    ];
+    expect(rendered.sort()).toEqual([...new Set(expected)].sort());
+    // Negative control: a label injected past the inventory fails the guard.
+    expect([...rendered, 'Buy now'].filter((run) => !isApprovedText(run, approved))).toEqual([
+      'Buy now',
+    ]);
   });
 });
