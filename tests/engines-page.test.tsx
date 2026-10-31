@@ -129,6 +129,18 @@ function visibleRuns(fragment: string): string[] {
     .filter((text) => text !== '');
 }
 
+/**
+ * W1-07-r1 (F5/F13): the anti-invention oracle. A visible run is approved
+ * only when it equals an approved string after whitespace normalisation —
+ * never because it contains, or is contained by, one. This red commit moves
+ * the loop's old containment test here unchanged; the negative control below
+ * is what fails until the comparison is tightened to equality.
+ */
+function isApprovedText(run: string, approved: readonly string[]): boolean {
+  const normalised = run.toLowerCase();
+  return approved.some((approvedText) => approvedText.toLowerCase().includes(normalised));
+}
+
 describe('W1-02-r1 engines and proof states', () => {
   it('engines index renders exactly seven engines in registry order', () => {
     const html = renderToStaticMarkup(createElement(EnginesPage));
@@ -172,10 +184,7 @@ describe('W1-02-r1 engines and proof states', () => {
       ...pinned,
     ];
     for (const run of visibleRuns(html)) {
-      const hit = approved.some((approvedText) =>
-        approvedText.toLowerCase().includes(run.toLowerCase()),
-      );
-      expect(hit, `unapproved text node "${run}"`).toBe(true);
+      expect(isApprovedText(run, approved), `unapproved text node "${run}"`).toBe(true);
     }
   });
 
@@ -445,5 +454,85 @@ describe('W1-02-r1 engines and proof states', () => {
         expect(style, style).toContain('min-width:44px');
       }
     }
+  });
+});
+
+// W1-07-r1 (F9): the metadata gate's publicationState clause and the
+// package-omitted path. Identity fields match exactly; only the publication
+// state separates the first case from the approved one, so the omission is
+// the clause under test — not a re-run of the identity mismatch cases.
+describe('W1-07-r1 metadata gate (F9)', () => {
+  it('omits the package metadata for a revoked package whose identity fields match', () => {
+    const presentation = playablePresentation();
+    const scenario = registryRow();
+    const revoked = demoPackage({ publicationState: 'revoked' });
+    // The playable proof itself renders...
+    const html = renderToStaticMarkup(
+      createElement(ProofBlock, { presentation, scenario, package: revoked }),
+    );
+    expect(html).toContain(`src="${posterUrl}"`);
+    expect(html).toContain('Captions');
+    // ...but the revoked package's sourceApp/approval metadata is omitted: the
+    // gate demands publicationState 'approved' as well as matching identity.
+    expect(html).not.toContain('capturd');
+    expect(html).not.toContain('Owner');
+    expect(html).not.toContain(APPROVED_AT);
+    expect(html).not.toMatch(/verified/i);
+  });
+
+  it('renders the playable proof with no package metadata when package is omitted', () => {
+    const html = renderToStaticMarkup(
+      createElement(ProofBlock, { presentation: playablePresentation(), scenario: registryRow() }),
+    );
+    // The real proof renders; no optional package field is invented or shown.
+    expect(html).toContain(`src="${posterUrl}"`);
+    expect(html).toContain('Captions');
+    expect(html).not.toContain('capturd');
+    expect(html).not.toContain('Owner');
+    expect(html).not.toContain(APPROVED_AT);
+    expect(html).not.toMatch(/verified/i);
+  });
+});
+
+// W1-07-r1 (F10): the browser-acceptance contract — exactly one
+// data-primary="true" container per rendered page, wrapping the first engine's
+// action row on /engines and nothing else.
+describe('W1-07-r1 data-primary contract (F10)', () => {
+  it('has exactly one data-primary container wrapping the first engine action row', () => {
+    const html = renderRoute('/engines');
+    const parts = html.split('data-primary="true"');
+    expect(parts.length - 1, 'exactly one data-primary container').toBe(1);
+    const container = parts[1].slice(0, parts[1].indexOf('</div>'));
+    const first = engines[0];
+    expect(container).toContain('Open proof shell');
+    expect(container).toContain(`href="/engines/${first.scenarioIds[0]}"`);
+    // The container is inside the first engine's section, before the second's.
+    const sectionStart = html.indexOf(`<h2>${first.publicName}</h2>`);
+    const sectionEnd = html.indexOf('</section>', sectionStart);
+    const containerStart = html.indexOf('data-primary="true"');
+    expect(sectionStart).toBeGreaterThanOrEqual(0);
+    expect(containerStart).toBeGreaterThan(sectionStart);
+    expect(containerStart).toBeLessThan(sectionEnd);
+    // No second container anywhere on the page.
+    expect(html.indexOf('data-primary="true"', containerStart + 1)).toBe(-1);
+  });
+});
+
+// W1-07-r1 (F13): the same negative control as tests/routes.test.ts —
+// approval is equality after whitespace normalisation, never containment.
+describe('W1-07-r1 anti-invention oracle (F13)', () => {
+  const APPROVED = ['Teams at work'];
+
+  it('rejects an invented string that contains an approved one', () => {
+    expect(isApprovedText('Teams at work — buy now', APPROVED)).toBe(false);
+  });
+
+  it('rejects a substring of an approved string', () => {
+    expect(isApprovedText('Teams', APPROVED)).toBe(false);
+  });
+
+  it('accepts the approved string after whitespace normalisation', () => {
+    expect(isApprovedText('Teams at work', APPROVED)).toBe(true);
+    expect(isApprovedText('Teams\n at  work', APPROVED)).toBe(true);
   });
 });

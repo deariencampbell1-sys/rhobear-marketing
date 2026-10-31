@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { renderToStaticMarkup } from 'react-dom/server';
 // W0-04c1 — every state the release resolver can produce, proven against the
 // real classify() order in src/clients/release/resolve.ts. One manifest built
 // from the exported ReleaseManifest type so tsc keeps the rows honest; fixed
@@ -9,6 +10,7 @@ import {
   type DeviceHints,
   type ReleaseRow,
 } from '../src/clients/release/resolve';
+import { GetPage } from '../src/routes/plans-get';
 import {
   RELEASE_SCHEMA,
   type Platform,
@@ -611,5 +613,58 @@ describe('resolveReleases — desktop Mac, store host, leftover artifact', () =>
     expect(ios.state).toBe('store');
     expect(ios.storeUrl).toBe(STORE.ios);
     expect(ios.artifactUrl).toBeNull();
+  });
+});
+
+// W1-07-r1 (F15): the storeUrl https-mirror property. The schema refuses http
+// and javascript at parse time (tests/release-schema.test.ts); this is the
+// resolver's belt for a Release[] that bypassed the parser, mirroring the
+// existing 'insecure artifact' row exactly — plus the rendered proof that no
+// href can reach the shelf, and the allowed-https positive control.
+describe('resolveReleases — storeUrl is https-only', () => {
+  const UNSAFE_STORE_URLS: readonly (readonly [string, string])[] = [
+    ['http', 'http://apps.apple.com/app/rhobear/id1234567890'],
+    ['javascript', 'javascript:alert(1)'],
+  ];
+  const WINDOWS_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)';
+  const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X)';
+
+  it('never marks an http or javascript store row as a store', () => {
+    for (const [name, storeUrl] of UNSAFE_STORE_URLS) {
+      const manifest: ReleaseManifest = {
+        releases: MANIFEST.releases.map((release) =>
+          release.platform === 'ios' ? { ...release, storeUrl } : release,
+        ),
+      };
+      const insecure = rowWhere(rowsOf(manifest), (r) => r.platform === 'ios');
+      expect(insecure.state, name).toBe('unavailable');
+      expect(insecure.reason, name).toBe('insecure-artifact');
+      expect(insecure.storeUrl, name).toBeNull();
+      expect(insecure.artifactUrl, name).toBeNull();
+    }
+  });
+
+  it('renders no href for an http or javascript store URL, and names the refusal', () => {
+    for (const [name, storeUrl] of UNSAFE_STORE_URLS) {
+      const release = row('ios', { product: 'builds', artifactUrl: null, storeUrl, signer: null });
+      const html = renderToStaticMarkup(GetPage({
+        releases: [release],
+        hints: { userAgent: WINDOWS_UA },
+      }));
+      expect(html, name).toContain('insecure-artifact');
+      expect(html, name).not.toContain(storeUrl);
+      expect(html, name).not.toMatch(/href="https?:\/\//);
+      expect(html, name).not.toContain('Open store');
+    }
+  });
+
+  it('still renders the href for the allowed https store URL', () => {
+    const release = row('ios', { product: 'builds', artifactUrl: null, storeUrl: STORE.ios, signer: null });
+    const html = renderToStaticMarkup(GetPage({
+      releases: [release],
+      hints: { userAgent: IPHONE_UA },
+    }));
+    expect(html).toContain(`href="${STORE.ios}"`);
+    expect(html).toContain('Open store');
   });
 });
