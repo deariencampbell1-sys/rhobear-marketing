@@ -24,7 +24,7 @@ import {
 } from '../src/data';
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
-import { engineScenarios, engines, enginesById } from '../src/data/engines';
+import { engineLabels, engineScenarios, engines, enginesById } from '../src/data/engines';
 import { platforms } from '../src/clients/release/schema';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
@@ -229,13 +229,11 @@ const PINNED_LABELS = [
   'Try a sample',
   'Samples open when the engine service and quota are live.',
   'Back to Engines',
-  // W1-07-r1 (F5/F13): equality surfaced one string the containment matcher
-  // had been accepting indirectly — /engines renders the permitted Plans link
-  // with the exact label 'Plans' (W1-02's own pinned list already names it),
-  // while this inventory only carried 'Plans and prices' as the /plans route
-  // title. The label is copied from that existing approval, never invented;
-  // it is reported in this commit body rather than widened silently.
-  'Plans',
+  // W1-12-r1 (F28): the /engines Plans link is approved from its own rendered
+  // source — engineLabels.plans in src/data/engines.ts, the W1-08-r1 (F11)
+  // one-copy inventory src/routes/engines.tsx renders from — never retyped
+  // here, so the approval is checkable in this diff instead of asserted.
+  engineLabels.plans,
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */
@@ -559,10 +557,14 @@ describe('W1-07-r1 registry robustness (F12)', () => {
         engineScenarios: [
           ...actual.engineScenarios,
           {
+            // W1-12-r1 (F27): clone a row that otherwise renders a real proof;
+            // only the engine id (and the scenario id that names its route)
+            // differs, while the publication state and source stay the
+            // registry's — so the unknown engine is the sole possible cause of
+            // the fail-closed output, never the publication state.
+            ...actual.engineScenarios[0],
             scenarioId: 'malformed-01',
             engineId: 'no-such-engine',
-            publicationState: 'footage-pending' as const,
-            source: actual.enginesDestination.source,
           },
         ],
       };
@@ -578,11 +580,17 @@ describe('W1-07-r1 registry robustness (F12)', () => {
       expect(guardedFindRoute('/engines/malformed-01')?.title).toBe('Proof unavailable');
       const bad = renderGuarded('/engines/malformed-01');
       expect(bad).toContain('Proof unavailable');
+      // W1-12-r1 (F27): name the missing-engine reason, so the fail-closed
+      // output can never be satisfied by the publication-state path instead.
+      expect(bad).toContain('unknown-scenario');
+      expect(bad).not.toContain('bad-publication-state');
       expect(bad).toContain('href="/support"');
       // ...and the good page keeps its real registry title and content.
       expect(guardedFindRoute('/engines/teams-01')?.title).toBe('Teams proof');
       const good = renderGuarded('/engines/teams-01');
-      expect(good).toContain('Teams');
+      // W1-12-r1 (F30): the exact rendered registry heading, not a bare
+      // substring the route title alone could satisfy.
+      expect(good).toContain('<h2>Teams</h2>');
       expect(good).toContain('Recording in review');
       expect(good).not.toContain('Proof unavailable');
     } finally {
