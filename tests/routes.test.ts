@@ -339,7 +339,7 @@ function stripApprovedMoneyTokens(text: string, approvedAmounts: readonly string
 // Amendment 1: strip /herald's four approved P03 prices, and W1-05-r1 F17
 // strip /plans' approved prices, leaving everything else byte-identical —
 // every other owned page keeps the blanket no-price rule.
-function withoutHeraldPrices(path: string, text: string): string {
+function withoutApprovedPrices(path: string, text: string): string {
   if (path === '/herald') return stripApprovedMoneyTokens(text, heraldApprovedAmounts());
   if (path === '/plans') return stripApprovedMoneyTokens(text, plansApprovedAmounts());
   return text;
@@ -839,7 +839,7 @@ describe('W1-01-r1 screens', () => {
       }
       // No price on any owned page — /herald alone shows its own P03 offer
       // strings (amendment 1); once they are removed no other price remains.
-      expect(withoutHeraldPrices(path, html), path).not.toMatch(/\$/);
+      expect(withoutApprovedPrices(path, html), path).not.toMatch(/\$/);
     }
 
     // Forge: a real #kits section holding Forge's own availability facts —
@@ -1062,7 +1062,7 @@ describe('W1-01-r1 anti-invention and composition', () => {
       }
       const html = renderRoute(path);
       const text = visibleText(html);
-      expect(withoutHeraldPrices(path, text), path).not.toMatch(/\$/);
+      expect(withoutApprovedPrices(path, text), path).not.toMatch(/\$/);
       expect(text, path).not.toMatch(/\bImagine\b|\bLabs\b|Blueprint mode|\bNeo\b/);
       expect(text, path).not.toMatch(
         /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
@@ -1134,7 +1134,7 @@ describe('W1-01-r1 anti-invention and composition', () => {
       for (const run of visibleRuns(mainRegion(html))) {
         expect(isApprovedText(run, approvedFor), `${name}: unapproved text node "${run}"`).toBe(true);
       }
-      expect(withoutHeraldPrices('/plans', visibleText(html)), name).not.toMatch(/\$/);
+      expect(withoutApprovedPrices('/plans', visibleText(html)), name).not.toMatch(/\$/);
     }
   });
 
