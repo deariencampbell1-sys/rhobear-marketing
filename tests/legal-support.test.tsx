@@ -182,6 +182,51 @@ describe('E04 service error shell', () => {
     expect(html).toContain('2026-10-31T00:00:00Z');
   });
 
+  // M3: the pair renders only when both halves are usable — neither half may
+  // leak on its own.
+  it('renders no half pair when only one of revision and time is usable', () => {
+    const unparseableTime = errorMarkup({
+      status: 503,
+      requestRef: 'req-bad-time',
+      lastCommitted: { revision: 'abc', time: 'not-a-date' },
+    });
+    expect(unparseableTime).not.toContain('Last committed');
+    expect(unparseableTime).not.toContain('abc');
+    expect(unparseableTime).not.toContain('not-a-date');
+
+    const unparseableRevision = errorMarkup({
+      status: 503,
+      requestRef: 'req-bad-revision',
+      lastCommitted: { revision: 'a b', time: '2026-10-31T00:00:00Z' },
+    });
+    expect(unparseableRevision).not.toContain('Last committed');
+    expect(unparseableRevision).not.toContain('a b');
+    expect(unparseableRevision).not.toContain('2026-10-31T00:00:00Z');
+  });
+
+  // M3: a non-finite delay is not a delay — it falls back and never renders.
+  it('treats non-finite retry-after values as no delay', () => {
+    for (const retryAfterSeconds of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const html = errorMarkup({
+        status: 429,
+        requestRef: 'req-nonfinite',
+        retryAfterSeconds,
+      });
+      expect(html, String(retryAfterSeconds)).toContain('Try again shortly.');
+      expect(html, String(retryAfterSeconds)).not.toMatch(/after .* seconds/i);
+      expect(html, String(retryAfterSeconds)).not.toContain(String(retryAfterSeconds));
+    }
+  });
+
+  // M3: a negative delay falls back to the shell's own next step.
+  it('falls back for a negative retry-after instead of rendering a negative clause', () => {
+    const html = errorMarkup({ status: 429, requestRef: 'req-negative', retryAfterSeconds: -1 });
+    expect(html).toContain('The service is busy.');
+    expect(html).toContain('Try again shortly.');
+    expect(html).not.toContain('-1 seconds');
+    expect(html).not.toMatch(/Try again after -/);
+  });
+
   it('never renders hostile provider text stack hosts or paths', () => {
     const props = {
       status: 503,
