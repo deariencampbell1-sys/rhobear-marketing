@@ -9,6 +9,7 @@ import { brand, enginesDestination, heraldOffers, productById, products } from '
 // W1-02-r1: the scenario routes and their titles derive from the real
 // registry — ids and order are imported here, never hand-written.
 import { engineScenarios, engines, enginesById } from '../src/data/engines';
+import { checkoutState, legalPages, legalStatus, retention } from '../src/data/legal';
 // W1-01-r1 test 8 reads the owned sources as text (the repo's ?raw style).
 import routesSource from '../src/routes/index.tsx?raw';
 import notFoundSource from '../src/app/NotFound.tsx?raw';
@@ -186,7 +187,7 @@ const PINNED_LABELS = [
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */
-function approvedStrings(): string[] {
+function approvedStrings(includeLegal = false): string[] {
   const approved = [
     brand.name,
     brand.tagline,
@@ -213,6 +214,16 @@ function approvedStrings(): string[] {
     approved.push(engine.publicName, engine.mcpHandle);
   }
   approved.push(enginesDestination.whatItIs);
+  if (includeLegal) {
+    approved.push(
+      legalStatus.reason,
+      checkoutState.reason,
+      retention.afterPaidPeriod,
+      retention.then,
+      retention.deletion,
+      ...legalPages.map((page) => page.summary),
+    );
+  }
   return approved;
 }
 
@@ -750,12 +761,16 @@ describe('W1-01-r1 offline and recovery shell', () => {
 describe('W1-01-r1 anti-invention and composition', () => {
   it('anti-invention allows only approved data and pinned labels', () => {
     const approved = approvedStrings();
+    const legalApproved = approvedStrings(true);
     const owned = [
       '/',
       ...products.map((product) => `/${product.id}`),
       // W1-02-r1: the check extends to Engines and every scenario page.
       '/engines',
       ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
+      '/privacy',
+      '/terms',
+      '/support',
     ];
     for (const path of owned) {
       // Amendment 1 + 2: the approved-text list gains the four P03 price
@@ -767,7 +782,9 @@ describe('W1-01-r1 anti-invention and composition', () => {
         ? [...approved, ...heraldApprovedTexts(), ...heraldOfferLabels(), 'Contact']
         : path === '/regent'
           ? [...approved, 'Guided setup only', 'Request setup']
-          : approved;
+          : path === '/privacy' || path === '/terms' || path === '/support'
+            ? legalApproved
+            : approved;
       for (const run of visibleRuns(mainRegion(renderRoute(path)))) {
         const hit = approvedFor.some((approvedText) =>
           approvedText.toLowerCase().includes(run.toLowerCase()),
