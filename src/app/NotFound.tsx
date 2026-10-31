@@ -5,7 +5,7 @@
 // old routes, no stored-provider flow: the classifier below is pure, marks
 // nothing consumed, and the requested URL is never reflected into the DOM.
 import { RouteSkeleton } from './RouteSkeleton';
-import { productPaths, routes } from './routes';
+import { findRoute, productPaths, routes } from './routes';
 import { OfflinePanel } from '../routes';
 import {
   isCanonicalReturnRoute,
@@ -100,10 +100,14 @@ const recoveryLabels = {
 /** The classified shared link, as one exact label or one ordinary link. */
 function RecoveryNote({ recovery }: { recovery: SharedLinkResult }) {
   if (recovery.kind === 'destination') {
+    // F6: an anchor exists only for a route-table destination, and its label
+    // is that route's own title — never a fallback, never the requested path.
+    // An unmapped destination renders the note with no anchor at all.
+    const route = findRoute(recovery.path);
+    if (!route) return <p>Continue to the verified destination</p>;
     return (
       <p>
-        Continue to the verified destination{' '}
-        <a href={recovery.path}>{linkLabel[recovery.path] ?? linkLabel['/']}</a>
+        Continue to the verified destination <a href={route.path}>{route.title}</a>
       </p>
     );
   }
