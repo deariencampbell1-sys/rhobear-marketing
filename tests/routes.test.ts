@@ -123,21 +123,38 @@ function visibleRuns(fragment: string): string[] {
     .filter((text) => text !== '');
 }
 
-/** The main region of a rendered document (the owned content, not the shell). */
+/**
+ * The main region of a rendered document (the owned content, not the shell).
+ * W1-07-r1 (F4): exactly one <main> landmark is asserted before the slice, so
+ * the oracle can never silently read the first of several (or a missing) main
+ * region; zero, two and an incomplete landmark all fail loudly.
+ */
 function mainRegion(html: string): string {
-  return html.slice(html.indexOf('<main id="main">'), html.indexOf('</main>'));
+  const landmarks = html.match(/<main[\s>]/g) ?? [];
+  if (landmarks.length !== 1) {
+    throw new Error(`expected exactly one <main> landmark, found ${landmarks.length}`);
+  }
+  const start = html.indexOf('<main id="main">');
+  const end = html.indexOf('</main>', start);
+  if (start === -1 || end === -1) {
+    throw new Error('expected a complete <main id="main"> landmark');
+  }
+  return html.slice(start, end);
+}
+
+/** Whitespace-normalised, case-folded text: the unit approval is judged in. */
+function normaliseText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
 }
 
 /**
  * W1-07-r1 (F5/F13): the anti-invention oracle. A visible run is approved
  * only when it equals an approved string after whitespace normalisation —
- * never because it contains, or is contained by, one. This red commit moves
- * the loop's old containment test here unchanged; the negative control below
- * is what fails until the comparison is tightened to equality.
+ * never because it contains, or is contained by, one.
  */
 function isApprovedText(run: string, approved: readonly string[]): boolean {
-  const normalised = run.toLowerCase();
-  return approved.some((approvedText) => approvedText.toLowerCase().includes(normalised));
+  const normalised = normaliseText(run);
+  return approved.some((approvedText) => normaliseText(approvedText) === normalised);
 }
 
 // The only non-data strings any owned screen may show: the labels and
@@ -195,6 +212,13 @@ const PINNED_LABELS = [
   'Try a sample',
   'Samples open when the engine service and quota are live.',
   'Back to Engines',
+  // W1-07-r1 (F5/F13): equality surfaced one string the containment matcher
+  // had been accepting indirectly — /engines renders the permitted Plans link
+  // with the exact label 'Plans' (W1-02's own pinned list already names it),
+  // while this inventory only carried 'Plans and prices' as the /plans route
+  // title. The label is copied from that existing approval, never invented;
+  // it is reported in this commit body rather than widened silently.
+  'Plans',
 ];
 
 /** Every approved string: src/data facts, route titles and the pinned labels. */

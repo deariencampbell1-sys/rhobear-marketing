@@ -129,16 +129,19 @@ function visibleRuns(fragment: string): string[] {
     .filter((text) => text !== '');
 }
 
+/** Whitespace-normalised, case-folded text: the unit approval is judged in. */
+function normaliseText(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
 /**
  * W1-07-r1 (F5/F13): the anti-invention oracle. A visible run is approved
  * only when it equals an approved string after whitespace normalisation —
- * never because it contains, or is contained by, one. This red commit moves
- * the loop's old containment test here unchanged; the negative control below
- * is what fails until the comparison is tightened to equality.
+ * never because it contains, or is contained by, one.
  */
 function isApprovedText(run: string, approved: readonly string[]): boolean {
-  const normalised = run.toLowerCase();
-  return approved.some((approvedText) => approvedText.toLowerCase().includes(normalised));
+  const normalised = normaliseText(run);
+  return approved.some((approvedText) => normaliseText(approvedText) === normalised);
 }
 
 describe('W1-02-r1 engines and proof states', () => {
