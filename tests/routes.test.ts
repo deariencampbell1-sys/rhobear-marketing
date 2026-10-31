@@ -293,16 +293,50 @@ function heraldOfferLabels(): string[] {
   );
 }
 
+// W1-05-r1 F17 / H1: a whole money token — `$`, digits, optional thousands
+// separators, optional decimals. Approved money is removed by token equality
+// on the amount, never by substring: an invented `$9.99` against an approved
+// `$9` stays `$9.99` and is caught by the caller's no-`$` assertion.
+const MONEY_TOKEN = /\$\d[\d,]*(?:\.\d+)?/g;
+
+// W1-05-r1 F17: /plans' approved money amounts (no `$`), from the rows alone.
+function plansApprovedAmounts(): string[] {
+  const amounts: string[] = [];
+  for (const row of approvedPriceList) {
+    amounts.push(row.monthly, row.includedCredit);
+  }
+  return amounts;
+}
+
+// Amendment 1: /herald's approved money amounts (no `$`), from its own rows.
+function heraldApprovedAmounts(): string[] {
+  const amounts: string[] = [];
+  for (const offer of heraldOffers) {
+    amounts.push(offer.monthly);
+    if (offer.setup !== null) amounts.push(offer.setup);
+  }
+  return amounts;
+}
+
+/**
+ * W1-05-r1 F17 / H1: strip approved money by whole token. A token is removed
+ * only when its amount (thousands separators removed) equals an approved
+ * amount; `$9.99` survives an approved `$9` and `$199` survives an approved
+ * `$19`, so a caller asserting "no `$` remains" catches both invented cases.
+ */
+function stripApprovedMoneyTokens(text: string, approvedAmounts: readonly string[]): string {
+  return text.replace(MONEY_TOKEN, (token) => {
+    const amount = token.slice(1).replace(/,/g, '');
+    return approvedAmounts.includes(amount) ? '' : token;
+  });
+}
+
 // Amendment 1: strip /herald's four approved P03 prices, and W1-05-r1 F17
 // strip /plans' approved prices, leaving everything else byte-identical —
 // every other owned page keeps the blanket no-price rule.
 function withoutHeraldPrices(path: string, text: string): string {
-  if (path === '/herald') {
-    return heraldApprovedTexts().reduce((rest, price) => rest.split(price).join(''), text);
-  }
-  if (path === '/plans') {
-    return plansApprovedPrices().reduce((rest, price) => rest.split(price).join(''), text);
-  }
+  if (path === '/herald') return stripApprovedMoneyTokens(text, heraldApprovedAmounts());
+  if (path === '/plans') return stripApprovedMoneyTokens(text, plansApprovedAmounts());
   return text;
 }
 
@@ -346,16 +380,6 @@ function plansApprovedTexts(): string[] {
       : `${row.label}: $${row.monthly} adds $${row.includedCredit}; plan required`);
   }
   return texts;
-}
-
-// W1-05-r1 F17: /plans' approved money, stripped before the blanket no-price
-// check so the page's own approved prices are not mistaken for invented ones.
-function plansApprovedPrices(): string[] {
-  const prices: string[] = [];
-  for (const row of approvedPriceList) {
-    prices.push(`$${row.monthly}`, `$${row.includedCredit}`);
-  }
-  return prices;
 }
 
 // W1-05-r1 F17: /get's approved strings. Product facts come from src/data and
@@ -479,6 +503,40 @@ describe('W1-07-r1 anti-invention oracle (F5/F13)', () => {
   it('accepts the approved string after whitespace normalisation', () => {
     expect(isApprovedText('Teams at work', APPROVED)).toBe(true);
     expect(isApprovedText('  Teams\n at   work  ', APPROVED)).toBe(true);
+  });
+});
+
+// W1-05-r1 F17 / H1: the no-price oracle strips by whole money token, never
+// by substring. With `$9` approved the old split/join deleted the `$9` inside
+// an invented `$9.99` (leaving `.99`) and the `$19` inside `$199` (leaving
+// `9`), so a `$`-free assertion passed; these cases fail that composition.
+describe('W1-05-r1 F17 money-token strip (H1)', () => {
+  it('leaves an invented $9.99 in place when $9 is approved, so the no-$ check fires', () => {
+    const stripped = stripApprovedMoneyTokens('Shell: $9.99 per month', ['9']);
+    expect(stripped, 'invented $9.99 must survive the strip').toContain('$9.99');
+    expect(stripped, 'the no-$ oracle must fire').toMatch(/\$/);
+  });
+
+  it('leaves an invented $199 in place when $19 is approved, so the no-$ check fires', () => {
+    const stripped = stripApprovedMoneyTokens('Space: $199 per month', ['19']);
+    expect(stripped, 'invented $199 must survive the strip').toContain('$199');
+    expect(stripped, 'the no-$ oracle must fire').toMatch(/\$/);
+  });
+
+  it('still removes genuine approved prices, with separators and decimals', () => {
+    expect(stripApprovedMoneyTokens('$9 per month', ['9'])).not.toMatch(/\$/);
+    expect(stripApprovedMoneyTokens('$19 per month', ['19'])).not.toMatch(/\$/);
+    expect(stripApprovedMoneyTokens('$1,299.00 per year', ['1299.00'])).not.toMatch(/\$/);
+    // A decimal-bearing approved amount does not bless its integer form.
+    expect(stripApprovedMoneyTokens('$1,299 per year', ['1299.00'])).toMatch(/\$/);
+  });
+
+  it('removes whole tokens in any order and never a bare dollar sign', () => {
+    expect(stripApprovedMoneyTokens('$9.99 and $9', ['19', '9'])).toBe('$9.99 and ');
+    expect(stripApprovedMoneyTokens('$9.99 and $9', ['9', '19'])).toBe('$9.99 and ');
+    // A `$` with no digits is not a money token: it is left for the caller's
+    // no-`$` assertion, never silently consumed.
+    expect(stripApprovedMoneyTokens('cost $ 9', ['9'])).toBe('cost $ 9');
   });
 });
 
@@ -776,7 +834,7 @@ describe('W1-01-r1 screens', () => {
       }
       // No price on any owned page — /herald alone shows its own P03 offer
       // strings (amendment 1); once they are removed no other price remains.
-      expect(withoutHeraldPrices(path, html), path).not.toMatch(/\$\d/);
+      expect(withoutHeraldPrices(path, html), path).not.toMatch(/\$/);
     }
 
     // Forge: a real #kits section holding Forge's own availability facts —
@@ -999,7 +1057,7 @@ describe('W1-01-r1 anti-invention and composition', () => {
       }
       const html = renderRoute(path);
       const text = visibleText(html);
-      expect(withoutHeraldPrices(path, text), path).not.toMatch(/\$\d/);
+      expect(withoutHeraldPrices(path, text), path).not.toMatch(/\$/);
       expect(text, path).not.toMatch(/\bImagine\b|\bLabs\b|Blueprint mode|\bNeo\b/);
       expect(text, path).not.toMatch(
         /\b\d[\d,]*\s+(downloads|users|installs|customers|engines|apps)\b/i,
