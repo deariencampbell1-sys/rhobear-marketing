@@ -114,7 +114,12 @@ function capabilityRow(view: CatalogView | null, token: string, cells: readonly 
   return cells.map((cell) => (claimed(cell) && entry.state !== 'included') ? NOT_IN_CHECKOUT : cell);
 }
 
-/** F21: no-add-on fixture seam; production passes the approved rows and add-on. */
+/**
+ * Test seam (F21): exported so tests can drive the no-add-on branch directly.
+ * Production call sites must pass approved data only — the approvedPriceList
+ * rows and its add-on — because this component renders whatever plans/topUp
+ * it is given without validating either.
+ */
 export function PlanList({ plans, topUp }: { plans: readonly PriceRow[]; topUp: PriceRow | undefined }): JSX.Element {
   return (
     <ul>
@@ -135,7 +140,12 @@ export function PlanList({ plans, topUp }: { plans: readonly PriceRow[]; topUp: 
   );
 }
 
-/** F21: short-row fixture seam for the positional fail-closed cell. */
+/**
+ * Test seam (F21): exported so tests can drive the positional fail-closed cell
+ * directly. Production call sites must pass approved data only — null for the
+ * static page, or a catalog that has passed `catalogMatches` — because this
+ * component treats any non-null catalog as the page's own confirmation.
+ */
 export function CapabilityTable({ catalog, rows = CAPABILITY_ROWS }: {
   catalog: CatalogView | null;
   rows?: readonly (readonly string[])[];
