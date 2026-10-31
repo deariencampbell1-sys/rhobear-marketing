@@ -52,11 +52,16 @@
 //     token set is ASCII case-insensitive, like HTML's `sandbox` attribute, so the
 //     refusal fires on `ALLOW-SAME-ORIGIN`, `Allow-Same-Origin` and any other
 //     casing inside a multi-token string. Under W1-01-r1 FU-1 (owner decision
-//     B) the sandbox must also contain none of `allow-top-navigation`,
-//     `allow-top-navigation-by-user-activation` or
-//     `allow-popups-to-escape-sandbox` — top navigation would let the framed
-//     artifact navigate the front door and escaped popups would open outside
-//     the sandbox — refused as `sandbox-token-refused` immediately after the
+//     B) the sandbox must also contain none of the five refused tokens of
+//     `REFUSED_SANDBOX_TOKENS` — the set `./schema.ts` exports once (FU-1:
+//     `allow-top-navigation`, `allow-top-navigation-by-user-activation`,
+//     `allow-popups-to-escape-sandbox`; W1-03b-r1 FU-2 adds
+//     `allow-top-navigation-to-custom-protocols` and
+//     `allow-downloads-without-user-activation`) — top navigation would let
+//     the framed artifact navigate the front door (custom protocols
+//     included), escaped popups would open outside the sandbox and a
+//     download without the person's gesture spends their disk — refused as
+//     `sandbox-token-refused` immediately after the
 //     `allow-same-origin` check, whose precedence is unchanged. Anything else
 //     keeps the video path
 //     and records the named reason. The sandbox is applied as the iframe
@@ -174,10 +179,10 @@
 //     structural fixes:
 //     - F2 is ANSWERED, not changed (its policy half is SUPERSEDED by
 //       W1-01-r1 FU-1, owner decision B: schema admission and player refusal
-//       move together, and `allow-top-navigation`,
-//       `allow-top-navigation-by-user-activation` and
-//       `allow-popups-to-escape-sandbox` are refused here as
-//       `sandbox-token-refused` after the `allow-same-origin` check). What
+//       move together, and the refused set — the five tokens of
+//       `./schema.ts`'s exported `REFUSED_SANDBOX_TOKENS`, widened by
+//       W1-03b-r1 FU-2 — is refused here as `sandbox-token-refused` after
+//       the `allow-same-origin` check). What
 //       stands from r10 is beside the policy: the existing
 //       `allow-same-origin` refusal now covers the token's case-normalised,
 //       whitespace-padded and C0-padded spellings (r10 F2's hardening).
@@ -271,7 +276,13 @@
 //     hand-built presentations — exactly what behaviour 15 asks the player
 //     itself to check.
 
-import { isScenarioId, KNOWN_SCENARIO_IDS, type DemoChapter, type DemoRendition } from './schema';
+import {
+  isScenarioId,
+  KNOWN_SCENARIO_IDS,
+  REFUSED_SANDBOX_TOKENS,
+  type DemoChapter,
+  type DemoRendition,
+} from './schema';
 import type { DemoPresentation, InvalidReason } from './resolve';
 // The https rule is the release client's, as `./schema.ts` already uses it.
 import { isHttpsUrl } from '../release/schema';
@@ -350,11 +361,12 @@ export type InteractiveRefusalReason =
   | 'sandbox-empty'
   | 'url-not-https'
   | 'sandbox-allows-same-origin'
-  // W1-01-r1 FU-1 (owner decision B): a sandbox naming one of the three
-  // dropped tokens (`allow-top-navigation`,
-  // `allow-top-navigation-by-user-activation`,
-  // `allow-popups-to-escape-sandbox`). Schema admission refuses the same
-  // tokens in `./schema.ts`; this is the player-side half of that one policy.
+  // W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2: a sandbox
+  // naming any of the five dropped tokens — the exact set
+  // `REFUSED_SANDBOX_TOKENS`, exported once from `./schema.ts` and imported
+  // here (F2: one source of truth, no second literal). Schema admission
+  // refuses the same tokens; this is the player-side half of that one
+  // policy.
   | 'sandbox-token-refused';
 
 /** The board's twelve player states, and no state the board does not have. */
@@ -472,11 +484,11 @@ export type DemoPlayer = {
  * whitespace-padded and C0-padded spellings (the decoration class
  * `./captions.ts` normalises): the token set is ASCII case-insensitive, like
  * HTML's `sandbox` attribute, and no decoration of the refused token
- * survives it. W1-01-r1 FU-1 (owner decision B) refuses
- * `allow-top-navigation`, `allow-top-navigation-by-user-activation` and
- * `allow-popups-to-escape-sandbox` here as `sandbox-token-refused`,
+ * survives it. W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2,
+ * refuses the five tokens of `REFUSED_SANDBOX_TOKENS` — imported from
+ * `./schema.ts`, the set's single definition — as `sandbox-token-refused`,
  * immediately after the `allow-same-origin` check — schema admission and
- * this refusal move together (`./schema.ts` drops the same three tokens), so
+ * this refusal move together (`./schema.ts`'s allow-list drops all five), so
  * a token the schema admits still reaches the applied sandbox verbatim.
  */
 export function openInteractive(
@@ -500,15 +512,13 @@ export function openInteractive(
   // Any `allow-same-origin` token is refused outright — with `allow-scripts`
   // or without: it would let the framed page act as this origin: remote code.
   if (names.includes('allow-same-origin')) return { reason: 'sandbox-allows-same-origin' };
-  // W1-01-r1 FU-1 (owner decision B): the tokens `./schema.ts` no longer
-  // admits are refused here too — schema admission and player refusal move
-  // together, with tests in both directions.
-  const REFUSED_SANDBOX_TOKENS = new Set([
-    'allow-top-navigation',
-    'allow-top-navigation-by-user-activation',
-    'allow-popups-to-escape-sandbox',
-  ]);
-  if (names.some((name) => REFUSED_SANDBOX_TOKENS.has(name))) {
+  // W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2: the tokens
+  // `./schema.ts` no longer admits are refused here too — schema admission
+  // and player refusal move together, with tests in both directions. F2: the
+  // set is `./schema.ts`'s exported `REFUSED_SANDBOX_TOKENS`, imported above
+  // — the one copy of the list, so the allow-list and this refusal move by
+  // construction.
+  if (names.some((name) => REFUSED_SANDBOX_TOKENS.includes(name))) {
     return { reason: 'sandbox-token-refused' };
   }
   // Applied as the iframe sandbox attribute, canonicalised the way

@@ -13,6 +13,7 @@ import {
   createDemoPlayer,
   httpReason,
   isMediaErrorReason,
+  openInteractive,
   type DemoMediaElement,
   type DemoPlayer,
   type DemoPlayerEvent,
@@ -23,6 +24,7 @@ import { parseDemoDeepLink } from '../src/clients/demo/deeplink';
 import {
   DEMO_PACKAGE_SCHEMA,
   parseDemoPackage,
+  REFUSED_SANDBOX_TOKENS,
   type DemoChapter,
   type DemoInteractive,
   type DemoRendition,
@@ -3755,20 +3757,30 @@ describe("demo player state machine — W0-05b-r12 (Apollo's review of the r11 h
 // W1-01-r1 FU-1 — the owner's must-fix security ruling, decision B: schema
 // admission and player refusal move together. `allow-top-navigation`,
 // `allow-top-navigation-by-user-activation` and
-// `allow-popups-to-escape-sandbox` are dropped from `schema.ts`'s
+// `allow-popups-to-escape-sandbox` were dropped from `schema.ts`'s
 // SANDBOX_TOKENS (each now `bad-interactive`) and refused by the player with
 // the new `sandbox-token-refused` reason, immediately after the existing
 // `allow-same-origin` check (its precedence is untouched). This block
-// replaces r10's verbatim-application expectation, which admitted the
-// now-forbidden tokens; the surviving-token verbatim contract is pinned
+// replaced r10's verbatim-application expectation, which admitted the
+// then-forbidden tokens; the surviving-token verbatim contract is pinned
 // here unchanged in meaning.
+//
+// W1-03b-r1 FU-2 widens the same one policy with two more tokens —
+// `allow-top-navigation-to-custom-protocols` and
+// `allow-downloads-without-user-activation` — refused everywhere exactly
+// like FU-1's three. F2 makes `schema.ts`'s exported `REFUSED_SANDBOX_TOKENS`
+// the one source of truth: the player imports it and these tests import it —
+// the refused list is never retyped as a second literal. F3 mirrors r10's
+// `allow-same-origin` hardening: every refused token is refused in
+// mixed-case, whitespace-padded and C0-padded spellings, at both layers,
+// while the surviving tokens still apply verbatim (the allow-list, never a
+// denylist, refuses a surviving token's mixed-case spelling at admission).
 
-/** The three tokens owner decision B drops from both gates. */
-const DROPPED_SANDBOX_TOKENS = [
-  'allow-top-navigation',
-  'allow-top-navigation-by-user-activation',
-  'allow-popups-to-escape-sandbox',
-] as const;
+/**
+ * The five tokens the owner's FU-1 and FU-2 decisions drop from both gates —
+ * the schema's exported set, imported once: one source of truth (F2).
+ */
+const DROPPED_SANDBOX_TOKENS: readonly string[] = REFUSED_SANDBOX_TOKENS;
 
 const TRY_URL = `${mediaBase(SCENARIO_ID)}/try.html`;
 
@@ -3819,7 +3831,7 @@ const problemOf = (raw: unknown): string => {
   return 'problem' in parsed ? parsed.problem : 'parsed';
 };
 
-describe('demo player state machine — W1-01-r1 FU-1 sandbox policy (owner decision B)', () => {
+describe('demo player state machine — W1-01-r1 FU-1 and W1-03b-r1 FU-2 sandbox policy (owner decision B)', () => {
   it('FU-1 schema refuses each dropped token as bad-interactive', () => {
     for (const token of DROPPED_SANDBOX_TOKENS) {
       for (const sandbox of [token, `${token} allow-scripts`, `allow-scripts ${token}`]) {
@@ -3832,7 +3844,7 @@ describe('demo player state machine — W1-01-r1 FU-1 sandbox policy (owner deci
     // Edge: more than one forbidden token in one string fails closed too.
     expect(
       problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: DROPPED_SANDBOX_TOKENS.join(' ') } })),
-      'all three at once',
+      'all five at once',
     ).toBe('bad-interactive');
   });
 
@@ -3874,6 +3886,8 @@ describe('demo player state machine — W1-01-r1 FU-1 sandbox policy (owner deci
       'allow-top-navigation allow-same-origin',
       'allow-same-origin allow-popups-to-escape-sandbox',
       'allow-top-navigation-by-user-activation allow-scripts ALLOW-SAME-ORIGIN',
+      // W1-03b-r1 FU-2: the same precedence over a newly refused token.
+      'allow-downloads-without-user-activation allow-same-origin',
     ]) {
       const { player, media } = await playerWithInteractive(sandbox);
       const callsBefore = media.calls.length;
@@ -3883,5 +3897,97 @@ describe('demo player state machine — W1-01-r1 FU-1 sandbox policy (owner deci
       expect(opened.interactiveSandbox, sandbox).toBeNull();
       expect(media.calls.length, sandbox).toBe(callsBefore);
     }
+  });
+
+  it('FU-2/F2 the refused set is exactly the five tokens — the schema export, single-sourced, never a second literal', () => {
+    // The lock: exactly these five, neither more nor fewer. The loops above
+    // and below read the imported constant; this pin exists so a silent
+    // widening or narrowing of the refused set fails loudly here.
+    expect([...DROPPED_SANDBOX_TOKENS]).toEqual([
+      'allow-top-navigation',
+      'allow-top-navigation-by-user-activation',
+      'allow-popups-to-escape-sandbox',
+      // W1-03b-r1 FU-2's two:
+      'allow-top-navigation-to-custom-protocols',
+      'allow-downloads-without-user-activation',
+    ]);
+  });
+
+  it('FU-2/F3 every refused token is refused in mixed-case, whitespace-padded and C0-padded spellings — at the player and at admission (the r10 hardening, widened)', async () => {
+    // r10 hardened the `allow-same-origin` refusal against decorated
+    // spellings; F3 asks the same of all five refused tokens. The spellings:
+    // `Allow-Top-Navigation-To-Custom-Protocols`, `\t<token>\n`,
+    // `\u0000<token>`.
+    const mixedCase = (token: string) =>
+      token
+        .split('-')
+        .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+        .join('-');
+    for (const token of DROPPED_SANDBOX_TOKENS) {
+      for (const spelling of [mixedCase(token), `\t${token}\n`, `\u0000${token}`]) {
+        // Player: the refusal reads the token, not its decoration — the
+        // video path is kept, the reason named, the sandbox never applied.
+        const { player, media } = await playerWithInteractive(spelling);
+        const callsBefore = media.calls.length;
+        const opened = player.dispatch({ type: 'open-interactive' });
+        expect(opened.state, spelling).toBe('playing');
+        expect(opened.interactiveRefusal, spelling).toBe('sandbox-token-refused');
+        expect(opened.interactiveSandbox, spelling).toBeNull();
+        expect(media.calls.length, spelling).toBe(callsBefore);
+        // Schema: the package-level spelling is bad-interactive — mixed case
+        // and C0 padding fail the verbatim allow-list, and the whitespace
+        // padding trims to a dropped token.
+        expect(
+          problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: spelling } })),
+          spelling,
+        ).toBe('bad-interactive');
+      }
+    }
+  });
+
+  it("FU-2/F3 the nine surviving tokens parse and apply verbatim in the package's own order; a surviving token's mixed-case spelling is bad-interactive (the allow-list, not a denylist)", () => {
+    // Arbitrary order on purpose: the applied attribute is the package's own
+    // order, single-spaced and lowercased — byte-identical to the pre-FU-2
+    // behaviour for every input that was already valid.
+    const sandbox = [
+      'allow-storage-access-by-user-activation',
+      'allow-pointer-lock',
+      'allow-downloads',
+      'allow-forms',
+      'allow-modals',
+      'allow-orientation-lock',
+      'allow-popups',
+      'allow-presentation',
+      'allow-scripts',
+    ].join(' ');
+    const parsed = parseDemoPackage(wellFormed({ interactive: { url: TRY_URL, sandbox } }));
+    if (!('package' in parsed)) throw new Error('expected the nine surviving tokens to parse');
+    expect(parsed.package.interactive?.sandbox).toBe(sandbox);
+    // The pure boundary applies the very same string.
+    expect(openInteractive(sandbox, TRY_URL)).toEqual({ sandbox });
+    // A mixed-case spelling of a surviving token is not in the verbatim
+    // allow-list: bad-interactive at admission. (The player lowercases and
+    // applies what a hand-built presentation carries — defence in depth, not
+    // a second denylist.)
+    expect(problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: 'Allow-Forms' } }))).toBe(
+      'bad-interactive',
+    );
+    expect(
+      problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: 'allow-scripts Allow-Forms' } })),
+    ).toBe('bad-interactive');
+  });
+
+  it('FU-2 a refused token named twice, decorated differently each time, is refused at both layers — no duplicate-token bypass', async () => {
+    const sandbox = 'allow-top-navigation \u0000ALLOW-TOP-NAVIGATION';
+    expect(problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox } }))).toBe(
+      'bad-interactive',
+    );
+    const { player, media } = await playerWithInteractive(sandbox);
+    const callsBefore = media.calls.length;
+    const opened = player.dispatch({ type: 'open-interactive' });
+    expect(opened.state).toBe('playing');
+    expect(opened.interactiveRefusal).toBe('sandbox-token-refused');
+    expect(opened.interactiveSandbox).toBeNull();
+    expect(media.calls.length).toBe(callsBefore);
   });
 });

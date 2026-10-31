@@ -29,11 +29,11 @@
 //     `PACKAGE_REVISION_PATTERN` is the single place to change.
 //   - `interactive.sandbox` is an allow-list of known sandbox tokens,
 //     normalized to a single-space token list; `allow-same-origin` is refused
-//     outright, and FU-1 (owner decision B) also refuses `allow-top-navigation`,
-//     `allow-top-navigation-by-user-activation` and
-//     `allow-popups-to-escape-sandbox` outright. W0-05b applies the surviving
-//     list verbatim as an iframe sandbox attribute and refuses the same
-//     tokens again at the player boundary (defence in depth).
+//     outright, and FU-1 (owner decision B) — widened by W1-03b-r1 FU-2 —
+//     also refuses the five tokens exported below as `REFUSED_SANDBOX_TOKENS`
+//     outright. W0-05b applies the surviving list verbatim as an iframe
+//     sandbox attribute and refuses the same tokens again at the player
+//     boundary (defence in depth), importing the set from here.
 
 import { isRfc3339, isHttpsUrl } from '../release/schema';
 // The board names the scenarios; this client imports them rather than
@@ -61,19 +61,15 @@ const PACKAGE_REVISION_PATTERN = /^rev-[A-Za-z0-9._-]+$/;
 
 // The sandbox tokens a package may name: the known iframe sandbox tokens
 // minus `allow-same-origin` — beside `allow-scripts` it would let the framed
-// page act as the front-door origin and escape the sandbox entirely — and,
-// under FU-1 (owner decision B), minus `allow-top-navigation`,
-// `allow-top-navigation-by-user-activation` and
-// `allow-popups-to-escape-sandbox`: top navigation would let the framed
-// artifact navigate the front door itself and escaped popups would open
-// outside the sandbox, so neither may appear in a package at all. Schema
-// admission and the player's refusal move together — the same three tokens
-// are refused again in `./player.ts`'s `openInteractive`, with tests in both
-// directions. An allow-list, never a denylist: a token that is not here is
-// `bad-interactive`.
+// page act as the front-door origin and escape the sandbox entirely — and
+// minus the five refused tokens of `REFUSED_SANDBOX_TOKENS` below (FU-1,
+// owner decision B, widened by W1-03b-r1 FU-2): a refused token may not be
+// named in a package at all. Schema admission and the player's refusal move
+// together — `./player.ts` imports `REFUSED_SANDBOX_TOKENS` and refuses it
+// again in `openInteractive`, with tests in both directions. An allow-list,
+// never a denylist: a token that is not here is `bad-interactive`.
 const SANDBOX_TOKENS: readonly string[] = [
   'allow-downloads',
-  'allow-downloads-without-user-activation',
   'allow-forms',
   'allow-modals',
   'allow-orientation-lock',
@@ -82,7 +78,30 @@ const SANDBOX_TOKENS: readonly string[] = [
   'allow-presentation',
   'allow-scripts',
   'allow-storage-access-by-user-activation',
+];
+
+/**
+ * The sandbox tokens refused everywhere — the one copy of the list (F2), so
+ * the allow-list above and the player's refusal move together by
+ * construction, not by hand. FU-1 (owner decision B) refused
+ * `allow-top-navigation`, `allow-top-navigation-by-user-activation` and
+ * `allow-popups-to-escape-sandbox`: top navigation would let the framed
+ * artifact navigate the front door itself and escaped popups would open
+ * outside the sandbox. FU-2 (W1-03b-r1) adds
+ * `allow-top-navigation-to-custom-protocols` (navigation to custom
+ * protocols is the same power over the front door) and
+ * `allow-downloads-without-user-activation` (a download without the
+ * person's gesture). A package naming any of the five is `bad-interactive`
+ * here; `./player.ts` imports this set and refuses it as
+ * `sandbox-token-refused` immediately after its `allow-same-origin` check,
+ * with tests in both directions.
+ */
+export const REFUSED_SANDBOX_TOKENS: readonly string[] = [
+  'allow-top-navigation',
+  'allow-top-navigation-by-user-activation',
+  'allow-popups-to-escape-sandbox',
   'allow-top-navigation-to-custom-protocols',
+  'allow-downloads-without-user-activation',
 ];
 
 export type DemoChapter = { label: string; startSeconds: number };
