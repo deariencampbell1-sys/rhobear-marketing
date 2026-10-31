@@ -20,11 +20,26 @@ const appSourceModules = import.meta.glob('../src/app/App.tsx', {
 }) as Record<string, string>;
 const appSource = appSourceModules['../src/app/App.tsx'] ?? '';
 
+const namedEntities: Record<string, string> = {
+  amp: '&',
+  lt: '<',
+  gt: '>',
+  quot: '"',
+  apos: "'",
+};
+
+/** Decode the named and numeric entities a renderer emits, in one pass. */
 function decodeEntities(text: string): string {
-  return text
-    .replace(/&#x27;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&amp;/g, '&');
+  return text.replace(/&(#(?:[xX][0-9a-fA-F]+|\d+)|[a-zA-Z]+);/g, (match, body: string) => {
+    if (body.startsWith('#')) {
+      const isHex = body[1] === 'x' || body[1] === 'X';
+      const code = Number.parseInt(body.slice(isHex ? 2 : 1), isHex ? 16 : 10);
+      return Number.isInteger(code) && code >= 0 && code <= 0x10ffff
+        ? String.fromCodePoint(code)
+        : match;
+    }
+    return namedEntities[body] ?? match;
+  });
 }
 
 function mainRegion(html: string): string {
@@ -43,6 +58,24 @@ function errorMarkup(props: ServiceErrorProps): string {
 }
 
 const legalPaths = ['/privacy', '/terms', '/support'] as const;
+
+describe('entity decoding helper', () => {
+  // L4: the old helper decoded three entities only; pin the full named and
+  // numeric set the renderer can emit.
+  it('decodes named and numeric entities in one pass', () => {
+    expect(decodeEntities('&lt;b&gt; &quot;q&quot; &#39; &#x27; &#X41; &amp;')).toBe(
+      `<b> "q" ' ' A &`,
+    );
+  });
+
+  it('asserts escaped script-like text as text, never as markup', () => {
+    const text = '<script>alert(1)</script>';
+    const html = renderToStaticMarkup(createElement('p', null, text));
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;');
+    expect(decodeEntities(html)).toBe(`<p>${text}</p>`);
+  });
+});
 
 describe('legal and support pages', () => {
   it('renders each page from legal data with one h1 and no invented date', () => {
