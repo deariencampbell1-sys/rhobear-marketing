@@ -854,6 +854,16 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       expect(html, name).not.toContain(CATALOG_VERSION);
       expect(html, name).not.toContain(new Date(GENERATED_AT).toISOString());
     }
+    // M3: the present-and-correct branch is the one that must keep rendering a
+    // legitimate catalog normally. Without this case a future rename of the
+    // admitted values would block every catalog and the suite would stay green.
+    const accepted = render(
+      <PlansPage catalog={{ ...view, currency: 'USD', region: 'US' } as unknown as CatalogView} />,
+    );
+    expect(accepted).not.toContain('Catalog mismatch; purchase is blocked.');
+    expect(accepted).toContain(CATALOG_VERSION);
+    expect(accepted).toContain(new Date(GENERATED_AT).toISOString());
+    expect(accepted).toMatch(/<button[^>]*disabled[^>]*>Continue<\/button>/);
   });
 
   it('a mismatched catalog confirms nothing in the matrix (M2)', async () => {
