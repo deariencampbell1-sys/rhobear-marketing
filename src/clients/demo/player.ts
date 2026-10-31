@@ -279,7 +279,9 @@
 import {
   isScenarioId,
   KNOWN_SCENARIO_IDS,
+  KNOWN_SANDBOX_TOKENS,
   REFUSED_SANDBOX_TOKENS,
+  SANDBOX_TOKENS,
   type DemoChapter,
   type DemoRendition,
 } from './schema';
@@ -484,12 +486,13 @@ export type DemoPlayer = {
  * whitespace-padded and C0-padded spellings (the decoration class
  * `./captions.ts` normalises): the token set is ASCII case-insensitive, like
  * HTML's `sandbox` attribute, and no decoration of the refused token
- * survives it. W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2,
- * refuses the five tokens of `REFUSED_SANDBOX_TOKENS` — imported from
- * `./schema.ts`, the set's single definition — as `sandbox-token-refused`,
- * immediately after the `allow-same-origin` check — schema admission and
- * this refusal move together (`./schema.ts`'s allow-list drops all five), so
- * a token the schema admits still reaches the applied sandbox verbatim.
+ * survives it. W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2
+ * and made one construction by W1-06-r1 F23/F25, refuses the five tokens of
+ * `REFUSED_SANDBOX_TOKENS` as `sandbox-token-refused`, immediately after the
+ * `allow-same-origin` check. The refused set and the derived admitted list
+ * are both imported from `./schema.ts` (frozen, no private copy, no alias a
+ * consumer could mutate); a token the schema's derivation admits still
+ * reaches the applied sandbox verbatim.
  */
 export function openInteractive(
   sandbox: unknown,
@@ -512,13 +515,23 @@ export function openInteractive(
   // Any `allow-same-origin` token is refused outright — with `allow-scripts`
   // or without: it would let the framed page act as this origin: remote code.
   if (names.includes('allow-same-origin')) return { reason: 'sandbox-allows-same-origin' };
-  // W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2: the tokens
-  // `./schema.ts` no longer admits are refused here too — schema admission
-  // and player refusal move together, with tests in both directions. F2: the
-  // set is `./schema.ts`'s exported `REFUSED_SANDBOX_TOKENS`, imported above
-  // — the one copy of the list, so the allow-list and this refusal move by
-  // construction.
-  if (names.some((name) => REFUSED_SANDBOX_TOKENS.includes(name))) {
+  // W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2 and made
+  // one construction by W1-06-r1 F23/F25: the tokens `./schema.ts` no
+  // longer admits are refused here too. The refused set and the derived
+  // admitted list are imported from `./schema.ts` — both frozen, no private
+  // copy and no by-reference alias a consumer could mutate. A name is
+  // refused when the refused set names it, or when it is a known token the
+  // derived admitted list does not carry — the same set by construction
+  // (`KNOWN − ADMITTED = REFUSED ∪ {allow-same-origin}`, pinned by the
+  // schema tests), so the two readings can never disagree. Schema admission
+  // and this refusal move together, with tests in both directions.
+  if (
+    names.some(
+      (name) =>
+        REFUSED_SANDBOX_TOKENS.includes(name) ||
+        (KNOWN_SANDBOX_TOKENS.includes(name) && !SANDBOX_TOKENS.includes(name)),
+    )
+  ) {
     return { reason: 'sandbox-token-refused' };
   }
   // Applied as the iframe sandbox attribute, canonicalised the way
