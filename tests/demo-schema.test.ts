@@ -610,6 +610,20 @@ describe('demo sandbox policy — one construction (W1-06-r1)', () => {
     expect(SANDBOX_TOKENS.filter((token) => REFUSED_SANDBOX_TOKENS.includes(token))).toEqual([]);
   });
 
+  it('F31: the refusal surface closes over the known set — KNOWN \\ SANDBOX is exactly REFUSED ∪ {allow-same-origin}', () => {
+    const notAdmitted = (known: readonly string[]): string[] =>
+      [...new Set(known.filter((token) => !SANDBOX_TOKENS.includes(token)))].sort();
+    const refusalSurface = [...new Set([...REFUSED_SANDBOX_TOKENS, 'allow-same-origin'])].sort();
+
+    // The invariant the deleted second disjunct (`known && !admitted`) was
+    // said to defend: every known token outside the admitted list is already
+    // refused by name or is `allow-same-origin`, which `openInteractive`
+    // refuses before it reads the refused set. A difference the union does
+    // not carry — a known token the derivation stopped admitting, or a
+    // refused token the known universe no longer holds — fails here.
+    expect(notAdmitted(KNOWN_SANDBOX_TOKENS)).toEqual(refusalSurface);
+  });
+
   it('F23 edge: allow-same-origin is known but never admitted — the derivation drops it by name', () => {
     expect([...KNOWN_SANDBOX_TOKENS]).toContain('allow-same-origin');
     expect([...SANDBOX_TOKENS]).not.toContain('allow-same-origin');
