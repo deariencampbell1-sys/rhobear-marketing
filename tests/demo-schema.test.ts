@@ -610,6 +610,26 @@ describe('demo sandbox policy — one construction (W1-06-r1)', () => {
     expect(SANDBOX_TOKENS.filter((token) => REFUSED_SANDBOX_TOKENS.includes(token))).toEqual([]);
   });
 
+  it('F31: the refusal surface closes over the known set — KNOWN \\ SANDBOX is exactly REFUSED ∪ {allow-same-origin}', () => {
+    const notAdmitted = (known: readonly string[]): string[] =>
+      [...new Set(known.filter((token) => !SANDBOX_TOKENS.includes(token)))].sort();
+    const refusalSurface = [...new Set([...REFUSED_SANDBOX_TOKENS, 'allow-same-origin'])].sort();
+
+    // RED (removed in green): the same comparison against a known set that
+    // has lost a token still on the refusal surface must fail — the oracle
+    // fires when the closure breaks, so it is not vacuous. (The brief's
+    // `allow-scripts` example is admitted, so removing it leaves
+    // `KNOWN \ SANDBOX` unchanged; a token the difference carries does
+    // break it.)
+    const mutated = KNOWN_SANDBOX_TOKENS.filter((token) => token !== 'allow-top-navigation');
+    expect(notAdmitted(mutated)).toEqual(refusalSurface);
+
+    // The real closure, on the real exports: every known token outside the
+    // admitted list is already refused by name or is `allow-same-origin`,
+    // which `openInteractive` refuses before it reads the refused set.
+    expect(notAdmitted(KNOWN_SANDBOX_TOKENS)).toEqual(refusalSurface);
+  });
+
   it('F23 edge: allow-same-origin is known but never admitted — the derivation drops it by name', () => {
     expect([...KNOWN_SANDBOX_TOKENS]).toContain('allow-same-origin');
     expect([...SANDBOX_TOKENS]).not.toContain('allow-same-origin');

@@ -126,6 +126,18 @@ describe('F6 — a 404 destination link may only be labelled with its own route 
     expect(html).toContain('<a href="/support">Support</a>');
   });
 
+  it('F33: an anchor whose content is nested markup fails the sweep loudly — never silently skipped', () => {
+    // The old `[^<]*` content rule matched nothing here and returned no
+    // anchor, so the sweep above would pass while this anchor went unseen.
+    // The page's real invariant is that its anchors carry text only; the
+    // helper must refuse this markup, not skip it.
+    const nested = renderToStaticMarkup(
+      createElement('a', { href: '/x' }, createElement('span', null, 'Y')),
+    );
+    expect(nested).toContain('<span>');
+    expect(() => anchors(nested)).toThrow(/nested markup/);
+  });
+
   it('edge cases: trailing slash, wrong case, empty and whitespace destinations render no anchor', () => {
     for (const path of ['/plans/', '/Plans', '', '   ', '\t\n']) {
       const html = renderNotFound({ kind: 'destination', path, reason: 'product' });

@@ -3834,6 +3834,18 @@ const problemOf = (raw: unknown): string => {
 };
 
 describe('demo player state machine — W1-01-r1 FU-1 and W1-03b-r1 FU-2 sandbox policy (owner decision B)', () => {
+  it('F32: the frozen snapshot is its source — DROPPED_SANDBOX_TOKENS equals REFUSED_SANDBOX_TOKENS by value', () => {
+    // RED (removed in green): a source that has drifted away from the
+    // import-time snapshot must make a comparison of this shape fail — the
+    // equality sees the difference, so a future edit to either side is
+    // caught here instead of leaving the loops below iterating a stale set.
+    const drifted = REFUSED_SANDBOX_TOKENS.filter((token) => token !== 'allow-top-navigation');
+    expect([...DROPPED_SANDBOX_TOKENS]).toEqual(drifted);
+
+    // The coupling: the snapshot taken at import is exactly its source.
+    expect([...DROPPED_SANDBOX_TOKENS]).toEqual([...REFUSED_SANDBOX_TOKENS]);
+  });
+
   it('FU-1 schema refuses each dropped token as bad-interactive', () => {
     for (const token of DROPPED_SANDBOX_TOKENS) {
       for (const sandbox of [token, `${token} allow-scripts`, `allow-scripts ${token}`]) {
