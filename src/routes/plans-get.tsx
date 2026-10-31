@@ -177,8 +177,15 @@ export interface PlansPageProps {
 
 /** P01/P02/P04: the plans page — approved prices, closed checkout, capabilities. */
 export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element {
-  const blocked = catalog !== null && !catalogMatches(catalog);
-  const attributed = catalog !== null && !blocked;
+  const attributed = catalog !== null && catalogMatches(catalog);
+  const blocked = catalog !== null && !attributed;
+  // M2: only a catalog that passed the sell gate may confirm capability cells.
+  // A blocked catalog reaches the table as a view with no capabilities, so
+  // every claimed cell falls to the unconfirmed wording instead of
+  // contradicting the mismatch message; the static page (no catalog) keeps
+  // the approved copy as ever.
+  const capabilityCatalog: CatalogView | null =
+    catalog === null || attributed ? catalog : { ...catalog, capabilities: [] };
   return (
     <>
       <section style={pagePadding}>
@@ -206,7 +213,7 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
       </section>
       <section style={pagePadding}>
         <h2>Included in each plan</h2>
-        <CapabilityTable catalog={catalog} />
+        <CapabilityTable catalog={capabilityCatalog} />
       </section>
       <section style={pagePadding}>
         <h2>Reviews and Free</h2>

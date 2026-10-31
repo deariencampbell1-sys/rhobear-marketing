@@ -856,6 +856,36 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     }
   });
 
+  it('a mismatched catalog confirms nothing in the matrix (M2)', async () => {
+    const { PlansPage } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    // The catalog vouches for Apollo and the OpenRouter key, but its price row
+    // does not match the approved list, so the page itself says purchase is
+    // blocked. That same catalog must not then confirm 'Included' / 'Allowed'
+    // beside the mismatch message.
+    const capabilities = [
+      { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+      { product: 'builds', capability: 'openrouter-key', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+    ];
+    const mismatched = attributed(await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+      capabilities,
+    })));
+    const html = render(<PlansPage catalog={mismatched} />);
+    expect(html).toContain('Catalog mismatch; purchase is blocked.');
+    expect(html).not.toMatch(/<button[^>]*>Continue<\/button>/);
+    const matrix = tableMatrix(html);
+    expect(matrix[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[5]).toEqual(['customer OpenRouter key', 'Not included', NIC, NIC, NIC]);
+    // The same capabilities on a matching catalog still confirm their cells.
+    const matched = attributed(await viewOf(wireCatalog({ capabilities })));
+    const matchedMatrix = tableMatrix(render(<PlansPage catalog={matched} />));
+    expect(matchedMatrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
+    expect(matchedMatrix[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
   it('defensive branches render their fail-closed wording (F21)', () => {
     const { PlanList, CapabilityTable, GetPage } = requireScreens();
     const NIC = 'Not included in checkout yet';
