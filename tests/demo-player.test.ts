@@ -3778,9 +3778,11 @@ describe("demo player state machine — W0-05b-r12 (Apollo's review of the r11 h
 
 /**
  * The five tokens the owner's FU-1 and FU-2 decisions drop from both gates —
- * the schema's exported set, imported once: one source of truth (F2).
+ * a fresh FROZEN SNAPSHOT of the schema's exported set taken at import time:
+ * one source of truth (F2), with no by-reference alias a mutation could
+ * travel through (F25).
  */
-const DROPPED_SANDBOX_TOKENS: readonly string[] = REFUSED_SANDBOX_TOKENS;
+const DROPPED_SANDBOX_TOKENS: readonly string[] = Object.freeze([...REFUSED_SANDBOX_TOKENS]);
 
 const TRY_URL = `${mediaBase(SCENARIO_ID)}/try.html`;
 
@@ -3989,5 +3991,96 @@ describe('demo player state machine — W1-01-r1 FU-1 and W1-03b-r1 FU-2 sandbox
     expect(opened.interactiveRefusal).toBe('sandbox-token-refused');
     expect(opened.interactiveSandbox).toBeNull();
     expect(media.calls.length).toBe(callsBefore);
+  });
+});
+
+// W1-06-r1 — Apollo's F23–F25: the sandbox policy is one construction. The
+// schema side (derivation, nine-pin, disjointness, frozen exports) is pinned
+// in tests/demo-schema.test.ts; this block pins the behaviour the construction
+// must not change: the exact nine-token attribute shipped at the base, and
+// the refusal of the two owner-banned FU-2 tokens in hostile spellings, before
+// and after a strict-mode mutation attempt on the exported policy.
+describe('demo player state machine — W1-06-r1 sandbox construction (F23–F25)', () => {
+  /**
+   * The rendered sandbox attribute for the full admitted set, written out
+   * from the base (a4f205e0) — a literal, never read from the module under
+   * test, so this unit cannot change the policy while claiming not to.
+   */
+  const BASE_SANDBOX_ATTRIBUTE = [
+    'allow-downloads',
+    'allow-forms',
+    'allow-modals',
+    'allow-orientation-lock',
+    'allow-pointer-lock',
+    'allow-popups',
+    'allow-presentation',
+    'allow-scripts',
+    'allow-storage-access-by-user-activation',
+  ].join(' ');
+
+  it('F24: the rendered sandbox attribute is the exact nine-token string shipped at the base — byte-identical, in order', () => {
+    expect(openInteractive(BASE_SANDBOX_ATTRIBUTE, TRY_URL)).toEqual({
+      sandbox: BASE_SANDBOX_ATTRIBUTE,
+    });
+    const parsed = parseDemoPackage(
+      wellFormed({ interactive: { url: TRY_URL, sandbox: BASE_SANDBOX_ATTRIBUTE } }),
+    );
+    if (!('package' in parsed)) throw new Error('expected the nine-token sandbox to parse');
+    expect(parsed.package.interactive?.sandbox).toBe(BASE_SANDBOX_ATTRIBUTE);
+  });
+
+  it('F25: a strict-mode mutation of the exported policy throws and changes nothing — the two owner-banned tokens stay refused at the player', async () => {
+    const refusedBefore = [...REFUSED_SANDBOX_TOKENS];
+    const mutable = REFUSED_SANDBOX_TOKENS as unknown as string[];
+    expect(() => mutable.push('allow-scripts'), 'push').toThrow(TypeError);
+    expect(() => mutable.splice(0, 1), 'splice').toThrow(TypeError);
+    expect(() => {
+      mutable[0] = 'allow-scripts';
+    }, 'index assignment').toThrow(TypeError);
+    expect([...REFUSED_SANDBOX_TOKENS]).toEqual(refusedBefore);
+
+    for (const token of [
+      'allow-top-navigation-to-custom-protocols',
+      'allow-downloads-without-user-activation',
+    ]) {
+      const { player, media } = await playerWithInteractive(token);
+      const callsBefore = media.calls.length;
+      const opened = player.dispatch({ type: 'open-interactive' });
+      expect(opened.state, token).toBe('playing');
+      expect(opened.interactiveRefusal, token).toBe('sandbox-token-refused');
+      expect(opened.interactiveSandbox, token).toBeNull();
+      expect(media.calls.length, token).toBe(callsBefore);
+    }
+  });
+
+  it('F25/FU-2: the two owner-banned tokens are refused at both layers in mixed-case, C0-padded and whitespace-padded spellings', async () => {
+    // The r10 hardening, widened by W1-03b-r1 F3 and pinned here for the two
+    // FU-2 tokens by name: mixed case, C0 control and surrounding whitespace.
+    const spellings = [
+      'ALLOW-TOP-NAVIGATION-TO-CUSTOM-PROTOCOLS',
+      '\u0000allow-top-navigation-to-custom-protocols',
+      '\tallow-top-navigation-to-custom-protocols\n',
+      'ALLOW-DOWNLOADS-WITHOUT-USER-ACTIVATION',
+      '\u0000allow-downloads-without-user-activation',
+      '\tallow-downloads-without-user-activation\n',
+    ];
+    for (const spelling of spellings) {
+      // Admission: the verbatim allow-list refuses every decorated spelling.
+      expect(
+        problemOf(wellFormed({ interactive: { url: TRY_URL, sandbox: spelling } })),
+        spelling,
+      ).toBe('bad-interactive');
+    }
+    for (const spelling of spellings) {
+      // The player: the refusal reads the token, not its decoration, and the
+      // iframe sandbox is never populated.
+      const { player, media } = await playerWithInteractive(spelling);
+      const callsBefore = media.calls.length;
+      const opened = player.dispatch({ type: 'open-interactive' });
+      expect(opened.state, spelling).toBe('playing');
+      expect(opened.interactiveRefusal, spelling).toBe('sandbox-token-refused');
+      expect(opened.interactiveSandbox, spelling).toBeNull();
+      expect(media.calls.length, spelling).toBe(callsBefore);
+    }
   });
 });
