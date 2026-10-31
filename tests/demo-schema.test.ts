@@ -615,18 +615,12 @@ describe('demo sandbox policy — one construction (W1-06-r1)', () => {
       [...new Set(known.filter((token) => !SANDBOX_TOKENS.includes(token)))].sort();
     const refusalSurface = [...new Set([...REFUSED_SANDBOX_TOKENS, 'allow-same-origin'])].sort();
 
-    // RED (removed in green): the same comparison against a known set that
-    // has lost a token still on the refusal surface must fail — the oracle
-    // fires when the closure breaks, so it is not vacuous. (The brief's
-    // `allow-scripts` example is admitted, so removing it leaves
-    // `KNOWN \ SANDBOX` unchanged; a token the difference carries does
-    // break it.)
-    const mutated = KNOWN_SANDBOX_TOKENS.filter((token) => token !== 'allow-top-navigation');
-    expect(notAdmitted(mutated)).toEqual(refusalSurface);
-
-    // The real closure, on the real exports: every known token outside the
-    // admitted list is already refused by name or is `allow-same-origin`,
-    // which `openInteractive` refuses before it reads the refused set.
+    // The invariant the deleted second disjunct (`known && !admitted`) was
+    // said to defend: every known token outside the admitted list is already
+    // refused by name or is `allow-same-origin`, which `openInteractive`
+    // refuses before it reads the refused set. A difference the union does
+    // not carry — a known token the derivation stopped admitting, or a
+    // refused token the known universe no longer holds — fails here.
     expect(notAdmitted(KNOWN_SANDBOX_TOKENS)).toEqual(refusalSurface);
   });
 

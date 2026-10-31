@@ -13,9 +13,19 @@ function renderNotFound(recovery?: SharedLinkResult): string {
   return renderToStaticMarkup(createElement(NotFound, recovery ? { recovery } : {}));
 }
 
-/** Every rendered anchor, in document order, as its full markup. */
+/** Every rendered anchor, in document order, as its full markup. Fails
+ * loudly on an anchor whose content carries nested markup: the page's
+ * anchors are text-only by invariant, and the old `[^<]*` content rule
+ * silently skipped anything else, letting the sweeps below pass while a
+ * changed anchor went unseen. */
 function anchors(html: string): string[] {
-  return [...html.matchAll(/<a [^>]*>[^<]*<\/a>/g)].map((match) => match[0]);
+  const matches = [...html.matchAll(/<a [^>]*>([\s\S]*?)<\/a>/g)];
+  for (const match of matches) {
+    if (/[<>]/.test(match[1])) {
+      throw new Error(`anchor content must be text only, found nested markup: ${match[0]}`);
+    }
+  }
+  return matches.map((match) => match[0]);
 }
 
 /** The recovery note paragraph as markup, or '' when none was rendered. */

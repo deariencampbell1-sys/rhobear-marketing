@@ -3835,14 +3835,9 @@ const problemOf = (raw: unknown): string => {
 
 describe('demo player state machine — W1-01-r1 FU-1 and W1-03b-r1 FU-2 sandbox policy (owner decision B)', () => {
   it('F32: the frozen snapshot is its source — DROPPED_SANDBOX_TOKENS equals REFUSED_SANDBOX_TOKENS by value', () => {
-    // RED (removed in green): a source that has drifted away from the
-    // import-time snapshot must make a comparison of this shape fail — the
-    // equality sees the difference, so a future edit to either side is
-    // caught here instead of leaving the loops below iterating a stale set.
-    const drifted = REFUSED_SANDBOX_TOKENS.filter((token) => token !== 'allow-top-navigation');
-    expect([...DROPPED_SANDBOX_TOKENS]).toEqual(drifted);
-
-    // The coupling: the snapshot taken at import is exactly its source.
+    // The import-time snapshot and its source are one set: a future edit to
+    // either side (a stale spread, a widened refused set) fails here by name
+    // before the loops below can iterate a set that is no longer the policy.
     expect([...DROPPED_SANDBOX_TOKENS]).toEqual([...REFUSED_SANDBOX_TOKENS]);
   });
 

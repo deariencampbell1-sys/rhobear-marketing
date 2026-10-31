@@ -279,9 +279,7 @@
 import {
   isScenarioId,
   KNOWN_SCENARIO_IDS,
-  KNOWN_SANDBOX_TOKENS,
   REFUSED_SANDBOX_TOKENS,
-  SANDBOX_TOKENS,
   type DemoChapter,
   type DemoRendition,
 } from './schema';
@@ -489,9 +487,9 @@ export type DemoPlayer = {
  * survives it. W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2
  * and made one construction by W1-06-r1 F23/F25, refuses the five tokens of
  * `REFUSED_SANDBOX_TOKENS` as `sandbox-token-refused`, immediately after the
- * `allow-same-origin` check. The refused set and the derived admitted list
- * are both imported from `./schema.ts` (frozen, no private copy, no alias a
- * consumer could mutate); a token the schema's derivation admits still
+ * `allow-same-origin` check. The refused set is imported from `./schema.ts`
+ * (frozen, no private copy, no alias a consumer could mutate); the admitted
+ * list is derived there from the same set, and a token it admits still
  * reaches the applied sandbox verbatim.
  */
 export function openInteractive(
@@ -517,19 +515,16 @@ export function openInteractive(
   if (names.includes('allow-same-origin')) return { reason: 'sandbox-allows-same-origin' };
   // W1-01-r1 FU-1 (owner decision B), widened by W1-03b-r1 FU-2 and made
   // one construction by W1-06-r1 F23/F25: the tokens `./schema.ts` no
-  // longer admits are refused here too. The refused set and the derived
-  // admitted list are imported from `./schema.ts` — both frozen, no private
-  // copy and no by-reference alias a consumer could mutate. A name is
-  // refused when the refused set names it, or when it is a known token the
-  // derived admitted list does not carry — the same set by construction
-  // (`KNOWN − ADMITTED = REFUSED ∪ {allow-same-origin}`, pinned by the
-  // schema tests), so the two readings can never disagree. Schema admission
-  // and this refusal move together, with tests in both directions.
+  // longer admits are refused here too. The refused set is imported from
+  // `./schema.ts` — frozen, no private copy and no by-reference alias a
+  // consumer could mutate — and the admitted list is derived from the same
+  // set by the same expression, so schema admission and this refusal move
+  // together by construction. The closure the refusal rests on
+  // (`KNOWN − ADMITTED = REFUSED ∪ {allow-same-origin}`) is pinned in
+  // tests/demo-schema.test.ts (F31), with tests in both directions.
   if (
     names.some(
-      (name) =>
-        REFUSED_SANDBOX_TOKENS.includes(name) ||
-        (KNOWN_SANDBOX_TOKENS.includes(name) && !SANDBOX_TOKENS.includes(name)),
+      (name) => REFUSED_SANDBOX_TOKENS.includes(name),
     )
   ) {
     return { reason: 'sandbox-token-refused' };
