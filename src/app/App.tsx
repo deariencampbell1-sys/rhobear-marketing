@@ -6,30 +6,40 @@
 import { findRoute, type Route } from './routes';
 import { RouteSkeleton } from './RouteSkeleton';
 import { NotFound } from './NotFound';
+import { Footer } from './Footer';
 import { PlaceholderPage } from '../routes';
 import { EnginesPage, ScenarioPage } from '../routes/engines';
+import { LegalSupportPage } from '../routes/legal-support';
 import { GetPage, HeraldCommercial, PlansPage, RegentCommercial } from '../routes/plans-get';
 
 export function App({ path }: { path: string }) {
   const route: Route | undefined = findRoute(path);
-  if (!route) return <NotFound />;
-  if (route.path === '/engines') {
-    return <RouteSkeleton title={route.title}><EnginesPage /></RouteSkeleton>;
-  }
-  if (route.path.startsWith('/engines/')) {
-    return (
+  let page: JSX.Element;
+  if (!route) page = <NotFound />;
+  else if (route.path === '/engines') {
+    page = <RouteSkeleton title={route.title}><EnginesPage /></RouteSkeleton>;
+  } else if (route.path.startsWith('/engines/')) {
+    page = (
       <RouteSkeleton title={route.title}>
         <ScenarioPage scenarioId={route.path.slice('/engines/'.length)} />
       </RouteSkeleton>
     );
+  } else if (route.path === '/plans') {
+    page = <RouteSkeleton title={route.title}><PlansPage /></RouteSkeleton>;
+  } else if (route.path === '/get') {
+    page = <RouteSkeleton title={route.title}><GetPage /></RouteSkeleton>;
+  } else if (route.path === '/herald') {
+    page = <RouteSkeleton title={route.title}><PlaceholderPage route={route} /><HeraldCommercial /></RouteSkeleton>;
+  } else if (route.path === '/regent') {
+    page = <RouteSkeleton title={route.title}><PlaceholderPage route={route} /><RegentCommercial /></RouteSkeleton>;
+  } else if (route.path === '/privacy' || route.path === '/terms' || route.path === '/support') {
+    page = <RouteSkeleton title={route.title}><LegalSupportPage path={route.path} /></RouteSkeleton>;
+  } else {
+    page = (
+      <RouteSkeleton title={route.title}>
+        <PlaceholderPage route={route} />
+      </RouteSkeleton>
+    );
   }
-  if (route.path === '/plans') return <RouteSkeleton title={route.title}><PlansPage /></RouteSkeleton>;
-  if (route.path === '/get') return <RouteSkeleton title={route.title}><GetPage /></RouteSkeleton>;
-  if (route.path === '/herald') return <RouteSkeleton title={route.title}><PlaceholderPage route={route} /><HeraldCommercial /></RouteSkeleton>;
-  if (route.path === '/regent') return <RouteSkeleton title={route.title}><PlaceholderPage route={route} /><RegentCommercial /></RouteSkeleton>;
-  return (
-    <RouteSkeleton title={route.title}>
-      <PlaceholderPage route={route} />
-    </RouteSkeleton>
-  );
+  return <>{page}<Footer /></>;
 }
