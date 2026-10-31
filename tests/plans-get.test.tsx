@@ -1001,13 +1001,15 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
 
   it('planCopyFor has no top-up arm and plans never include the add-on (F22)', () => {
     const { PlansPage } = requireScreens();
-    // Grep proof: the copy resolver's own definition carries no 'top-up'
-    // branch, because the plans-only filter is the invariant.
-    const definition = plansGetSource
-      .split('\n')
-      .find((line) => line.includes('const planCopyFor'));
-    expect(definition).toBeDefined();
-    expect(definition).not.toContain("'top-up'");
+    // Whole-definition proof: the copy resolver's own definition carries no
+    // 'top-up' branch, because the plans-only filter is the invariant. Match
+    // the body as a unit (lazy to its terminating `;`) rather than a single
+    // line, so reformatting the definition across lines cannot make the check
+    // vacuous or skip the body.
+    const definition = plansGetSource.match(/const planCopyFor =[\s\S]*?;/);
+    expect(definition).not.toBeNull();
+    expect(definition?.[0]).toContain('planCopy[');
+    expect(definition?.[0]).not.toContain("'top-up'");
     // The filter's output never contains the add-on id, so the narrowed type
     // is not papering over a live path.
     expect(approvedPlanRows.map((plan) => plan.id)).not.toContain('top-up');
