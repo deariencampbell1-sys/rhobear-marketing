@@ -2,6 +2,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { renderRoute } from '../src/app/render';
+import { CheckoutClosedNotice } from '../src/app/CheckoutClosedNotice';
 import { checkoutState, legalPages, legalStatus, retention } from '../src/data/legal';
 import { products } from '../src/data/products';
 import type { ServiceErrorProps, ServiceErrorStatus } from '../src/app/ServiceError';
@@ -85,6 +86,33 @@ describe('shared checkout notice', () => {
       const html = decodeEntities(renderRoute(path));
       expect(html.split(checkoutState.reason).length - 1, path).toBe(1);
     }
+  });
+
+  // H1: the non-'closed' branch is a real behaviour path, so both branches are
+  // pinned by rendering the component directly instead of only through the
+  // static module data the pages use.
+  it('renders nothing at all when the state is not closed', () => {
+    for (const state of ['open', '', 'CLOSED', 'signed-off']) {
+      const html = renderToStaticMarkup(
+        createElement(CheckoutClosedNotice, { state, reason: checkoutState.reason }),
+      );
+      expect(html, state).toBe('');
+    }
+  });
+
+  it('renders exactly one paragraph carrying exactly the closed reason', () => {
+    const reason = 'Checkout is closed while the terms are signed off.';
+    const html = renderToStaticMarkup(
+      createElement(CheckoutClosedNotice, { state: 'closed', reason }),
+    );
+    expect((html.match(/<p[\s>]/g) ?? []).length).toBe(1);
+    expect(html).toBe(`<p>${reason}</p>`);
+  });
+
+  it('defaults to the module checkout data, so a data flip is caught', () => {
+    const html = renderToStaticMarkup(createElement(CheckoutClosedNotice));
+    expect(html).toBe(renderToStaticMarkup(createElement('p', null, checkoutState.reason)));
+    expect(html).toContain(checkoutState.reason);
   });
 });
 
