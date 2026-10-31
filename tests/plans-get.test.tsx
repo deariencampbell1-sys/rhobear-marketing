@@ -923,6 +923,33 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     ]);
   });
 
+  it('CapabilityTable withholds confirmation from an unvouched catalog by itself (M2)', async () => {
+    const { CapabilityTable } = requireScreens();
+    const NIC = 'Not included in checkout yet';
+    const capabilities = [
+      { product: 'builds', capability: 'apollo', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+      { product: 'builds', capability: 'openrouter-key', plans: ['shell', 'shell-plus', 'space'], state: 'included' },
+    ];
+    // A caller hands the exported seam a catalog directly, bypassing
+    // PlansPage's own attribution check. The component must apply the same
+    // gate itself: a mismatching catalog confirms nothing.
+    const mismatched = await viewOf(wireCatalog({
+      plans: planRows({ shell: { monthlyPrice: '24.00' } }),
+      capabilities,
+    }));
+    const matrix = tableMatrix(render(<CapabilityTable catalog={mismatched} />));
+    expect(matrix[2]).toEqual(['Apollo', 'Not included', NIC, NIC, NIC]);
+    expect(matrix[5]).toEqual(['customer OpenRouter key', 'Not included', NIC, NIC, NIC]);
+    // The same catalog shape with matching prices still confirms its cells, so
+    // the gate is a gate and not a blanket refusal.
+    const matched = await viewOf(wireCatalog({ capabilities }));
+    const matchedMatrix = tableMatrix(render(<CapabilityTable catalog={matched} />));
+    expect(matchedMatrix[2]).toEqual(['Apollo', 'Not included', 'Included', 'Included', 'Included']);
+    expect(matchedMatrix[5]).toEqual([
+      'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
+    ]);
+  });
+
   it('PlanList plans prop carries PlanId so a top-up cannot reach planCopyFor (M1)', () => {
     const { PlanList } = requireScreens();
     // Type-level proof: the exported prop type — not a cast at the call site —

@@ -146,14 +146,21 @@ export function PlanList({ plans, topUp }: { plans: readonly PlanRow[]; topUp: P
 
 /**
  * Test seam (F21): exported so tests can drive the positional fail-closed cell
- * directly. Production call sites must pass approved data only — null for the
- * static page, or a catalog that has passed `catalogMatches` — because this
- * component treats any non-null catalog as the page's own confirmation.
+ * directly. The component gates its own confirmation: a non-null catalog that
+ * fails `catalogMatches` is treated as unvouched — every claimed cell falls
+ * closed — so no caller can print confirmed checkout claims over a catalog the
+ * page would block. `null` is the static page, whose approved copy stands.
  */
 export function CapabilityTable({ catalog, rows = CAPABILITY_ROWS }: {
   catalog: CatalogView | null;
   rows?: readonly (readonly string[])[];
 }): JSX.Element {
+  // M2: the gate lives here, in code, not in caller discipline. A mismatching
+  // non-null catalog is rendered as if it carried no capabilities; the static
+  // page (null) is untouched.
+  const vouched = catalog !== null && catalogMatches(catalog) ? catalog : null;
+  const cellsCatalog: CatalogView | null =
+    catalog !== null && vouched === null ? { ...catalog, capabilities: [] } : vouched;
   return (
     // overflow-wrap: anywhere keeps the five-column table inside the gutter at
     // 200% text: cells break and stack their words instead of widening.
@@ -167,7 +174,7 @@ export function CapabilityTable({ catalog, rows = CAPABILITY_ROWS }: {
         </thead>
         <tbody>
           {rows.map(([label, token, ...cells]) => {
-            const row = capabilityRow(catalog, token, cells);
+            const row = capabilityRow(cellsCatalog, token, cells);
             return (
               <tr key={token}>
                 <th scope="row">{label}</th>
@@ -193,13 +200,6 @@ export interface PlansPageProps {
 export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element {
   const attributed = catalog !== null && catalogMatches(catalog);
   const blocked = catalog !== null && !attributed;
-  // M2: only a catalog that passed the sell gate may confirm capability cells.
-  // A blocked catalog reaches the table as a view with no capabilities, so
-  // every claimed cell falls to the unconfirmed wording instead of
-  // contradicting the mismatch message; the static page (no catalog) keeps
-  // the approved copy as ever.
-  const capabilityCatalog: CatalogView | null =
-    catalog === null || attributed ? catalog : { ...catalog, capabilities: [] };
   return (
     <>
       <section style={pagePadding}>
@@ -227,7 +227,7 @@ export function PlansPage({ catalog = null }: PlansPageProps = {}): JSX.Element 
       </section>
       <section style={pagePadding}>
         <h2>Included in each plan</h2>
-        <CapabilityTable catalog={capabilityCatalog} />
+        <CapabilityTable catalog={catalog} />
       </section>
       <section style={pagePadding}>
         <h2>Reviews and Free</h2>
