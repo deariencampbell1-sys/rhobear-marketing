@@ -48,10 +48,13 @@ const NOT_IN_CHECKOUT = 'Not included in checkout yet';
 
 // P02/F22: the plans-only filter is the invariant — the top-up add-on renders
 // as its own line, can never become a fifth plan and never reaches planCopyFor,
-// so the add-on id is excluded from its parameter type instead of being handled
-// by an unreachable arm.
+// so the add-on id is excluded from the row type instead of being handled by an
+// unreachable arm. M1: the narrowing lives here and the PlanList prop carries
+// the narrowed row, so no call site needs `as PlanId`.
 type PlanId = Exclude<PriceRowId, 'top-up'>;
-const approvedPlans = approvedPriceList.filter((row) => row.kind === 'plan');
+type PlanRow = PriceRow & { id: PlanId };
+const isPlanRow = (row: PriceRow): row is PlanRow => row.kind === 'plan';
+const approvedPlans = approvedPriceList.filter(isPlanRow);
 const topUpRow = approvedPriceList.find((row) => row.kind === 'add-on');
 const planCopyFor = (id: PlanId): string => planCopy[id];
 
@@ -117,18 +120,18 @@ function capabilityRow(view: CatalogView | null, token: string, cells: readonly 
 
 /**
  * Test seam (F21): exported so tests can drive the no-add-on branch directly.
- * Production call sites must pass approved data only — the approvedPriceList
- * rows and its add-on — because this component renders whatever plans/topUp
- * it is given without validating either.
+ * The prop type carries the plans-only invariant (`PlanRow` ids exclude
+ * 'top-up'), so a top-up row cannot be handed in as a plan and planCopyFor
+ * never needs a cast.
  */
-export function PlanList({ plans, topUp }: { plans: readonly PriceRow[]; topUp: PriceRow | undefined }): JSX.Element {
+export function PlanList({ plans, topUp }: { plans: readonly PlanRow[]; topUp: PriceRow | undefined }): JSX.Element {
   return (
     <ul>
       {plans.map((plan) => (
         <li key={plan.id} style={stack}>
           <h3>{plan.label}</h3>
           <p>${plan.monthly} per month · ${plan.includedCredit} included credit · Renews {billingTerms.interval}</p>
-          <p>{planCopyFor(plan.id as PlanId)}</p>
+          <p>{planCopyFor(plan.id)}</p>
           <p>{plan.notes}</p>
         </li>
       ))}

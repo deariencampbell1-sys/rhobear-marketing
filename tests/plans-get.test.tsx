@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 import type { ReactElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 // W1-03-r1: Plans (P01/P02/P04), the Get shelf (T01/T03/G01) and the Herald /
@@ -13,6 +13,7 @@ import {
   heraldOffers,
   launchOffer,
   planCopy,
+  type PriceRow,
   type PriceRowId,
 } from '../src/data/offers';
 import { checkoutState } from '../src/data/legal';
@@ -113,7 +114,9 @@ const GENERATED_AT = '2026-10-29T12:00:00Z';
 const CLOCK = Date.parse('2026-10-29T12:05:00Z');
 const CATALOG_VERSION = '2026-10-29.1';
 
-const approvedPlanRows = approvedPriceList.filter((row) => row.kind === 'plan');
+const approvedPlanRows = approvedPriceList.filter(
+  (row): row is PriceRow & { id: Exclude<PriceRowId, 'top-up'> } => row.kind === 'plan',
+);
 
 const catalogPlanRows = approvedPlanRows.map((row) => ({
   sku: row.id,
@@ -249,7 +252,7 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     for (const plan of approvedPlanRows) {
       expect(html, plan.id).toContain(`$${plan.monthly} per month`);
       expect(html, plan.id).toContain(`$${plan.includedCredit} included credit`);
-      expect(html, plan.id).toContain(planCopy[plan.id as Exclude<PriceRowId, 'top-up'>]);
+      expect(html, plan.id).toContain(planCopy[plan.id]);
       expect(html, plan.id).toContain(plan.notes);
     }
     // Every dollar figure on the page is an approved decimal string: no
@@ -918,6 +921,24 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     expect(matchedMatrix[5]).toEqual([
       'customer OpenRouter key', 'Not included', 'Allowed', 'Allowed', 'Allowed',
     ]);
+  });
+
+  it('PlanList plans prop carries PlanId so a top-up cannot reach planCopyFor (M1)', () => {
+    const { PlanList } = requireScreens();
+    // Type-level proof: the exported prop type — not a cast at the call site —
+    // carries the plans-only invariant, so a top-up row is not assignable.
+    type PlanListPlans = Parameters<typeof PlanList>[0]['plans'];
+    type PlanElement = PlanListPlans[number];
+    expectTypeOf<PlanElement['id']>().toEqualTypeOf<Exclude<PriceRowId, 'top-up'>>();
+    expectTypeOf<PriceRow & { id: 'top-up' }>().not.toMatchTypeOf<PlanElement>();
+    // Runtime side: the approved plan rows never contain the add-on, and the
+    // component renders every plan's own copy.
+    expect(approvedPlanRows.map((plan) => plan.id)).not.toContain('top-up');
+    const html = render(<PlanList plans={approvedPlanRows} topUp={undefined} />);
+    expect((html.match(/<h3>/g) ?? [])).toHaveLength(4);
+    for (const plan of approvedPlanRows) {
+      expect(html).toContain(planCopy[plan.id]);
+    }
   });
 
   it('defensive branches render their fail-closed wording (F21)', () => {
