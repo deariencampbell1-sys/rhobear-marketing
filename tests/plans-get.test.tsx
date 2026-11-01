@@ -65,8 +65,16 @@ function decodeEntities(text: string): string {
     .replace(/&amp;/g, '&');
 }
 
+// React's renderToString separates adjacent text nodes with an HTML comment
+// (`<!-- -->`) so hydration can re-attach each one. The comment is invisible
+// in a browser, so it is stripped before any text is measured: what these
+// helpers read is the text a reader sees, exactly as before.
 function visibleText(html: string): string {
-  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return html
+    .replace(/<!-- -->/g, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function render(node: ReactElement): string {
@@ -732,7 +740,9 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
     // approved plan facts on /plans and the Android truth on /get.
     const plans = renderRoute('/plans');
     expect(plans).toContain('Shell Plus');
-    expect(plans).toContain('$50.99');
+    // The price is one text node next to the currency symbol, so the visible
+    // text is what carries it.
+    expect(visibleText(plans)).toContain('$50.99');
     expect(plans).not.toContain('Catalog mismatch; purchase is blocked.');
     const get = renderRoute('/get');
     expect(get).toContain('Android purchase is not available; use the web alternative.');

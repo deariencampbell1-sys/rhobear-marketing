@@ -88,9 +88,14 @@ const CANONICAL_PATHS = [
   ...engineScenarios.map((scenario) => `/engines/${scenario.scenarioId}`),
 ];
 
+// React's renderToString separates adjacent text nodes with an HTML comment
+// (`<!-- -->`) so hydration can re-attach each one. The comment is invisible
+// in a browser, so it is stripped before any text is measured: what these
+// helpers read is the text a reader sees, exactly as before.
 function visibleText(html: string): string {
   return html
     .replace(/<script[\s\S]*?<\/script>/g, '')
+    .replace(/<!-- -->/g, '')
     .replace(/<[^>]+>/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -140,7 +145,7 @@ function decodeEntities(text: string): string {
 
 /** The visible text runs of a markup fragment, each one normalised. */
 function visibleRuns(fragment: string): string[] {
-  return [...fragment.matchAll(/>([^<>]+)</g)]
+  return [...fragment.replace(/<!-- -->/g, '').matchAll(/>([^<>]+)</g)]
     .map((match) => decodeEntities(match[1]).trim().replace(/^·\s*/, ''))
     .filter((text) => text !== '');
 }
