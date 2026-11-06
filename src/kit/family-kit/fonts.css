@@ -1,0 +1,41 @@
+/* Subset of @rhobear/family-kit dist/fonts/fonts.css: the three faces rhobear.ai uses
+   (Rokkitt, Lato, Droid Sans Mono) and the role stacks, served from /fonts/.
+   Origin: see SOURCE.md. Do not edit; re-copy. */
+
+@font-face {
+  font-family: "Rokkitt";
+  src: url("/fonts/rokkitt/Rokkitt[wght].ttf") format("truetype");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lato";
+  src: url("/fonts/lato/Lato-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Lato";
+  src: url("/fonts/lato/Lato-Bold.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Droid Sans Mono";
+  src: url("/fonts/droidsansmono/DroidSansMono.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --rb-font-display: "Rokkitt", serif;
+  --rb-font-ui: "Lato", sans-serif;
+  --rb-font-code: "Droid Sans Mono", monospace;
+}

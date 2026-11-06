@@ -1,0 +1,290 @@
+/* W1-02 buttons: the emitted CSS is the contract.
+ *
+ * Every value is extracted from outputs/rho-ux-flows/kit/rho-ui.css (line
+ * named per rule) or is the Q5 owner decision in
+ * docs/north-star/lanes/L3-kit/CONTRACT.md "Buttons, feedback and reach".
+ * Durations come from W1-01's motion.css; colours from the skin tokens.
+ * test/buttons.test.mjs reads this file and asserts the values; the order of
+ * the rules below is part of the contract (later rules win ties).
+ */
+
+/* Base geometry and type (rho-ui.css:289, 293). */
+.rb-btn {
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  min-width: var(--rb-min-hit);
+  min-height: var(--rb-min-hit);
+  padding: 10px 14px;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  font-family: inherit;
+  font-size: var(--rb-type-action-size);
+  line-height: var(--rb-type-action-lh);
+  font-weight: 900;
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform var(--rb-motion-press-dur) var(--rb-motion-press-ease),
+    background var(--rb-motion-press-dur) var(--rb-motion-press-ease),
+    box-shadow var(--rb-motion-press-dur) var(--rb-motion-press-ease),
+    color var(--rb-motion-press-dur) var(--rb-motion-press-ease);
+}
+
+.rb-btn--full {
+  width: 100%;
+}
+
+/* Primary glass, dark skins (rho-ui.css:294-295). */
+.rb-btn--primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 62%, #fff) 0%, var(--accent) 46%, color-mix(in srgb, var(--accent) 80%, #000) 100%);
+  color: var(--accent-ink);
+  box-shadow: inset 0 1px 0 #ffffffc0, inset 0 -1px 0 #00000033, 0 0 0 1px color-mix(in srgb, var(--accent) 55%, #000), 0 6px 18px var(--accent-glow);
+}
+
+/* The gloss band over the upper half (rho-ui.css:297). */
+.rb-btn--primary::after,
+.rb-btn--secondary::after {
+  content: "";
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  top: 1px;
+  height: 48%;
+  border-radius: inherit;
+  background: linear-gradient(180deg, #ffffff66, #ffffff0a);
+  pointer-events: none;
+}
+
+/* The moving sheen (rho-ui.css:298-299), on W1-01's glass-sheen token. */
+.rb-btn--primary::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  left: -60%;
+  background: linear-gradient(100deg, transparent, #ffffff59, transparent);
+  transform: skewX(-18deg);
+  animation: rb-sheen var(--rb-motion-glass-sheen-dur) var(--rb-motion-glass-sheen-ease) infinite;
+  pointer-events: none;
+}
+
+@keyframes rb-sheen {
+  0%, 70% { left: -60%; }
+  90%, 100% { left: 130%; }
+}
+
+/* Q5, light and blossom only: the 90% top stop, and the shine on the border
+   rim only (the inset rim in box-shadow stays; the gloss band over the label
+   is removed). */
+[data-skin=light] .rb-btn--primary,
+[data-skin=blossom] .rb-btn--primary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 90%, white) 0%, var(--accent) 46%, color-mix(in srgb, var(--accent) 80%, #000) 100%);
+}
+
+[data-skin=light] .rb-btn--primary::after,
+[data-skin=blossom] .rb-btn--primary::after {
+  display: none;
+}
+
+/* Secondary gray glass (rho-ui.css:300-301). */
+.rb-btn--secondary {
+  background: linear-gradient(180deg, color-mix(in srgb, var(--glass2) 70%, #fff 12%), var(--glass2));
+  color: var(--text);
+  box-shadow: inset 0 1px 0 #ffffff2e, inset 0 0 0 1px var(--line2), 0 3px 10px #0000002e;
+}
+
+.rb-btn--secondary::after {
+  background: linear-gradient(180deg, #ffffff24, #ffffff00);
+}
+
+/* Hover brightens the glass (rho-ui.css:296, 302); never on an inert or
+   pressed control (the Q5 press colours are locked). */
+.rb-btn--primary:hover:not(:disabled):not([data-state="pending"]):not(.is-pressed) {
+  filter: brightness(1.06);
+}
+.rb-btn--secondary:hover:not(:disabled):not([data-state="pending"]):not(.is-pressed) {
+  filter: brightness(1.08);
+}
+
+/* Destructive: #d13b3b with a white label; confirmation is the app's flow. */
+.rb-btn--destructive {
+  background: #d13b3b;
+  color: #fff;
+}
+
+/* States. The app drives them; the kit only paints them.
+   pending: the words stay, W1-01's light runs through them (see WorkLabel). */
+.rb-btn[data-state="pending"] {
+  cursor: progress;
+}
+
+/* complete: the source done fill (rho-ui.css:305), every variant. */
+.rb-btn[data-state="complete"] {
+  background: linear-gradient(180deg, #178040, #106131);
+  color: #fff;
+}
+
+/* error: the variant's own fill and label stay; the skin's --red ring sits
+   outside on the page, beside the icon and the words (never colour alone). */
+.rb-btn[data-state="error"] {
+  box-shadow: 0 0 0 2px var(--ink), 0 0 0 4px var(--red);
+}
+
+/* The work light inside a button: the words fade halfway into the button's
+   own fill and back, so the light shows on every fill while the resting
+   label keeps its measured contrast. */
+.rb-btn .rb-work {
+  --sweep-base: currentColor;
+  --sweep-hi: color-mix(in srgb, currentColor 50%, var(--accent));
+  --sweep-mid: var(--sweep-hi);
+}
+.rb-btn--secondary .rb-work {
+  --sweep-hi: color-mix(in srgb, currentColor 50%, var(--glass2));
+}
+.rb-btn--destructive .rb-work {
+  --sweep-hi: color-mix(in srgb, currentColor 50%, #d13b3b);
+}
+
+/* Disabled: real attribute, source dimming (rho-ui.css:310). Exempt from the
+   4.5:1 table (WCAG 1.4.3 inactive components). */
+.rb-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Q5 press (CONTRACT): #a3abb8 -> #7c8491, label #121722, scale .96, no
+   sheen (rho-ui.css:303-304). Last and doubled so no variant, skin or state
+   rule can tie it. Never applied while pending or disabled (Button.tsx). */
+.rb-btn.rb-btn.is-pressed {
+  transform: scale(0.96);
+  background: linear-gradient(180deg, #a3abb8, #7c8491);
+  color: #121722;
+  box-shadow: inset 0 1px 0 #ffffff55, inset 0 2px 6px #0004, 0 0 0 1px #5d6470;
+}
+.rb-btn.rb-btn.is-pressed::before {
+  display: none;
+}
+
+/* IconButton: 36px art may stay, the hit region is 44 x 44. */
+.rb-icon-btn {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--rb-min-hit);
+  min-height: var(--rb-min-hit);
+  padding: 0;
+  border: none;
+  border-radius: var(--rb-radius-control);
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  transition: transform var(--rb-motion-press-dur) var(--rb-motion-press-ease);
+}
+.rb-icon-btn.is-pressed {
+  transform: scale(0.96);
+}
+.rb-icon-btn[data-state="pending"] {
+  cursor: progress;
+  outline: 2px solid var(--ask);
+  outline-offset: 2px;
+}
+.rb-icon-btn[data-state="complete"] {
+  outline: 2px solid var(--green);
+  outline-offset: 2px;
+}
+.rb-icon-btn[data-state="error"] {
+  outline: 2px solid var(--red);
+  outline-offset: 2px;
+}
+.rb-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* WorkLabel: the words, the check, the error icon. */
+.rb-work-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+}
+.rb-work-label-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rb-work-label svg {
+  flex: none;
+}
+
+/* complete: one glow on the `appear` token (CONTRACT: new event-state
+   transitions use appear), then still. */
+.rb-work-label--complete {
+  animation: rb-glow-once var(--rb-motion-appear-dur) var(--rb-motion-appear-ease) 1 both;
+}
+.rb-work-label--complete.rb-work-label--settled {
+  animation: none;
+  text-shadow: none;
+}
+@keyframes rb-glow-once {
+  0% { text-shadow: 0 0 10px color-mix(in srgb, currentColor 70%, transparent); }
+  100% { text-shadow: 0 0 0 transparent; }
+}
+
+/* A standalone error label uses the skin's --red; inside a button the label
+   keeps the button's own ink (the ring carries the colour). */
+.rb-work-label--error {
+  color: var(--red);
+}
+.rb-btn .rb-work-label--error {
+  color: inherit;
+}
+
+/* Focus: the 2px accent outline (rho-ui.css:185), drawn outside the control
+   (offset 2px, not the source's -2px) so it shows against the page on a
+   primary whose fill is the accent itself. After the IconButton state
+   outlines so a focused icon in any state still shows focus. */
+.rb-btn:focus-visible,
+.rb-icon-btn:focus-visible {
+  outline: var(--rb-focus-ring) solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Reduced motion: no scale, no sheen, no glow; colour and words stay.
+   W1-01's motion.css already zeroes the durations and stops .rb-work. */
+@media (prefers-reduced-motion: reduce) {
+  .rb-btn.rb-btn.is-pressed,
+  .rb-icon-btn.is-pressed {
+    transform: none;
+  }
+  .rb-btn--primary::before {
+    animation: none;
+    display: none;
+  }
+  .rb-work-label--complete {
+    animation: none;
+    text-shadow: none;
+  }
+}
+:root[data-motion=reduce] .rb-btn.rb-btn.is-pressed,
+:root[data-motion=reduce] .rb-icon-btn.is-pressed {
+  transform: none;
+}
+:root[data-motion=reduce] .rb-btn--primary::before {
+  animation: none;
+  display: none;
+}
+:root[data-motion=reduce] .rb-work-label--complete {
+  animation: none;
+  text-shadow: none;
+}

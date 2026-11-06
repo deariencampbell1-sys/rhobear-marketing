@@ -4,6 +4,9 @@
 // 1.0.0, the swap is: add the dependency, change the re-exports below to
 // '@rhobear/family-kit/react', delete the local primitives + tokens.ts.
 // See src/kit/README.md.
+// Frontdoor: family-kit 1.0.0's tokens, fonts, buttons and rows reach every
+// page through this one stylesheet (prerender links it on every route).
+import './site.css';
 export { Button } from './buttons';
 export type { ButtonProps, ButtonVariant } from './buttons';
 export { InfoList, InfoRow, RadioList, SwitchRow, Chip } from './rows';

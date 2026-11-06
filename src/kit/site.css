@@ -1,0 +1,70 @@
+/* Frontdoor: the one stylesheet for rhobear.ai. family-kit 1.0.0 supplies every
+   colour, font, radius and motion value (src/kit/family-kit, see SOURCE.md); this
+   file only places them on the page the way the L9 board draws its frames
+   (rhobear-north-star docs/north-star/lanes/L9-front-door/board.html: .main,
+   .canvas, .row, .primary/.secondary, .top, .footer). Pages never carry values. */
+@import './family-kit/tokens.css';
+@import './family-kit/fonts.css';
+@import './family-kit/motion.css';
+@import './family-kit/controls.css';
+@import './family-kit/rows.css';
+
+html{color-scheme:dark}
+body{margin:0;background:var(--ink);color:var(--text);font-family:var(--f-body);font-size:16px;line-height:1.55}
+
+/* Skip link: off-screen until focused. */
+#root>a[href="#main"]:first-child{position:absolute;left:-9999px;top:8px}
+#root>a[href="#main"]:first-child:focus{left:16px;z-index:10;padding:8px 12px;background:var(--glass2);border-radius:var(--rb-radius-control)}
+
+/* Header bar (board .top / .brand). */
+header{min-height:72px;display:flex;align-items:center;padding:12px 20px;border-bottom:1px solid var(--line2);background:var(--glass)}
+header nav a{font:700 25px var(--rb-font-display);color:var(--text);text-decoration:none;letter-spacing:.01em}
+
+/* Content column (board .main, .lede max 840px). */
+main{max-width:1040px;margin:0 auto;padding:28px 28px 8px}
+main h1{font:700 38px/1.08 var(--rb-font-display);margin:0 0 8px}
+main section{border-bottom:1px solid var(--line)}
+main h2{font:700 34px/1.08 var(--rb-font-display);margin:0 0 12px;max-width:600px}
+main h3{font:700 21px/1.2 var(--rb-font-display);margin:20px 0 8px}
+main p,main li{color:var(--soft);max-width:840px}
+main p{margin:0 0 12px}
+main ul{padding-left:20px}
+main article{padding:4px 0 12px}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible{outline:var(--rb-focus-ring) solid var(--accent);outline-offset:2px}
+
+/* Information rows (board .row): the inline divider is currentColor, so the row
+   colour is the hairline and the label/value carry their own colours. */
+.rb-info-row{color:var(--line2);align-items:baseline}
+.rb-info-row dt{color:var(--muted)}
+.rb-info-row dd{color:var(--text)}
+
+/* Tables read as rows too. */
+main table{width:100%;border-collapse:collapse;margin:8px 0 16px;font-size:14px}
+main th,main td{text-align:left;padding:12px 8px 12px 0;border-bottom:1px solid var(--line2);vertical-align:top}
+main th{color:var(--muted);font:12px var(--rb-font-code);text-transform:uppercase;letter-spacing:.08em}
+main td{color:var(--text)}
+
+/* Actions: the kit's glass buttons. Quiet is a plain text link. */
+[data-primary]{margin:20px 0}
+a.rb-btn{text-decoration:none}
+[data-variant=quiet]{color:var(--soft);text-decoration:none}
+[data-variant=quiet]:hover{color:var(--accent)}
+button:not(.rb-btn){font:inherit;color:var(--text);background:var(--glass2);border:1px solid var(--line2);border-radius:var(--rb-radius-control);padding:10px 14px;cursor:pointer}
+
+/* Footer (board .footer). */
+footer{max-width:1040px;margin:0 auto;padding:12px 28px;color:var(--muted);font-size:13px}
+footer a{color:var(--muted)}
+footer[data-shared-footer]{border-top:1px solid var(--line2);padding-bottom:48px}
+footer[data-shared-footer] ul{padding-left:0!important;padding-right:0!important}
+
+/* Phone (board @media max-width:700px; 16 px gutters). */
+@media (max-width:700px){
+  header{padding:12px 16px}
+  main{padding:22px 16px 8px}
+  main h2{font-size:30px}
+  main section{padding-inline:0!important}
+  footer{padding:12px 16px}
+  [data-primary] .rb-btn--primary{flex:1}
+}
+@media (prefers-reduced-motion:reduce){.rb-btn--primary::before{animation:none}}

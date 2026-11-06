@@ -681,6 +681,26 @@ describe('prerender output', () => {
     }
   });
 
+  it('frontdoor: every page is dressed in the family-kit look, not browser defaults', () => {
+    // 11-02: the owner saw ten white pages in Times. The kit reached 1.0.0, so
+    // every page links one stylesheet whose values are the family-kit tokens
+    // and whose fonts ship in dist/ byte for byte.
+    const pages = [...routes.map((r) => r.path), '/404'];
+    for (const path of pages) {
+      const file = path === '/404' ? `${DIST}/404.html` : pageFor(path);
+      const html = fs.readFileSync(file, 'utf8');
+      const hrefs = [...html.matchAll(/<link rel="stylesheet" href="([^"]+\.css)">/g)].map((m) => m[1]);
+      expect(hrefs, `${path}: one stylesheet`).toHaveLength(1);
+      const css = fs.readFileSync(`${DIST}${hrefs[0]}`, 'utf8');
+      expect(css, `${path}: kit ink`).toMatch(/--ink:\s*#070a11/);
+      expect(css, `${path}: page background`).toMatch(/(^|\})body\{[^}]*background:var\(--ink\)/);
+      expect(css, `${path}: body font`).toMatch(/(^|\})body\{[^}]*font-family:var\(--f-body\)/);
+      for (const font of [...css.matchAll(/url\(([^)]+\.ttf)\)/g)].map((m) => m[1].replace(/^["']|["']$/g, ''))) {
+        expect(fs.existsSync(`${DIST}${decodeURI(font)}`), `${path}: ${font}`).toBe(true);
+      }
+    }
+  });
+
   it('allows all in robots.txt and points at the sitemap', () => {
     const robots = fs.readFileSync(`${DIST}/robots.txt`, 'utf8');
     expect(robots).toContain('User-agent: *');
