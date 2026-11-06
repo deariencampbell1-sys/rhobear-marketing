@@ -32,10 +32,11 @@ describe('page shell', () => {
         html.indexOf('<a href="#main">'),
         html.indexOf('<header>'),
         html.indexOf('<main id="main">'),
-        html.indexOf('<footer>'),
+        html.indexOf('<footer data-shared-footer="true">'),
       ];
       expect(order.every((i) => i >= 0), `${path}: landmarks`).toBe(true);
       expect([...order].sort((a, b) => a - b), `${path}: focus order`).toEqual(order);
+      expect((html.match(/<footer\b/g) ?? []), `${path}: one shared footer`).toHaveLength(1);
     }
   });
 });
