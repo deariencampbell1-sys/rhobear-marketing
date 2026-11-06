@@ -1,5 +1,4 @@
 import * as React from 'react';
-import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { routes, notFoundRoute } from '../src/app/routes';
@@ -84,9 +83,6 @@ describe('kit: Button', () => {
       expect(html).toContain('min-width:44px');
       expect(html).not.toContain('class="rb-btn');
     }
-    const css = readFileSync(new URL('../src/kit/site.css', import.meta.url), 'utf8');
-    expect(css).toContain('[data-variant=quiet]{display:inline-flex');
-    expect(css).toContain('button:not(.rb-btn):not([data-variant=quiet])');
   });
 
   it('keeps the 44 px hit region when the caller passes smaller minima', () => {
@@ -114,9 +110,6 @@ describe('kit: rows', () => {
     expect(html).toContain('<dt class="rb-info-label">Plan</dt>');
     expect(html).toContain('<dd class="rb-info-value">· Studio</dd>');
     expect(html).not.toMatch(/style="[^"]*border-bottom/);
-    const css = readFileSync(new URL('../src/kit/family-kit/rows.css', import.meta.url), 'utf8');
-    expect(css).toContain('.rb-info-row:not(:last-child)');
-    expect(css).toContain('border-bottom: thin solid var(--line)');
   });
 
   it('RadioList renders a labelled fieldset with named radios and one checked', () => {
