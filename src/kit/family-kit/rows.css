@@ -1,0 +1,366 @@
+/* family-kit rows and choices — W1-07: InfoRow/InfoList, RadioList,
+ * SwitchRow, Chip.
+ *
+ * Owner rule (L2 issue #30, CROSS-LANE.md section Q3): information is a plain
+ * label/value row with a hairline divider — no box, no fill, no radius per
+ * row, no hover, never clickable. Only real choices are controls; only actions
+ * are buttons.
+ *
+ * Every value below is consumed from dist/tokens/tokens.css or
+ * dist/motion/motion.css. This sheet declares no colour, no size, no radius
+ * and no duration of its own: test/rows.test.mjs fails while a raw hex, a
+ * literal length or a re-declared duration appears. The hairline divider uses
+ * the CSS `thin` keyword (the spec's hairline) so even that line is not a
+ * literal. Reduced motion needs no rules here — the motion tokens go to 0ms
+ * under prefers-reduced-motion and under :root[data-motion=reduce], so every
+ * transition below becomes instant live.
+ */
+
+/* Kit rows measure themselves: box sizing is set on every class the kit owns,
+   so the layout holds in an app with or without a global reset. */
+.rb-info-list, .rb-info-row, .rb-info-label, .rb-info-value, .rb-info-note,
+.rb-info-empty, .rb-info-action, .rb-radio-group, .rb-group-label, .rb-radio,
+.rb-radio-text, .rb-radio-label, .rb-radio-desc, .rb-radio-indicator,
+.rb-switch-row, .rb-switch-labels, .rb-switch-label, .rb-switch-desc,
+.rb-switch-track, .rb-switch-knob, .rb-chip, .rb-chip-body {
+  box-sizing: border-box;
+}
+
+/* Focus: the kit's 2 px ring in the skin's accent, on keyboard focus of every
+   interactive row and chip (geometry: --rb-focus-ring, colour: --accent). */
+.rb-radio:focus-visible,
+.rb-switch-row:focus-visible,
+.rb-chip:focus-visible {
+  outline: var(--rb-focus-ring) solid var(--accent);
+  outline-offset: var(--rb-focus-ring);
+}
+
+/* --------------------------------------------------------------------------
+ * Information (InfoRow / InfoList): plain label · value rows.
+ * No background, no radius, no hover, no cursor, no role — see test2.
+ * ----------------------------------------------------------------------- */
+.rb-info-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+}
+
+.rb-info-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--rb-space-3);
+  margin: 0;
+  padding: var(--rb-space-3) 0;
+  background: transparent;
+}
+
+/* The divider sits between rows only: never before the first (no top or side
+   border exists at all), never after the last (:not(:last-child)). */
+.rb-info-row:not(:last-child) {
+  border-bottom: thin solid var(--line);
+}
+
+.rb-info-label {
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: var(--rb-type-body-size);
+  line-height: var(--rb-type-body-lh);
+}
+
+.rb-info-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--rb-type-body-size);
+  line-height: var(--rb-type-body-lh);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+/* The note is a second, dimmer line under the value; error rows repaint it in
+   the skin's red — words still say what is wrong, never colour alone. */
+.rb-info-note {
+  display: block;
+  color: var(--dim);
+  font-size: var(--rb-type-meta-size);
+  line-height: var(--rb-type-meta-lh);
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.rb-info-note--error {
+  color: var(--red);
+}
+
+.rb-info-action {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+/* The slot holds the app's control (an IconButton). The kit guarantees the
+   slot's control keeps the 44 px floor wherever the app puts it. */
+.rb-info-action > button {
+  min-height: var(--rb-min-hit);
+  min-width: var(--rb-min-hit);
+}
+
+/* Empty list: one muted line with the row's own padding, so the container
+   keeps its height — and never a spinner (a spinner for an empty list is
+   drift; the state is the words). */
+.rb-info-empty {
+  margin: 0;
+  padding: var(--rb-space-3);
+  color: var(--muted);
+  font-size: var(--rb-type-body-size);
+  line-height: var(--rb-type-body-lh);
+}
+
+/* --------------------------------------------------------------------------
+ * Choice (RadioList): a real radiogroup. One tab stop (roving tabindex lives
+ * in the markup, movement in RadioList.tsx), whole row is the hit target,
+ * selection repaints with the press motion so the change lands visibly.
+ * ----------------------------------------------------------------------- */
+.rb-radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-1);
+  margin: 0;
+  padding: 0;
+}
+
+.rb-group-label {
+  display: block;
+  margin: 0 0 var(--rb-space-2);
+  color: var(--muted);
+  font-size: var(--rb-type-meta-size);
+  line-height: var(--rb-type-meta-lh);
+}
+
+.rb-radio {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-3);
+  min-height: var(--rb-min-hit);
+  margin: 0;
+  padding: var(--rb-space-2) var(--rb-space-3);
+  background: var(--glass);
+  color: var(--text);
+  cursor: pointer;
+  transition:
+    background-color var(--rb-motion-press-dur) var(--rb-motion-press-ease),
+    color var(--rb-motion-press-dur) var(--rb-motion-press-ease);
+}
+
+/* Selected: the row fills with the accent, the label takes the accent ink that
+   is mixed to sit on it, and the indicator keeps an accent ring around its
+   accent-ink disc. */
+.rb-radio[aria-checked=true] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Disabled: real aria-disabled semantics, no pointer-events tricks; the dim
+   ink stays legible in every skin (test6 measures it). */
+.rb-radio[aria-disabled=true] {
+  color: var(--dim);
+  cursor: default;
+}
+
+.rb-radio-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-1);
+}
+
+.rb-radio-label {
+  color: inherit;
+  font-size: var(--rb-type-body-size);
+  line-height: var(--rb-type-body-lh);
+  overflow-wrap: anywhere;
+}
+
+.rb-radio-desc {
+  color: var(--muted);
+  font-size: var(--rb-type-meta-size);
+  line-height: var(--rb-type-meta-lh);
+  overflow-wrap: anywhere;
+}
+
+.rb-radio[aria-checked=true] .rb-radio-desc {
+  color: var(--accent-ink);
+}
+
+.rb-radio[aria-disabled=true] .rb-radio-desc {
+  color: var(--dim);
+}
+
+/* A selected locked plan keeps the measured accent pair: disabled changes
+   interaction, not the selected text/background contrast contract. */
+.rb-radio[aria-checked=true][aria-disabled=true],
+.rb-radio[aria-checked=true][aria-disabled=true] .rb-radio-desc {
+  color: var(--accent-ink);
+}
+
+.rb-radio-indicator {
+  flex: 0 0 auto;
+  inline-size: var(--rb-space-6);
+  block-size: var(--rb-space-6);
+  border: var(--rb-focus-ring) solid var(--muted);
+  border-radius: var(--rb-radius-pill);
+  background: transparent;
+}
+
+.rb-radio[aria-checked=true] .rb-radio-indicator {
+  border-color: var(--accent);
+  background: var(--accent-ink);
+}
+
+.rb-radio[aria-disabled=true] .rb-radio-indicator {
+  border-color: var(--dim);
+}
+
+/* --------------------------------------------------------------------------
+ * Switch (SwitchRow): one row is one switch. The knob travels with the toggle
+ * motion (220 ms), the track repaints with its 200 ms background, and both
+ * token durations collapse to 0ms under reduced motion — live, because they
+ * are consumed, never re-declared.
+ * ----------------------------------------------------------------------- */
+.rb-switch-row {
+  display: flex;
+  align-items: center;
+  gap: var(--rb-space-3);
+  min-height: var(--rb-min-hit);
+  margin: 0 0 var(--rb-space-1);
+  padding: var(--rb-space-2) var(--rb-space-3);
+  background: var(--glass);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.rb-switch-row[aria-disabled=true] {
+  color: var(--dim);
+  cursor: default;
+}
+
+.rb-switch-labels {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--rb-space-1);
+}
+
+.rb-switch-label {
+  color: inherit;
+  font-size: var(--rb-type-body-size);
+  line-height: var(--rb-type-body-lh);
+  overflow-wrap: anywhere;
+}
+
+.rb-switch-desc {
+  color: var(--muted);
+  font-size: var(--rb-type-meta-size);
+  line-height: var(--rb-type-meta-lh);
+  overflow-wrap: anywhere;
+}
+
+.rb-switch-row[aria-disabled=true] .rb-switch-desc {
+  color: var(--dim);
+}
+
+/* Track 36 (= min hit − space-2), knob 16 (= space-6 − space-2), travel 12:
+   all of it arithmetic on tokens, no literal anywhere. */
+.rb-switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  inline-size: calc(var(--rb-min-hit) - var(--rb-space-2));
+  block-size: var(--rb-space-6);
+  border-radius: var(--rb-radius-pill);
+  background: var(--fill);
+  transition: background-color var(--rb-motion-toggle-background-dur) var(--rb-motion-toggle-ease);
+}
+
+.rb-switch-knob {
+  position: absolute;
+  inset-block-start: var(--rb-space-1);
+  inset-inline-start: var(--rb-space-1);
+  inline-size: calc(var(--rb-space-6) - var(--rb-space-2));
+  block-size: calc(var(--rb-space-6) - var(--rb-space-2));
+  border-radius: var(--rb-radius-pill);
+  background: var(--soft);
+  transition: transform var(--rb-motion-toggle-dur) var(--rb-motion-toggle-ease);
+}
+
+.rb-switch-row[aria-checked=true] .rb-switch-track {
+  background: var(--accent);
+}
+
+.rb-switch-row[aria-checked=true] .rb-switch-knob {
+  background: var(--accent-ink);
+  transform: translateX(calc(var(--rb-min-hit) - var(--rb-space-2) - (var(--rb-space-6) - var(--rb-space-2)) - (var(--rb-space-1) * 2)));
+}
+
+/* --------------------------------------------------------------------------
+ * Chip: a filter carries aria-pressed, a plain tag is just markup. The pill
+ * is the visual body; the button around it keeps the 44 px hit region, so the
+ * art may stay compact (CONTRACT: visible art may stay compact).
+ * ----------------------------------------------------------------------- */
+.rb-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-block-size: var(--rb-min-hit);
+  min-inline-size: var(--rb-min-hit);
+  margin: 0 var(--rb-space-1) var(--rb-space-1) 0;
+  padding: var(--rb-space-1);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  vertical-align: top;
+}
+
+.rb-chip-tag {
+  cursor: default;
+}
+
+.rb-chip-body {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--rb-space-1);
+  padding: var(--rb-space-2) var(--rb-space-3);
+  border-radius: var(--rb-radius-pill);
+  background: var(--fill);
+  color: var(--text);
+  font-size: var(--rb-type-meta-size);
+  line-height: var(--rb-type-meta-lh);
+  transition:
+    background-color var(--rb-motion-press-dur) var(--rb-motion-press-ease),
+    color var(--rb-motion-press-dur) var(--rb-motion-press-ease);
+}
+
+.rb-chip[aria-pressed=true] .rb-chip-body {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* Disabled chips keep the real disabled attribute; the ink drops to --muted,
+   which still clears 4.5:1 in every skin (the fill it sits on is translucent,
+   so --dim would not). This rule comes after the pressed one on purpose. */
+.rb-chip:disabled {
+  color: var(--muted);
+  cursor: default;
+}
+
+.rb-chip:disabled .rb-chip-body {
+  background: var(--fill);
+  color: var(--muted);
+}

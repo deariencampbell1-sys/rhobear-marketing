@@ -38,6 +38,9 @@ export function Button({
     boxSizing: 'border-box',
     ...(focused ? { outline: '2px solid AccentColor', outlineOffset: 2 } : {}),
   };
+  // family-kit 1.0.0 paints primary and secondary (src/kit/family-kit/controls.css);
+  // quiet stays a plain text control.
+  const className = variant === 'quiet' ? undefined : `rb-btn rb-btn--${variant}`;
   const focusHandlers = {
     onFocus: () => setFocused(true),
     onBlur: () => setFocused(false),
@@ -47,6 +50,7 @@ export function Button({
     return (
       <a
         href={href}
+        className={className}
         data-variant={variant}
         aria-label={ariaLabel}
         aria-disabled={disabled || undefined}
@@ -64,6 +68,7 @@ export function Button({
   return (
     <button
       type="button"
+      className={className}
       data-variant={variant}
       disabled={disabled}
       aria-label={ariaLabel}

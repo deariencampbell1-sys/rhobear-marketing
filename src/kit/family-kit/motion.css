@@ -1,0 +1,175 @@
+/* family-kit motion vocabulary. Every duration and easing below is verbatim from
+   docs/north-star/lanes/L3-kit/CONTRACT.md lines 175-188, with the matching
+   rho-ui.css line noted per token. Consume the variables; never retype a number.
+   Tokens and secondary durations live in tokens.json — this file and that file are
+   held in agreement by test/motion-tokens.test.mjs. */
+
+:root {
+  /* press: 120 ms ease down (rho-ui.css:293 .btn .12s ease); the release holds 90 ms */
+  --rb-motion-press-dur: 120ms;       --rb-motion-press-ease: ease;
+  --rb-motion-appear-dur: 250ms;      --rb-motion-appear-ease: ease-out;
+  --rb-motion-disclose-dur: 320ms;    --rb-motion-disclose-ease: cubic-bezier(.2,.8,.2,1);
+  --rb-motion-sheet-dur: 380ms;       --rb-motion-sheet-ease: cubic-bezier(.2,.8,.2,1);
+  --rb-motion-sheet-scrim-dur: 300ms;
+  --rb-motion-toggle-dur: 220ms;      --rb-motion-toggle-ease: cubic-bezier(.2,.8,.2,1);
+  --rb-motion-toggle-background-dur: 200ms;
+  --rb-motion-working-dur: 1600ms;    --rb-motion-working-ease: linear;
+  --rb-motion-scroll-hint-dur: 120ms; --rb-motion-scroll-hint-ease: ease;
+  --rb-motion-scroll-hint-fade-dur: 600ms;
+  --rb-motion-quantity-dur: 800ms;    --rb-motion-quantity-ease: ease;
+  --rb-motion-glass-sheen-dur: 5000ms; --rb-motion-glass-sheen-ease: linear;
+  --rb-motion-push-dur: 240ms;        --rb-motion-push-ease: cubic-bezier(.2,.8,.2,1);
+  --rb-motion-pop-dur: 200ms;         --rb-motion-pop-ease: cubic-bezier(.2,.8,.2,1);
+  --rb-motion-toast-dur: 200ms;       --rb-motion-toast-ease: ease-out;
+  --rb-motion-toast-out-dur: 160ms;
+  --rb-motion-nudge-dur: 180ms;       --rb-motion-nudge-ease: ease;
+  /* portal-gas: the table gives behaviour only — no duration (durationMs is null
+     in tokens.json), so only the easing exists here */
+  --rb-motion-portal-gas-ease: linear;
+}
+
+/* "working": light runs through the words themselves — a gradient clipped to the
+   text (background-clip: text), never a rectangle laid over the button.
+   The stops fall back to currentColor, and the clipping is done with
+   -webkit-text-fill-color rather than color:transparent, so the inherited ink
+   stays resolvable and a theme that defines no --sweep-* still shows the words.
+   (A system colour such as CanvasText is not a safe fallback: it ignores the
+   page's ink and renders black on a dark theme.) */
+@keyframes rb-work {
+  from { background-position: 100% 0; }
+  to   { background-position: 0% 0; }
+}
+
+.rb-work {
+  /* every stop falls back to a plain colour: a fallback that is itself a
+     newer function (color-mix) is not a fallback, because an invalid
+     substitution drops the whole gradient and the transparent fill then
+     paints nothing. The brighter sheen is added in the @supports block. */
+  background-image: linear-gradient(90deg,
+    var(--sweep-base, currentColor) 0%,
+    var(--sweep-base, currentColor) 34%,
+    var(--sweep-hi, currentColor) 46%,
+    var(--sweep-mid, currentColor) 50%,
+    var(--sweep-hi, currentColor) 54%,
+    var(--sweep-base, currentColor) 66%,
+    var(--sweep-base, currentColor) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  animation: rb-work var(--rb-motion-working-dur) var(--rb-motion-working-ease) infinite;
+}
+
+/* the sheen, only where color-mix exists — the kit still ships no colour of its own */
+@supports (color: color-mix(in srgb, white, black)) {
+  .rb-work {
+    background-image: linear-gradient(90deg,
+      var(--sweep-base, currentColor) 0%,
+      var(--sweep-base, currentColor) 34%,
+      var(--sweep-hi, color-mix(in srgb, currentColor 55%, white)) 46%,
+      var(--sweep-mid, currentColor) 50%,
+      var(--sweep-hi, color-mix(in srgb, currentColor 55%, white)) 54%,
+      var(--sweep-base, currentColor) 66%,
+      var(--sweep-base, currentColor) 100%);
+  }
+}
+
+/* only the label itself: a child that sets its own colour keeps it */
+.rb-work { color: inherit; }
+
+/* Only clip where clipping is supported: an engine that honours the text-fill
+   prefix but not background-clip would otherwise paint blank text. */
+@supports (background-clip: text) or (-webkit-background-clip: text) {
+  .rb-work, .rb-work * { -webkit-text-fill-color: transparent; }
+}
+
+/* Reduced motion is data: one media block and the same rules for the explicit
+   preference. Durations go to 0ms and the kit's own animations stop, while
+   colour and text feedback stay (feedback applies instantly, nothing is hidden).
+   The kill rule is scoped to the kit's own classes on purpose: a distributed
+   stylesheet must not disable animation for an app that imports it, and push/pop
+   keep their CONTRACT 120 ms crossfade instead of snapping to a cut. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --rb-motion-press-dur: 0ms;
+    --rb-motion-appear-dur: 0ms;
+    --rb-motion-disclose-dur: 0ms;
+    --rb-motion-sheet-dur: 0ms;
+    --rb-motion-sheet-scrim-dur: 0ms;
+    --rb-motion-toggle-dur: 0ms;
+    --rb-motion-toggle-background-dur: 0ms;
+    --rb-motion-working-dur: 0ms;
+    --rb-motion-scroll-hint-dur: 0ms;
+    --rb-motion-scroll-hint-fade-dur: 0ms;
+    --rb-motion-quantity-dur: 0ms;
+    --rb-motion-glass-sheen-dur: 0ms;
+    --rb-motion-push-dur: 120ms;   /* CONTRACT: 120 ms crossfade, not a cut */
+    --rb-motion-pop-dur: 120ms;
+    --rb-motion-toast-dur: 0ms;
+    --rb-motion-toast-out-dur: 0ms;
+    --rb-motion-nudge-dur: 0ms;
+  }
+  .rb-work, .rb-work *,
+  [data-rb-motion], [data-rb-motion] * {
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0ms !important;
+  }
+  /* static high-contrast work label: the sweep stops and the words stay */
+  .rb-work, .rb-work * {
+    animation: none;
+    color: inherit;
+    -webkit-text-fill-color: currentColor;
+  }
+  /* undo only what .rb-work itself added: the sweep image and the text clip */
+  .rb-work {
+    background-image: none;
+    -webkit-background-clip: border-box;
+    background-clip: border-box;
+  }
+}
+
+:root[data-motion=reduce] {
+  --rb-motion-press-dur: 0ms;
+  --rb-motion-appear-dur: 0ms;
+  --rb-motion-disclose-dur: 0ms;
+  --rb-motion-sheet-dur: 0ms;
+  --rb-motion-sheet-scrim-dur: 0ms;
+  --rb-motion-toggle-dur: 0ms;
+  --rb-motion-toggle-background-dur: 0ms;
+  --rb-motion-working-dur: 0ms;
+  --rb-motion-scroll-hint-dur: 0ms;
+  --rb-motion-scroll-hint-fade-dur: 0ms;
+  --rb-motion-quantity-dur: 0ms;
+  --rb-motion-glass-sheen-dur: 0ms;
+  --rb-motion-push-dur: 120ms;   /* CONTRACT: 120 ms crossfade, not a cut */
+  --rb-motion-pop-dur: 120ms;
+  --rb-motion-toast-dur: 0ms;
+  --rb-motion-toast-out-dur: 0ms;
+  --rb-motion-nudge-dur: 0ms;
+}
+
+/* The two rules below are hoisted to the top level on purpose: nested selectors
+   need CSS Nesting support, and on an engine without it the durations would zero
+   while the colour restore was discarded — leaving the work label invisible for
+   exactly the users who asked for reduced motion. */
+:root[data-motion=reduce] .rb-work,
+:root[data-motion=reduce] .rb-work *,
+:root[data-motion=reduce] [data-rb-motion],
+:root[data-motion=reduce] [data-rb-motion] * {
+  animation-duration: 0ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0ms !important;
+}
+
+:root[data-motion=reduce] .rb-work,
+:root[data-motion=reduce] .rb-work * {
+  animation: none;
+  color: inherit;
+  -webkit-text-fill-color: currentColor;
+}
+
+:root[data-motion=reduce] .rb-work {
+  background-image: none;
+  -webkit-background-clip: border-box;
+  background-clip: border-box;
+}

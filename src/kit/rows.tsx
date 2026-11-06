@@ -15,12 +15,12 @@ const rowStyle: React.CSSProperties = {
 };
 
 export function InfoList({ children }: { children: React.ReactNode }) {
-  return <dl style={{ margin: 0 }}>{children}</dl>;
+  return <dl className="rb-info-list" style={{ margin: 0 }}>{children}</dl>;
 }
 
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div style={rowStyle}>
+    <div className="rb-info-row" style={rowStyle}>
       <dt>{label}</dt>
       <dd style={{ margin: 0 }}>&middot; {value}</dd>
     </div>
