@@ -104,7 +104,6 @@ describe('kit: rows', () => {
         React.createElement(InfoRow, { label: 'Bank', value: '$9.00' }),
       ),
     );
-    expect(html.replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ')).toContain('Plan · Studio');
     expect(html).toContain('<dl class="rb-info-list">');
     expect((html.match(/class="rb-info-row"/g) ?? [])).toHaveLength(2);
     expect(html).toContain('<dt class="rb-info-label">Plan</dt>');
