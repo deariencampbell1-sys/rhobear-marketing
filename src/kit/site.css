@@ -48,9 +48,12 @@ main td{color:var(--text)}
 /* Actions: the kit's glass buttons. Quiet is a plain text link. */
 [data-primary]{margin:20px 0}
 a.rb-btn{text-decoration:none}
-[data-variant=quiet]{color:var(--soft);text-decoration:none}
-[data-variant=quiet]:hover{color:var(--accent)}
-button:not(.rb-btn){font:inherit;color:var(--text);background:var(--glass2);border:1px solid var(--line2);border-radius:var(--rb-radius-control);padding:10px 14px;cursor:pointer}
+/* Quiet buttons and links must stay unfilled text actions. Their inline
+   min-height/min-width only work on anchors with a non-inline display. */
+[data-variant=quiet]{display:inline-flex;align-items:center;justify-content:center;max-width:100%;font:inherit;background:transparent;border:0;padding:8px 0;color:var(--soft);text-decoration:none;cursor:pointer}
+[data-variant=quiet]:hover:not(:disabled):not([aria-disabled=true]){color:var(--accent)}
+[data-variant=quiet]:disabled,[data-variant=quiet][aria-disabled=true]{opacity:.5;cursor:not-allowed}
+button:not(.rb-btn):not([data-variant=quiet]){font:inherit;color:var(--text);background:var(--glass2);border:1px solid var(--line2);border-radius:var(--rb-radius-control);padding:10px 14px;cursor:pointer}
 
 /* Footer (board .footer). */
 footer{max-width:1040px;margin:0 auto;padding:12px 28px;color:var(--muted);font-size:13px}
