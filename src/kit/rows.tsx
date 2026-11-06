@@ -5,24 +5,17 @@
 // SwitchRow and Chip look like controls, because they are choices.
 import * as React from 'react';
 
-const rowStyle: React.CSSProperties = {
-  display: 'flex',
-  gap: '0.5rem',
-  alignItems: 'baseline',
-  padding: '0.5rem 0',
-  margin: 0,
-  borderBottom: '1px solid currentColor',
-};
-
+// family-kit owns row spacing and the between-rows-only hairline. Inline
+// borders override the last-row rule and make every row look unfinished.
 export function InfoList({ children }: { children: React.ReactNode }) {
-  return <dl className="rb-info-list" style={{ margin: 0 }}>{children}</dl>;
+  return <dl className="rb-info-list">{children}</dl>;
 }
 
 export function InfoRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rb-info-row" style={rowStyle}>
-      <dt>{label}</dt>
-      <dd style={{ margin: 0 }}>&middot; {value}</dd>
+    <div className="rb-info-row">
+      <dt className="rb-info-label">{label}</dt>
+      <dd className="rb-info-value">&middot; {value}</dd>
     </div>
   );
 }

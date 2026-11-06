@@ -32,10 +32,11 @@ describe('page shell', () => {
         html.indexOf('<a href="#main">'),
         html.indexOf('<header>'),
         html.indexOf('<main id="main">'),
-        html.indexOf('<footer>'),
+        html.indexOf('<footer data-shared-footer="true">'),
       ];
       expect(order.every((i) => i >= 0), `${path}: landmarks`).toBe(true);
       expect([...order].sort((a, b) => a - b), `${path}: focus order`).toEqual(order);
+      expect((html.match(/<footer\b/g) ?? []), `${path}: one shared footer`).toHaveLength(1);
     }
   });
 });
@@ -69,6 +70,22 @@ describe('kit: Button', () => {
     expect(disabledLink).toContain('aria-disabled="true"');
   });
 
+  it('quiet actions are plain text controls with a real 44 px hit region', () => {
+    const button = renderToStaticMarkup(
+      React.createElement(Button, { variant: 'quiet', children: 'Details' }),
+    );
+    const link = renderToStaticMarkup(
+      React.createElement(Button, { as: 'a', href: '/plans', variant: 'quiet', children: 'Plans' }),
+    );
+    expect(button).toContain('data-variant="quiet"');
+    expect(link).toContain('data-variant="quiet"');
+    for (const html of [button, link]) {
+      expect(html).toContain('min-height:44px');
+      expect(html).toContain('min-width:44px');
+      expect(html).not.toContain('class="rb-btn');
+    }
+  });
+
   it('keeps the 44 px hit region when the caller passes smaller minima', () => {
     const html = renderToStaticMarkup(
       React.createElement(Button, { style: { minHeight: 24, minWidth: 24 }, children: 'Get' }),
@@ -79,20 +96,20 @@ describe('kit: Button', () => {
 });
 
 describe('kit: rows', () => {
-  it('renders a label · value pair with a divider and no box on the row', () => {
+  it('renders kit-styled label/value rows with between-rows-only dividers', () => {
     const html = renderToStaticMarkup(
       React.createElement(
         InfoList,
         null,
         React.createElement(InfoRow, { label: 'Plan', value: 'Studio' }),
+        React.createElement(InfoRow, { label: 'Bank', value: '$9.00' }),
       ),
     );
-    expect(html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')).toContain('Plan · Studio');
-    const styles = [...html.matchAll(/style="([^"]*)"/g)].map((m) => m[1]);
-    const rowStyle = styles.find((s) => s.includes('display:flex'));
-    expect(rowStyle).toBeDefined();
-    expect(rowStyle).not.toMatch(/background|border-radius/);
-    expect(rowStyle).toContain('border-bottom:1px solid currentColor');
+    expect(html).toContain('<dl class="rb-info-list">');
+    expect((html.match(/class="rb-info-row"/g) ?? [])).toHaveLength(2);
+    expect(html).toContain('<dt class="rb-info-label">Plan</dt>');
+    expect(html).toContain('<dd class="rb-info-value">· Studio</dd>');
+    expect(html).not.toMatch(/style="[^"]*border-bottom/);
   });
 
   it('RadioList renders a labelled fieldset with named radios and one checked', () => {

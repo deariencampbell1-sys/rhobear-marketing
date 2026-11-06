@@ -541,7 +541,11 @@ describe('W1-03-r1 plans, commercial routes and get', () => {
       'herald-texting',
     ]);
     // Labels derive from the offer ids, in data order.
-    const labelOrder = ['<dt>Herald</dt>', '<dt>Herald Pro</dt>', '<dt>Herald Texting</dt>'];
+    const labelOrder = [
+      '<dt class="rb-info-label">Herald</dt>',
+      '<dt class="rb-info-label">Herald Pro</dt>',
+      '<dt class="rb-info-label">Herald Texting</dt>',
+    ];
     let cursor = herald.indexOf('<h2>Herald</h2>');
     expect(cursor).toBeGreaterThanOrEqual(0);
     for (const label of labelOrder) {

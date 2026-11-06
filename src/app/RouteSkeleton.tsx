@@ -1,4 +1,5 @@
-// W0-01: shared page frame — skip link, header, single h1, main#main, footer.
+// W0-01: shared page frame — skip link, header, single h1, main#main.
+// App.tsx owns the sole shared footer for every route.
 // Every canonical route and the 404 page render inside this skeleton so the
 // landmarks and heading order are identical everywhere.
 import * as React from 'react';
@@ -22,11 +23,6 @@ export function RouteSkeleton({
         <h1>{title}</h1>
         {children}
       </main>
-      <footer>
-        <nav aria-label="Footer">
-          <a href="/privacy">Privacy</a> <a href="/terms">Terms</a>
-        </nav>
-      </footer>
     </>
   );
 }
