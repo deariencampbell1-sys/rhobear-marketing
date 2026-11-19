@@ -1,0 +1,64 @@
+/* Front door, connector edition: styles for the new card parts, the phone slides and the connect section.
+   Loaded after the home bundle's stylesheet; uses its tokens. */
+.beat-card .card-top{display:flex;align-items:center;gap:10px}
+.card-mark{width:40px;height:40px;border-radius:10px;object-fit:contain;flex:0 0 auto}
+.beat-card.has-shot{display:grid;grid-template-columns:1fr 132px;column-gap:22px;align-items:start;width:min(600px, 44vw)}
+.beat-card.has-shot>*{grid-column:1}
+.beat-card.has-shot .card-shot{grid-column:2;grid-row:1 / span 6;align-self:center}
+.card-shot{width:132px;height:auto;border-radius:18px;border:1px solid rgba(255,255,255,.16);box-shadow:0 14px 40px #0008;display:block}
+.mcp-url{display:flex;align-items:center;gap:8px;margin:14px 0;padding:6px 6px 6px 14px;border-radius:12px;background:#0a0e1699;border:1px solid rgba(255,255,255,.14);max-width:100%}
+.mcp-url code{font-family:var(--rb-mono);font-size:.78rem;color:var(--rb-frost-white);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 auto;min-width:0}
+.mcp-url .copy{flex:0 0 auto;font:600 .72rem var(--rb-font);color:#06121a;background:var(--rb-frost-white);border:0;border-radius:8px;padding:7px 12px;cursor:pointer}
+.mcp-url .copy:focus-visible,.cta-pill:focus-visible,.btn-primary:focus-visible,.btn-ghost:focus-visible{outline:2px solid var(--rb-teal-accent);outline-offset:2px}
+.card-pricing .tiers{grid-template-columns:1fr 1fr}
+.card-pricing .tier:last-child{grid-column:1 / -1}
+.fine-print{font-size:.7rem;color:#e8f0f78c;margin-top:6px}
+/* brighter frost: the plates show through */
+:root{--rb-card-frost: rgba(14, 20, 30, .34)}
+
+/* connect section (below the mountain) */
+#connect{position:relative;z-index:2;background:linear-gradient(#0D1520,#0A0E16);padding:110px 8vw 100px}
+#connect .connect-grid{display:grid;grid-template-columns:1.15fr .85fr;gap:60px;align-items:center;max-width:1180px;margin:0 auto}
+#connect .eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.22em;color:var(--rb-teal-accent);margin-bottom:16px}
+#connect h2{font-size:clamp(2rem,3.4vw,3rem);font-weight:900;line-height:1.05;margin-bottom:22px}
+#connect .steps{list-style:none;counter-reset:s;padding:0;margin:0 0 8px}
+#connect .steps li{counter-increment:s;position:relative;padding-left:44px;margin-bottom:16px;font-size:.95rem;line-height:1.65;color:#e8f0f7cc}
+#connect .steps li:before{content:counter(s);position:absolute;left:0;top:1px;width:28px;height:28px;border-radius:50%;display:grid;place-items:center;font:700 .8rem var(--rb-font);color:#06121a;background:var(--rb-frost-white)}
+#connect .steps b{color:var(--rb-frost-white)}
+#connect .steps code{font-family:var(--rb-mono);font-size:.82em;word-break:break-all}
+#connect .note{font-size:.82rem;color:#e8f0f799;margin:6px 0 22px}
+#connect .connect-shot{width:min(320px,100%);margin:0 auto;display:block;border-radius:28px;border:1px solid rgba(255,255,255,.14);box-shadow:0 30px 80px #000a}
+.rb-connect{display:flex;gap:22px;justify-content:center;padding:26px 0 6px}
+.rb-connect a{color:#e8f0f7a6;font-size:.8rem;text-decoration:none}
+.rb-connect a:hover{color:var(--rb-frost-white)}
+
+/* phone: every beat is a slide in the page itself; picture on top, its one message under it */
+@media (max-width: 768px){
+  #mobile-journey{height:auto!important;overflow:visible!important;scroll-snap-type:none!important}
+  .m-slide{height:auto!important;overflow:visible;scroll-snap-align:none!important;background:#0A0E16}
+  .m-slide>img{height:58vh!important;min-height:340px}
+  .m-card img{height:auto!important;object-fit:contain}
+  .m-card .card-mark{width:36px!important;height:36px!important}
+  .m-card{position:relative;margin:-56px 14px 0;padding:22px 20px 24px;border-radius:22px;background:rgba(14,20,30,.86);border:1px solid rgba(255,255,255,.12);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px)}
+  .m-card h2{font-size:1.55rem;font-weight:900;line-height:1.1;margin:10px 0 10px}
+  .m-card p{font-size:.92rem;line-height:1.6;color:#e8f0f7cc;margin-bottom:12px}
+  .m-card .eyebrow,.m-card .label,.m-card .step{font-size:.64rem;font-weight:700;letter-spacing:.18em;color:var(--rb-teal-accent);text-transform:uppercase}
+  .m-card .card-top{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+  .m-card .label{white-space:normal;min-width:0}
+  .m-card{max-width:calc(100vw - 28px);box-sizing:border-box}
+  .m-card .card-shot{width:170px;margin:6px auto 14px}
+  .m-card .hero-ctas{display:flex;flex-direction:column;gap:10px;margin-top:8px}
+  .m-card .hero-ctas a,.m-card .card-cta{text-align:center}
+  .m-card .pills,.m-card .scroll-hint{display:none}
+  .m-card .tiers{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+  .m-card .tier:last-child{grid-column:1 / -1}
+  .m-card .chain{display:flex;flex-wrap:wrap;gap:6px;margin-top:14px;font-size:.75rem;color:#e8f0f799}
+  .m-card .chain i{font-style:normal}
+  .m-slide+.m-slide{padding-top:28px}
+  #connect{padding:70px 18px 60px}
+  #connect .connect-grid{grid-template-columns:1fr;gap:36px}
+  #nav .cta-pill{display:inline-flex}
+}
+@media (prefers-reduced-motion: reduce){
+  .beat-card,.beat-card.active{transition:none!important;transform:translate(-50%,-50%)!important}
+}

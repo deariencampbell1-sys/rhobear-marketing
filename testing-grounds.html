@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>RHOBEAR testing grounds</title>
+  <meta name="description" content="Sign in with your RHOBEAR account and try the RHOBEAR MCP connector's tools in the browser, with each tool's price shown before it runs." />
+  <!-- The connector this page talks to. Everything else (sign-in, token, scopes) is discovered from its metadata. -->
+  <meta name="rhobear-mcp" content="https://api.rhobear.ai/mcp" />
+  <meta name="robots" content="noindex" />
+  <link rel="canonical" href="https://rhobear.ai/testing-grounds.html" />
+  <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+  <style>
+    @font-face{font-family:InterVar;src:url(/fonts/inter-var.woff2) format("woff2");font-weight:100 900;font-display:swap}
+    :root{--bg:#0A0E16;--panel:#111826;--line:rgba(255,255,255,.12);--text:#E8F0F7;--dim:rgba(232,240,247,.68);--teal:#2A8FA8;--gold:#D4A843;--bad:#E0785A;
+      --font:"InterVar",Inter,system-ui,sans-serif;--mono:"JetBrains Mono",ui-monospace,monospace}
+    *{box-sizing:border-box;margin:0}
+    body{background:var(--bg);color:var(--text);font:400 15px/1.6 var(--font);min-height:100vh}
+    a{color:var(--text)}
+    header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:16px max(16px,4vw);border-bottom:1px solid var(--line)}
+    header .home{font-weight:800;letter-spacing:.14em;text-decoration:none;font-size:.9rem}
+    main{max-width:980px;margin:0 auto;padding:48px 16px 80px}
+    .eyebrow{font-size:.68rem;font-weight:700;letter-spacing:.22em;color:var(--teal);text-transform:uppercase;margin-bottom:12px}
+    h1{font-size:clamp(1.9rem,4vw,2.8rem);font-weight:900;line-height:1.08;margin-bottom:14px}
+    .lead{color:var(--dim);max-width:62ch;margin-bottom:26px}
+    button{font:600 .9rem var(--font);border-radius:99px;padding:11px 20px;cursor:pointer;border:1px solid var(--line);background:transparent;color:var(--text)}
+    button.primary{background:var(--teal);border-color:var(--teal);color:#fff}
+    button:disabled{opacity:.45;cursor:not-allowed}
+    button:focus-visible,a:focus-visible,textarea:focus-visible,input:focus-visible{outline:2px solid var(--teal);outline-offset:2px}
+    .status{margin:18px 0;padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--panel);color:var(--dim)}
+    .status.bad{border-color:rgba(224,120,90,.5);color:var(--text)}
+    .status a{font-weight:600}
+    .bar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between;margin:8px 0 22px}
+    .bar .who{color:var(--dim);font-size:.85rem}
+    #tools{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:14px}
+    .tool{border:1px solid var(--line);border-radius:18px;background:var(--panel);padding:18px;display:flex;flex-direction:column;gap:10px;min-width:0}
+    .tool h3{font-size:1rem;font-weight:800}
+    .tool code{font-family:var(--mono);font-size:.74rem;color:var(--dim);word-break:break-all}
+    .tool p{color:var(--dim);font-size:.86rem}
+    .price{font-family:var(--mono);font-size:.78rem;color:var(--gold)}
+    .off{font-size:.8rem;color:var(--bad)}
+    .tool label{font-size:.75rem;color:var(--dim);display:block}
+    .tool textarea,.tool input{width:100%;font:400 .82rem var(--mono);color:var(--text);background:#0A0E16;border:1px solid var(--line);border-radius:10px;padding:8px 10px}
+    .tool textarea{min-height:72px;resize:vertical}
+    .result{white-space:pre-wrap;word-break:break-word;font:400 .78rem/1.5 var(--mono);background:#0A0E16;border:1px solid var(--line);border-radius:10px;padding:10px;max-height:260px;overflow:auto}
+    .result.err{border-color:rgba(224,120,90,.5)}
+    .engines{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,210px),1fr));gap:12px;margin-top:30px}
+    .engines div{border:1px solid var(--line);border-radius:16px;padding:14px;background:var(--panel)}
+    .engines b{display:block;margin-bottom:4px}
+    .engines span{color:var(--dim);font-size:.84rem}
+    footer{text-align:center;color:var(--dim);font-size:.8rem;padding:30px 16px}
+  </style>
+</head>
+<body>
+  <header>
+    <a class="home" href="/">RHOBEAR</a>
+    <a href="/#connect">How to connect →</a>
+  </header>
+  <main>
+    <div class="eyebrow">Testing grounds</div>
+    <h1>Try the RHOBEAR connector<br />before you plug it in.</h1>
+    <p class="lead">Sign in with your RHOBEAR account and this page talks to the same connector your AI app uses. You see every tool, whether it is on, and its price before it runs. Running a tool here uses your plan's usage, exactly as it would from your AI app.</p>
+
+    <section id="out" hidden>
+      <button type="button" class="primary" id="sign-in">Sign in with RHOBEAR</button>
+      <div class="engines">
+        <div><b>Forge</b><span>Printable 3D models from words or a picture; reshape, resize, split into plates.</span></div>
+        <div><b>Search</b><span>Ranked passages from decisions, code, GitHub and the web, each with its source.</span></div>
+        <div><b>Teams</b><span>Edit a Blueprint, approve it, and run its lanes.</span></div>
+        <div><b>Designs</b><span>Check an install against your never-list; propose a clean-up of your styles.</span></div>
+      </div>
+    </section>
+
+    <div id="status" class="status" role="status" hidden></div>
+
+    <section id="in" hidden>
+      <div class="bar">
+        <span class="who" id="who">Signed in. Connected to the RHOBEAR MCP.</span>
+        <button type="button" id="sign-out">Sign out</button>
+      </div>
+      <div id="tools"></div>
+    </section>
+  </main>
+  <footer>The token stays in this tab only and is forgotten when you sign out or close it.</footer>
+
+  <script>
+  (function () {
+    'use strict';
+    var MCP = document.querySelector('meta[name="rhobear-mcp"]').content;
+    var HERE = location.origin + location.pathname;
+    var PLAN_URL = 'https://builds.rhobear.ai';
+    var $ = function (id) { return document.getElementById(id); };
+    var tab = sessionStorage; // tokens and the PKCE verifier: this tab only
+    var keep = (function () { try { localStorage.setItem('_t', '1'); localStorage.removeItem('_t'); return localStorage; } catch (e) { return tab; } })();
+    var session = null; // Mcp-Session-Id
+    var rpcId = 0;
+
+    function show(state) {
+      $('out').hidden = state !== 'out';
+      $('in').hidden = state !== 'in';
+    }
+    function status(text, bad, link) {
+      var el = $('status');
+      el.hidden = !text;
+      el.className = 'status' + (bad ? ' bad' : '');
+      el.textContent = text || '';
+      if (link) { el.appendChild(document.createTextNode(' ')); var a = document.createElement('a'); a.href = link.href; a.textContent = link.text; el.appendChild(a); }
+    }
+    function planEnded() {
+      forget();
+      show('out');
+      status('The RHOBEAR connector is available on an active RHOBEAR plan.', true, { href: PLAN_URL, text: 'Get a plan in Builds →' });
+    }
+
+    function b64url(bytes) {
+      var s = ''; bytes = new Uint8Array(bytes);
+      for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+      return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+    function random(n) { var a = new Uint8Array(n); crypto.getRandomValues(a); return b64url(a); }
+    function sha256(text) { return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(b64url); }
+
+    function getJson(url) {
+      return fetch(url, { headers: { accept: 'application/json' } }).then(function (r) {
+        if (!r.ok) throw new Error(url + ' answered ' + r.status);
+        return r.json();
+      });
+    }
+    // OAuth endpoints and scopes come from the MCP's own metadata (RFC 9728, RFC 8414).
+    var meta = null;
+    function discover() {
+      if (meta) return Promise.resolve(meta);
+      var origin = new URL(MCP).origin;
+      return getJson(origin + '/.well-known/oauth-protected-resource').then(function (pr) {
+        var as = (pr.authorization_servers && pr.authorization_servers[0]) || origin;
+        return getJson(new URL('/.well-known/oauth-authorization-server', as).toString()).then(function (asm) {
+          meta = { resource: pr.resource || MCP, auth: asm, scopes: (pr.scopes_supported || asm.scopes_supported || []).join(' ') };
+          return meta;
+        });
+      });
+    }
+
+    function clientId(m) {
+      var key = 'rb-tg-client:' + m.auth.issuer + ':' + HERE;
+      var known = keep.getItem(key);
+      if (known) return Promise.resolve(known);
+      return fetch(m.auth.registration_endpoint, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ client_name: 'RHOBEAR testing grounds', redirect_uris: [HERE], token_endpoint_auth_method: 'none',
+          grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: m.scopes })
+      }).then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.client_id) throw new Error(j.error || 'registration failed'); keep.setItem(key, j.client_id); return j.client_id; }); });
+    }
+
+    function signIn() {
+      $('sign-in').disabled = true;
+      status('Opening the RHOBEAR sign-in…');
+      discover().then(function (m) {
+        return clientId(m).then(function (cid) {
+          var verifier = random(48), state = random(24);
+          return sha256(verifier).then(function (challenge) {
+            tab.setItem('rb-tg-pkce', JSON.stringify({ verifier: verifier, state: state, client: cid, iss: m.auth.issuer }));
+            var u = new URL(m.auth.authorization_endpoint);
+            u.search = new URLSearchParams({ response_type: 'code', client_id: cid, redirect_uri: HERE, scope: m.scopes,
+              state: state, code_challenge: challenge, code_challenge_method: 'S256', resource: m.resource }).toString();
+            location.assign(u.toString());
+          });
+        });
+      }).catch(function (e) {
+        $('sign-in').disabled = false;
+        status('Could not reach the RHOBEAR sign-in (' + e.message + '). Try again in a moment.', true);
+      });
+    }
+
+    function token(form) {
+      return discover().then(function (m) {
+        return fetch(m.auth.token_endpoint, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(form).toString() })
+          .then(function (r) { return r.json().then(function (j) { return { ok: r.ok && !!j.access_token, body: j }; }); });
+      });
+    }
+    function saveTokens(j, cid) {
+      tab.setItem('rb-tg-token', JSON.stringify({ access: j.access_token, refresh: j.refresh_token || null, client: cid }));
+    }
+    function tokens() { try { return JSON.parse(tab.getItem('rb-tg-token') || 'null'); } catch (e) { return null; } }
+    function forget() { tab.removeItem('rb-tg-token'); tab.removeItem('rb-tg-pkce'); session = null; $('tools').textContent = ''; }
+
+    // The transport's 401/403 answers carry no CORS headers, so a refused call and a dropped connection look the
+    // same here (a failed fetch). Only then do we ask the sign-in service once what is true:
+    //   renewed  -> the old token had expired; retry, except a tools/call (it may already have run and been charged)
+    //   ended    -> the server says the account no longer has the RHOBEAR MCP (its plan lapsed)
+    //   expired  -> the sign-in itself is no longer valid; sign in again
+    //   unknown  -> the sign-in service could not be reached; keep the sign-in and say so
+    // A readable error (429, 500, ...) is reported as it is and never touches the sign-in.
+    function checkSignIn() {
+      var t = tokens();
+      if (!t || !t.refresh) return Promise.resolve('expired');
+      return token({ grant_type: 'refresh_token', refresh_token: t.refresh, client_id: t.client }).then(function (res) {
+        if (res.ok) { saveTokens(res.body, t.client); session = null; return 'renewed'; }
+        if (res.body && res.body.error === 'invalid_grant')
+          return /no longer has the RHOBEAR MCP/i.test(res.body.error_description || '') ? 'ended' : 'expired';
+        return 'unknown';
+      }, function () { return 'unknown'; });
+    }
+
+    function post(message, retried) {
+      var t = tokens();
+      if (!t) return Promise.reject({ expired: true });
+      var headers = { 'content-type': 'application/json', accept: 'application/json, text/event-stream', authorization: 'Bearer ' + t.access };
+      if (session) headers['mcp-session-id'] = session;
+      return fetch(MCP, { method: 'POST', headers: headers, body: JSON.stringify(message) }).then(function (r) {
+        if (r.status === 401 || r.status === 403) throw { unclear: true };
+        var sid = r.headers.get('mcp-session-id'); if (sid) session = sid;
+        if (r.status === 202 || r.status === 204) return null;
+        if (!r.ok) throw new Error('the connector answered ' + r.status + (r.status === 429 ? ', too many requests; wait a minute' : ''));
+        return r.json();
+      }, function () { throw { unclear: true }; }).catch(function (e) {
+        if (!e || !e.unclear) throw e;
+        if (retried) throw new Error('the connector did not answer');
+        return checkSignIn().then(function (state) {
+          if (state === 'ended') throw { plan: true };
+          if (state === 'expired') throw { expired: true };
+          if (state === 'unknown') throw new Error('the connector and the sign-in service did not answer');
+          if (message.method === 'tools/call') throw { noAnswer: true };
+          return (message.method === 'initialize' ? Promise.resolve() : open()).then(function () { return post(message, true); });
+        });
+      });
+    }
+    function rpc(method, params) { return post({ jsonrpc: '2.0', id: ++rpcId, method: method, params: params || {} }).then(function (j) { if (j && j.error) throw new Error(j.error.message); return j && j.result; }); }
+    function open() {
+      session = null;
+      return rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'rhobear-testing-grounds', version: '1' } })
+        .then(function () { return post({ jsonrpc: '2.0', method: 'notifications/initialized' }); });
+    }
+
+    function money(v) { return v === 0 ? 'free' : '$' + (v < 0.01 ? v.toFixed(3) : v.toFixed(2)); }
+    function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+
+    function renderTools(list) {
+      var box = $('tools'); box.textContent = '';
+      list.forEach(function (tool) {
+        var rb = (tool._meta && tool._meta.rhobear) || {};
+        var card = el('article', 'tool'); card.dataset.tool = tool.name;
+        card.appendChild(el('h3', null, tool.title || tool.name));
+        card.appendChild(el('code', null, tool.name));
+        if (tool.description) card.appendChild(el('p', null, tool.description));
+        var priced = typeof rb.price_usd === 'number' && rb.price_usd >= 0;
+        if (priced) card.appendChild(el('div', 'price', 'Price: ' + money(rb.price_usd) + ' per run'));
+        var available = rb.available !== false && priced;
+        if (rb.available === false) card.appendChild(el('div', 'off', 'Off: ' + (rb.note || 'not available on this server right now')));
+        else if (!priced) card.appendChild(el('div', 'off', 'No price is listed for this tool, so it does not run here. Your AI app can still use it.'));
+        var props = (tool.inputSchema && tool.inputSchema.properties) || {};
+        var names = Object.keys(props);
+        var simple = names.length > 0 && names.length <= 3 && names.every(function (n) { return props[n].type === 'string'; });
+        var fields = {};
+        if (simple) {
+          names.forEach(function (n) {
+            var lab = el('label', null, n + (props[n].description ? ' — ' + props[n].description : ''));
+            var input = el('textarea'); input.name = n; input.disabled = !available; input.rows = 2;
+            lab.appendChild(input); card.appendChild(lab); fields[n] = input;
+          });
+        } else {
+          var lab = el('label', null, 'Arguments (JSON)');
+          var ta = el('textarea'); ta.name = '__json'; ta.disabled = !available;
+          var example = {}; ((tool.inputSchema && tool.inputSchema.required) || []).forEach(function (n) { example[n] = props[n] && props[n].type === 'number' ? 0 : ''; });
+          ta.value = JSON.stringify(example, null, 2);
+          lab.appendChild(ta); card.appendChild(lab); fields.__json = ta;
+        }
+        var run = el('button', 'primary', priced ? (rb.price_usd === 0 ? 'Run (free)' : 'Run for ' + money(rb.price_usd)) : 'Run');
+        run.type = 'button'; run.dataset.run = ''; run.disabled = !available;
+        card.appendChild(run);
+        run.addEventListener('click', function () {
+          var args;
+          try {
+            if (fields.__json) args = JSON.parse(fields.__json.value || '{}');
+            else { args = {}; Object.keys(fields).forEach(function (n) { if (fields[n].value !== '') args[n] = fields[n].value; }); }
+          } catch (e) { return result(card, 'Those arguments are not valid JSON.', true); }
+          run.disabled = true; result(card, 'Running…', false);
+          rpc('tools/call', { name: tool.name, arguments: args }).then(function (r) {
+            var text = ((r && r.content) || []).filter(function (c) { return c.type === 'text'; }).map(function (c) { return c.text; }).join('\n');
+            if (r && r.structuredContent) text += (text ? '\n\n' : '') + JSON.stringify(r.structuredContent, null, 2);
+            result(card, text || 'Done.', !!(r && r.isError));
+          }).catch(function (e) {
+            if (e && e.noAnswer) result(card, 'This run got no answer, so it was not sent again. Your sign-in is fine. Check your usage in Builds before you run it again.', true);
+            else if (e && (e.plan || e.expired)) fail(e);
+            else result(card, 'The connector returned an error (' + ((e && e.message) || 'network error') + '). Check your usage in Builds before you run it again.', true);
+          }).then(function () { run.disabled = false; });
+        });
+        box.appendChild(card);
+      });
+    }
+    function result(card, text, bad) {
+      var r = card.querySelector('[data-result]');
+      if (!r) { r = el('pre', 'result'); r.dataset.result = ''; card.appendChild(r); }
+      r.className = 'result' + (bad ? ' err' : ''); r.textContent = text;
+    }
+    function fail(e) {
+      if (e && e.plan) return planEnded();
+      if (e && e.expired) { forget(); show('out'); $('sign-in').disabled = false; return status('Your sign-in has ended. Please sign in again.', true); }
+      status('Something went wrong talking to the connector (' + ((e && e.message) || 'network error') + ').', true);
+    }
+
+    function connect() {
+      show('in'); status('Connecting to the RHOBEAR MCP…');
+      return open().then(function () { return rpc('tools/list'); }).then(function (r) {
+        status('');
+        renderTools((r && r.tools) || []);
+      }).catch(fail);
+    }
+
+    function signOut() {
+      var t = tokens();
+      if (t && session) fetch(MCP, { method: 'DELETE', headers: { authorization: 'Bearer ' + t.access, 'mcp-session-id': session } }).catch(function () {});
+      forget(); status('Signed out.'); show('out'); $('sign-in').disabled = false;
+    }
+
+    $('sign-in').addEventListener('click', signIn);
+    $('sign-out').addEventListener('click', signOut);
+
+    var q = new URLSearchParams(location.search);
+    if (q.has('code') || q.has('error')) {
+      history.replaceState(null, '', HERE); // never leave the code in the address bar or history
+      var pkce = null; try { pkce = JSON.parse(tab.getItem('rb-tg-pkce') || 'null'); } catch (e) {}
+      tab.removeItem('rb-tg-pkce');
+      if (q.has('error')) { show('out'); status('Sign-in did not finish: ' + (q.get('error_description') || q.get('error')) + '.', true); }
+      else if (!pkce || q.get('state') !== pkce.state || (q.has('iss') && q.get('iss') !== pkce.iss)) { show('out'); status('That sign-in link is not from this tab. Please sign in again.', true); }
+      else {
+        status('Finishing sign-in…');
+        token({ grant_type: 'authorization_code', code: q.get('code'), redirect_uri: HERE, client_id: pkce.client, code_verifier: pkce.verifier })
+          .then(function (res) {
+            if (!res.ok) { show('out'); return status('Sign-in did not finish (' + (res.body.error_description || res.body.error || 'refused') + ').', true); }
+            saveTokens(res.body, pkce.client);
+            return connect();
+          }).catch(fail);
+      }
+    } else if (tokens()) {
+      connect();
+    } else {
+      show('out');
+    }
+  })();
+  </script>
+</body>
+</html>
