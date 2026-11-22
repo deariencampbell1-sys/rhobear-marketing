@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>RHOBEAR Teams MCP — Plan it as a team.</title>
+  <meta name="description" content="Teams turns a build into a Blueprint: steps and lanes you can see as a map, approve, and run. Your AI app plans from the sources you point at, draws the plan, proposes the team, and launches only the lanes you approved." />
+  <link rel="canonical" href="https://rhobear.ai/mcp/teams.html" />
+  <meta property="og:title" content="RHOBEAR Teams MCP — Plan it as a team." />
+  <meta property="og:description" content="Teams turns a build into a Blueprint: steps and lanes you can see as a map, approve, and run. Your AI app plans from the sources you point at, draws the plan, proposes the team, and launches only the lanes you approved." />
+  <meta property="og:url" content="https://rhobear.ai/mcp/teams.html" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 28 L12 9 L19 20 L23 13 L30 28 Z' fill='%232A8FA8'/%3E%3Ccircle cx='24' cy='7' r='2.4' fill='%23D4A843'/%3E%3C/svg%3E" />
+  <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/mcp/mcp.css?v=3" />
+</head>
+<body>
+  <header class="top">
+    <a class="home" href="/">RHOBEAR</a>
+    <nav aria-label="MCPs">
+      <a href="/mcp/">All MCPs</a>
+      <a href="/mcp/designs.html">Designs</a><a href="/mcp/forge.html">Forge</a><a href="/mcp/search.html">Search</a><a href="/mcp/teams.html" aria-current="page">Teams</a>
+      <a class="pill" href="/#connect">Connect →</a>
+    </nav>
+  </header>
+  <div class="hero" style="--pos:40% 40%">
+    <img class="plate" src="/beats/06-plans.webp?v=2" alt="" />
+    <div class="in">
+      <div class="eyebrow"><img src="/assets/front/marks/teams.webp" alt="" width="44" height="44" />RHOBEAR MCP · Teams</div>
+      <h1>Plan it as a team.</h1>
+      <p class="lead">Teams turns a build into a Blueprint: steps and lanes you can see as a map, approve, and run. Your AI app plans from the sources you point at, draws the plan, proposes the team, and launches only the lanes you approved.</p>
+    </div>
+  </div>
+  <main>
+    <section class="how" aria-labelledby="how">
+      <div>
+        <h2 id="how">How it works</h2>
+        <ol class="steps">
+        <li><b>Plan from your sources.</b> Point at a thread, a repo, a file or a note. The plan is a draft with open questions, and planning never touches your repo or Space.</li>
+        <li><b>See the map.</b> The plan is drawn as a diagram whose boxes are the plan&#x27;s own steps and lanes.</li>
+        <li><b>Approve, then run.</b> Each lane is priced before you approve it in the app. Only approved lanes launch, into your Space; cancelling stops new launches at the next safe point.</li>
+        </ol>
+      </div>
+      <figure class="shot">
+        <img src="/assets/front/shots/teams.webp" alt="A Blueprint running three lanes in Builds" width="300" height="613" loading="lazy" />
+        <figcaption>In the Builds app</figcaption>
+      </figure>
+    </section>
+    <section aria-labelledby="tools">
+      <h2 id="tools">The Teams tools</h2>
+      <p class="dim" style="margin-bottom:16px">Your AI app sees each tool and its price before it runs. Every run draws from your RHOBEAR plan, and a run that fails is refunded.</p>
+      <ul class="tools">
+        <li><code>blueprints.plan</code><span>Gather the sources you point at into a draft plan, with open questions. Read-only.<em class="try"> Runs in the testing grounds</em></span></li>
+        <li><code>blueprints.diagram</code><span>Check and draw the plan&#x27;s map from Mermaid; only the plan&#x27;s own steps and lanes are allowed.<em class="try"> Runs in the testing grounds</em></span></li>
+        <li><code>diagram.render</code><span>Draw any Mermaid or Excalidraw diagram as a picture.<em class="try"> Runs in the testing grounds</em></span></li>
+        <li><code>blueprints.lanes</code><span>Propose the team: check the lanes and price each one for your approval.</span></li>
+        <li><code>blueprints.dispatch</code><span>Launch the lanes you approved into your Space.</span></li>
+        <li><code>blueprints.status</code><span>Each lane&#x27;s state, from your Space.</span></li>
+        <li><code>teams.edit</code><span>Change a Blueprint&#x27;s title, steps, lanes or layout; it then needs your approval again.</span></li>
+        <li><code>teams.run</code><span>Run approved lanes; cancelling stops further launches at the next safe point.</span></li>
+      </ul>
+    </section>
+    <div class="cta">
+      <p>In the testing grounds you can plan a build from a note and draw its map.</p>
+      <a class="btn" href="/testing-grounds.html">Try it in the testing grounds →</a>
+    </div>
+  </main>
+  <footer>
+    <span>RHOBEAR · one connector for the AI you already use</span>
+    <span><a href="/mcp/">All MCPs</a> · <a href="/#connect">How to connect</a> · <a href="https://builds.rhobear.ai">Builds</a> · <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a></span>
+  </footer>
+</body>
+</html>
