@@ -11,14 +11,15 @@
   <meta property="og:url" content="https://rhobear.ai/mcp/forge.html" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 28 L12 9 L19 20 L23 13 L30 28 Z' fill='%232A8FA8'/%3E%3Ccircle cx='24' cy='7' r='2.4' fill='%23D4A843'/%3E%3C/svg%3E" />
   <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="/mcp/mcp.css?v=3" />
+  <link rel="stylesheet" href="/fonts/family/family.css" />
+  <link rel="stylesheet" href="/mcp/mcp.css?v=4" />
 </head>
 <body>
   <header class="top">
     <a class="home" href="/">RHOBEAR</a>
     <nav aria-label="MCPs">
       <a href="/mcp/">All MCPs</a>
-      <a href="/mcp/designs.html">Designs</a><a href="/mcp/forge.html" aria-current="page">Forge</a><a href="/mcp/search.html">Search</a><a href="/mcp/teams.html">Teams</a>
+      <a href="/mcp/designs.html"><span class="name-designs">Designs</span></a><a href="/mcp/forge.html" aria-current="page">Forge</a><a href="/mcp/search.html">Search</a><a href="/mcp/teams.html"><span class="name-teams">Teams</span></a>
       <a class="pill" href="/#connect">Connect →</a>
     </nav>
   </header>
@@ -47,7 +48,7 @@
     </section>
     <section aria-labelledby="tools">
       <h2 id="tools">The Forge tools</h2>
-      <p class="dim" style="margin-bottom:16px">Your AI app sees each tool and its price before it runs. Every run draws from your RHOBEAR plan, and a run that fails is refunded.</p>
+      <p class="dim" style="margin-bottom:16px">Your AI app sees each tool and its price before it runs. Every run draws from your RHOBEAR plan, and a run that never ran costs nothing.</p>
       <ul class="tools">
         <li><code>forge.make</code><span>A printable 3D model from a description or a picture, at the height you ask for.<em class="try"> Runs in the testing grounds</em></span></li>
         <li><code>forge.edit</code><span>Reshape or resize a model from a written instruction; returns a new STL.</span></li>

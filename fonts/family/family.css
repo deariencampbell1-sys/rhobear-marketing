@@ -1,0 +1,22 @@
+/* RHOBEAR family faces, self-hosted (no Adobe Fonts kit). Free licences, each LICENSE-*.txt sits beside its files.
+   Family names match the old kit (rokkitt, lato, pacifico, amaranth, allura, droid-sans-mono) so the old pages' CSS
+   keeps working. Product-word faces follow rhobear-north-star docs/north-star/FONTS.md; Birch (Captur'd) has no free
+   version, so Captur'd uses Stint Ultra Condensed, the closest free match. Lato 600 has no free file here; 700 serves it. */
+@font-face{font-family:"rokkitt";src:url(/fonts/family/rokkitt-700.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"rokkitt";src:url(/fonts/family/rokkitt-900.woff2) format("woff2");font-weight:900;font-style:normal;font-display:swap}
+@font-face{font-family:"lato";src:url(/fonts/family/lato-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"lato";src:url(/fonts/family/lato-700.woff2) format("woff2");font-weight:600 700;font-style:normal;font-display:swap}
+@font-face{font-family:"pacifico";src:url(/fonts/family/pacifico-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"amaranth";src:url(/fonts/family/amaranth-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"amaranth";src:url(/fonts/family/amaranth-700.woff2) format("woff2");font-weight:700;font-style:normal;font-display:swap}
+@font-face{font-family:"allura";src:url(/fonts/family/allura-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"stint-ultra-condensed";src:url(/fonts/family/stint-ultra-condensed-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+@font-face{font-family:"droid-sans-mono";src:url(/fonts/family/droid-sans-mono-400.woff2) format("woff2");font-weight:400;font-style:normal;font-display:swap}
+
+/* A product's name where it is a title, heading or wordmark. Never on running text. */
+.name-designs,.name-teams,.name-builds,.name-reviews,.name-hub,.name-herald,.name-capturd{text-transform:none;letter-spacing:.01em;line-height:1;font-style:normal}
+.name-designs{font-family:"allura",cursive;font-weight:400;font-size:1.9em}
+.name-teams{font-family:"pacifico",cursive;font-weight:400;font-size:1.12em}
+.name-builds,.name-reviews,.name-hub{font-family:"rokkitt",Georgia,serif;font-weight:900;font-size:1.08em}
+.name-herald{font-family:"amaranth",Verdana,sans-serif;font-weight:700}
+.name-capturd{font-family:"stint-ultra-condensed",Georgia,serif;font-weight:400;font-size:1.12em}

@@ -59,7 +59,7 @@ h2{font-size:clamp(1.5rem,2.6vw,2rem);font-weight:800;line-height:1.15;margin-bo
 .mcp:hover{border-color:rgba(42,143,168,.7);transform:translateY(-2px)}
 .mcp img{width:48px;height:48px;border-radius:12px}
 .mcp b{font-size:1.15rem}
-.mcp span{color:var(--dim);font-size:.92rem;flex:1}
+.mcp>span{color:var(--dim);font-size:.92rem;flex:1}
 .mcp i{font-style:normal;color:var(--teal);font-weight:700;font-size:.88rem}
 .addr{display:inline-block;font-family:var(--mono);font-size:.9rem;padding:10px 14px;border-radius:12px;background:#0a0e16cc;border:1px solid var(--line);word-break:break-all}
 
