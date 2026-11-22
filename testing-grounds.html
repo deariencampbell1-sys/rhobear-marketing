@@ -8,6 +8,7 @@
   <!-- The connector this page talks to. Everything else (sign-in, token, scopes) is discovered from its metadata. -->
   <meta name="rhobear-mcp" content="https://api.rhobear.ai/mcp" />
   <meta name="robots" content="noindex" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 28 L12 9 L19 20 L23 13 L30 28 Z' fill='%232A8FA8'/%3E%3Ccircle cx='24' cy='7' r='2.4' fill='%23D4A843'/%3E%3C/svg%3E" />
   <link rel="canonical" href="https://rhobear.ai/testing-grounds.html" />
   <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
   <style>
@@ -134,7 +135,9 @@
       return getJson(origin + '/.well-known/oauth-protected-resource').then(function (pr) {
         var as = (pr.authorization_servers && pr.authorization_servers[0]) || origin;
         return getJson(new URL('/.well-known/oauth-authorization-server', as).toString()).then(function (asm) {
-          meta = { resource: pr.resource || MCP, auth: asm, scopes: (pr.scopes_supported || asm.scopes_supported || []).join(' ') };
+          // No scope is requested: the server grants its default (mcp:tools). Its metadata also lists engine scopes
+          // that registration refuses (invalid_scope), so asking for "everything listed" breaks sign-in.
+          meta = { resource: pr.resource || MCP, auth: asm };
           return meta;
         });
       });
@@ -147,7 +150,7 @@
       return fetch(m.auth.registration_endpoint, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ client_name: 'RHOBEAR testing grounds', redirect_uris: [HERE], token_endpoint_auth_method: 'none',
-          grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], scope: m.scopes })
+          grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'] })
       }).then(function (r) { return r.json().then(function (j) { if (!r.ok || !j.client_id) throw new Error(j.error || 'registration failed'); keep.setItem(key, j.client_id); return j.client_id; }); });
     }
 
@@ -160,7 +163,7 @@
           return sha256(verifier).then(function (challenge) {
             tab.setItem('rb-tg-pkce', JSON.stringify({ verifier: verifier, state: state, client: cid, iss: m.auth.issuer }));
             var u = new URL(m.auth.authorization_endpoint);
-            u.search = new URLSearchParams({ response_type: 'code', client_id: cid, redirect_uri: HERE, scope: m.scopes,
+            u.search = new URLSearchParams({ response_type: 'code', client_id: cid, redirect_uri: HERE,
               state: state, code_challenge: challenge, code_challenge_method: 'S256', resource: m.resource }).toString();
             location.assign(u.toString());
           });
