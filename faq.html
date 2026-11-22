@@ -56,24 +56,14 @@
     
   </div>
 
-  <section class="chat-panel" aria-labelledby="support-chat-title" style="padding:22px;">
+  <section class="chat-panel" aria-labelledby="support-title" style="padding:22px;">
     <div class="chat-panel-head">
       <div>
         <p class="chat-panel-kicker">FAQ SUPPORT</p>
-        <h2 id="support-chat-title">Still stuck? Ask our support assistant.</h2>
-        <p class="chat-panel-note">Runs locally on our own box. It answers from the support knowledge base first, then streams a grounded reply.</p>
+        <h2 id="support-title">Still stuck? Email us.</h2>
+        <p class="chat-panel-note">Write to <a href="mailto:support@rhobear.ai">support@rhobear.ai</a>.</p>
       </div>
-      <span class="chat-panel-badge">Local · Private · Plain English</span>
     </div>
-    <div id="support-chat-log" class="chat-panel-log" aria-live="polite">
-      <div class="chat-panel-msg bot">Tell me what's stuck. Refunds, privacy, install help, activation keys, or whether there's a subscription.</div>
-    </div>
-    <form id="support-chat-form" class="chat-panel-form">
-      <label class="chat-panel-label" for="support-chat-input">Ask support</label>
-      <textarea id="support-chat-input" maxlength="1200" placeholder="Example: My activation key says it's too short…" required></textarea>
-      <button type="submit">Send</button>
-    </form>
-    <p id="support-chat-status" class="chat-panel-status">Grounded support answers only. For account-specific help, email support@rhobear.ai.</p>
   </section>
 </section>
 </main>
@@ -81,127 +71,5 @@
 <footer class="site-footer"><div class="site-footer-inner"><div class="footer-row"><div class="footer-copy">© 2026 Sun Sponge LLC · <a href="https://github.com/rhobear-ai">GitHub</a> · <a href="privacy.html">privacy</a> · <a href="faq.html">FAQ</a></div><div class="footer-tag">Lean. Local. Private. Yours.</div></div><div class="footer-disclaimer">All third-party trademarks and logos are property of their respective owners and shown here for integration identification purposes only. No partnership, sponsorship, or endorsement is implied.</div></div>
     <div class="rb-connect" style="max-width:1100px;margin:26px auto 0;padding:18px 24px 0;border-top:1px solid rgba(255,255,255,.08);display:flex;flex-wrap:wrap;gap:12px 22px;align-items:center;justify-content:center;font:600 .8rem/1 system-ui,-apple-system,Segoe UI,sans-serif;letter-spacing:.02em"><a href="/learn.html" style="color:inherit;text-decoration:none;opacity:.82">Dev Learn</a><a href="lab.html" style="color:inherit;text-decoration:none;opacity:.82">Lab</a><a href="https://github.com/rhobear-ai" rel="noopener" style="color:inherit;text-decoration:none;opacity:.82">GitHub</a><a href="https://x.com/rhobearai" rel="noopener" style="color:inherit;text-decoration:none;opacity:.82">X</a><a href="https://instagram.com/rhobear.ai" rel="noopener" style="color:inherit;text-decoration:none;opacity:.82">Instagram</a></div>
   </footer>
-<script src="shell.js?v=1782980000" defer></script>
-<script>
-(function(){
-  var form = document.getElementById('support-chat-form');
-  if (!form) return;
-  var input = document.getElementById('support-chat-input');
-  var log = document.getElementById('support-chat-log');
-  var status = document.getElementById('support-chat-status');
-  var button = form.querySelector('button');
-  var CHAT_URL = 'https://chat.rhobear.ai/support/chat';
-  var streaming = false;
-
-  function addMsg(who, text) {
-    var el = document.createElement('div');
-    el.className = 'chat-panel-msg ' + who;
-    el.textContent = text || '';
-    log.appendChild(el);
-    log.scrollTop = log.scrollHeight;
-    return el;
-  }
-
-  form.addEventListener('submit', function(e){
-    e.preventDefault();
-    if (streaming) return;
-    var message = (input.value || '').trim();
-    if (!message) return;
-    streaming = true;
-    addMsg('user', message);
-    input.value = '';
-    input.style.height = '';
-    button.disabled = true;
-    status.textContent = 'Streaming a grounded support answer…';
-    var bot = addMsg('bot', '');
-
-    fetch(CHAT_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: message })
-    }).then(function(resp){
-      if (!resp.ok) throw new Error('Support chat is unavailable.');
-      if (!resp.body || !window.TextDecoder) {
-        // Fallback for browsers without streaming support — process the
-        // entire body as a single SSE event block.
-        return resp.text().then(function(t){ processEvents([t]); });
-      }
-      var reader = resp.body.getReader();
-      var decoder = new TextDecoder();
-      var buffer = '';
-      var stopped = false;
-
-      function parseLine(line) {
-        // Accept both "data: " (with space) and "data:" (no space) per SSE spec.
-        if (line.indexOf('data:') !== 0) return null;
-        var payload = line.slice(5).replace(/^\s+/, '');
-        if (!payload) return null; // keep-alive or blank line — ignore
-        if (payload === '[DONE]') return { done: true };
-        var data;
-        try { data = JSON.parse(payload); }
-        catch (err) {
-          status.textContent = 'Support chat had trouble parsing a reply. Email support@rhobear.ai if this keeps happening.';
-          return null;
-        }
-        // Propagate server-side errors so the outer .catch can surface them.
-        if (data && data.error) throw new Error(data.error);
-        return data;
-      }
-
-      function processEvents(events) {
-        events.forEach(function(evt){
-          if (stopped) return;
-          evt.split('\n').forEach(function(line){
-            var data = parseLine(line.trim());
-            if (!data) return;
-            if (data.chunk) {
-              bot.textContent += data.chunk;
-              log.scrollTop = log.scrollHeight;
-            }
-            if (data.done) {
-              status.textContent = data.suggest_lead ? 'That may need a human. Email support@rhobear.ai with the details.' : 'Answered from the support knowledge base.';
-              stopped = true;
-            }
-          });
-        });
-      }
-
-      function pump() {
-        return reader.read().then(function(result){
-          if (result.done) {
-            // Flush any trailing data left in the buffer before exiting.
-            if (buffer.trim()) processEvents([buffer]);
-            buffer = '';
-            return;
-          }
-          buffer += decoder.decode(result.value, { stream: true });
-          var events = buffer.split(/\r?\n\r?\n/);
-          buffer = events.pop() || '';
-          processEvents(events);
-          if (stopped) return;
-          return pump();
-        });
-      }
-      return pump();
-    }).catch(function(err){
-      var msg = err && err.message ? err.message : 'Connection lost';
-      if (!bot.textContent) {
-        bot.textContent = 'The support assistant is unavailable right now. Email support@rhobear.ai and a human can help.';
-      } else {
-        bot.textContent += '\n\n[Error: ' + msg + ']';
-      }
-      status.textContent = msg;
-    }).finally(function(){
-      button.disabled = false;
-      streaming = false;
-      input.focus();
-    });
-  });
-
-  input.addEventListener('input', function(){
-    input.style.height = 'auto';
-    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
-  });
-})();
-</script>
+<script src="shell.js?v=1782980001" defer></script>
 </body></html>

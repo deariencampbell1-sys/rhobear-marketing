@@ -8,11 +8,11 @@
   <!-- The connector this page talks to. Everything else (sign-in, token, scopes) is discovered from its metadata. -->
   <meta name="rhobear-mcp" content="https://api.rhobear.ai/mcp" />
   <meta name="robots" content="noindex" />
-  <!-- The samples that may run here: the North Star's agreed list (rhobear-north-star lanes/L9-front-door/OWNER-DECISIONS.md
-       Q11 "image generation; one 3D model; a picture through 3D generation and an editor cleanup step", and
+  <!-- The samples that may run here, from the North Star (rhobear-north-star docs/north-star/ENGINES-DIRECTION.md "Live samples
+       only where they are cheap and impressive: Imagine (pictures), a 3D model, a Teams Mermaid diagram from your sentence", and
        lanes/L8d-engine-mcps/INTENT.md "Cheap live samples remain only Imagine, a 3D model, a Teams map and node editor").
        Every other tool is described here and runs from the person's AI app. -->
-  <meta name="rhobear-try" content="image.generate forge.make forge.edit blueprints.plan blueprints.diagram diagram.render" />
+  <meta name="rhobear-try" content="image.generate forge.make blueprints.plan blueprints.diagram diagram.render" />
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 28 L12 9 L19 20 L23 13 L30 28 Z' fill='%232A8FA8'/%3E%3Ccircle cx='24' cy='7' r='2.4' fill='%23D4A843'/%3E%3C/svg%3E" />
   <link rel="canonical" href="https://rhobear.ai/testing-grounds.html" />
   <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
@@ -70,7 +70,7 @@
   <main>
     <div class="eyebrow">Testing grounds</div>
     <h1>Try the RHOBEAR connector<br />before you plug it in.</h1>
-    <p class="lead">Sign in with your RHOBEAR account and this page talks to the same connector your AI app uses. You see every tool, whether it is on, and its price before it runs. Pictures with Imagine, a 3D model and its fix-up with Forge, and a plan's map with Teams run right here; everything else is described and runs from your AI app. Running a tool here uses your plan's usage, exactly as it would from your AI app.</p>
+    <p class="lead">Sign in with your RHOBEAR account and this page talks to the same connector your AI app uses. You see every tool, whether it is on, and its price before it runs. Pictures with Imagine, a 3D model with Forge, and a plan's map with Teams run right here; everything else is described and runs from your AI app. Running a tool here uses your plan's usage, exactly as it would from your AI app.</p>
 
     <section id="out" hidden>
       <button type="button" class="primary" id="sign-in">Sign in with RHOBEAR</button>
