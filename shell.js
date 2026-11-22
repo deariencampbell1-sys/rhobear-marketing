@@ -187,31 +187,3 @@
     }
   }
 })();
-
-/* ===== HAND-TO-HAND RELAY BAND — injected above the footer on every page.
-   The product line hands off to the next; app.html ships its own richer relay,
-   so skip when one already exists. ===== */
-(function(){
-  function inject(){
-    if (document.querySelector('.relay-next')) return;
-    var foot = document.querySelector('footer.site-footer') || document.querySelector('footer');
-    var main = document.querySelector('main');
-    if (!foot && !main) return;
-    var band = document.createElement('section');
-    band.className = 'relay-band';
-    band.innerHTML =
-      '<div class="rb-label">One workflow · it hands off</div>' +
-      '<div class="relay-next">' +
-        '<a href="app.html">Build it · Hub</a>' +
-        '<span class="arw">→</span><a href="designs.html">Shape it · Designs</a>' +
-        '<span class="arw">→</span><a href="capturd.html">Capture it · Captur\'d</a>' +
-        '<span class="arw">→</span><a href="https://reviews.rhobear.ai/">Keep it clean · Reviews</a>' +
-        '<span class="arw">→</span><a href="plans.html">Take it to market · Blueprints</a>' +
-        '<span class="arw">→</span><a href="sales.html">It sells itself · Frontman</a>' +
-      '</div>';
-    if (foot && foot.parentNode) foot.parentNode.insertBefore(band, foot);
-    else main.appendChild(band);
-  }
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', inject);
-  else inject();
-})();
