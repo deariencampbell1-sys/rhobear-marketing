@@ -5,14 +5,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>RHOBEAR — one connector for the AI you already use</title>
   <meta name="description" content="The RHOBEAR MCP connector puts Forge, Search, Teams and Designs inside ChatGPT and any app that speaks MCP. Sign in once with your RHOBEAR account; every tool shows its price before it runs." />
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cpath d='M2 28 L12 9 L19 20 L23 13 L30 28 Z' fill='%232A8FA8'/%3E%3Ccircle cx='24' cy='7' r='2.4' fill='%23D4A843'/%3E%3C/svg%3E" />
+  <link rel="icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" sizes="any" />
   <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="preload" href="/beats/00-hero.webp?v=2" as="image" type="image/webp" media="(min-width: 769px)" />
   <link rel="preload" href="/beats/00-hero.webp?v=2" as="image" type="image/webp" media="(max-width: 768px)" />
   <script type="module" crossorigin src="/home-bundle/index-fd1122a.js"></script>
   <link rel="stylesheet" crossorigin href="/home-bundle/index-fd1118a.css">
   <link rel="stylesheet" href="/fonts/family/family.css">
-  <link rel="stylesheet" href="/assets/front/front.css?v=2">
+  <link rel="stylesheet" href="/assets/front/front.css?v=3">
 
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="RHOBEAR">
@@ -55,7 +56,7 @@
   <nav id="nav">
     <div class="wordmark"><svg viewBox="0 0 48 48" fill="currentColor" fill-rule="evenodd" aria-hidden="true" focusable="false" style="height:1.15em;width:auto;vertical-align:-.2em;margin-right:.45em;flex:0 0 auto"><path d="M7.5 13.2c0-4 3.2-6.1 6.4-4.2l3.9 2.3c4-1.9 8.4-1.9 12.4 0l3.9-2.3c3.2-1.9 6.4.2 6.4 4.2 0 2.9-1.7 5.2-4 6.3 1.8 2.7 2.8 5.9 2.8 9.4C39.3 37.6 33 43 24 43S8.7 37.6 8.7 28.9c0-3.5 1-6.7 2.8-9.4-2.3-1.1-4-3.4-4-6.3Zm12.1 12.5-4.6-2.7c-.5 1.4-.2 2.9.9 3.7 1.2.9 2.9.6 3.7-.6.2-.1.1-.3 0-.4Zm8.8 0c-.1.1-.2.3 0 .4.8 1.2 2.5 1.5 3.7.6 1.1-.8 1.4-2.3.9-3.7l-4.6 2.7ZM24 31.5c-1.9 0-3.2 1.1-3.2 2.3 0 1.5 1.5 2.7 3.2 2.7s3.2-1.2 3.2-2.7c0-1.2-1.3-2.3-3.2-2.3Z"/></svg>RHOBEAR</div>
     <div class="links">
-      <a href="#connect">HOW IT WORKS</a><a href="/mcp/">MCPS</a><a href="/testing-grounds.html">TESTING GROUNDS</a><a href="https://builds.rhobear.ai"><span class="name-builds">Builds</span></a><a href="https://forge.rhobear.ai">FORGE</a>
+      <a href="#connect">HOW IT WORKS</a><a href="/mcp/">MCPS</a><a href="/testing-grounds.html">TESTING GROUNDS</a><a href="/builds.html"><span class="name-builds">Builds</span></a><a href="https://forge.rhobear.ai">FORGE</a><a href="/herald.html">HERALD</a><a href="/regent.html">REGENT</a>
     </div>
     <a class="cta-pill" href="#connect">Connect →</a>
   </nav>
@@ -70,7 +71,7 @@
     <div class="rail-dot" data-beat="reviews"><span>Reviews</span></div>
     <div class="rail-dot" data-beat="plans"><span>Teams</span></div>
     <div class="rail-dot" data-beat="sales"><span>Search</span></div>
-    <div class="rail-dot" data-beat="pricing"><span>Pricing</span></div>
+    <div class="rail-dot" data-beat="pricing"><span>AI usage</span></div>
     <div class="rail-dot" data-beat="cta"><span>Valley</span></div>
   </aside>
 
@@ -108,7 +109,7 @@
       <h2>Your work, your devices, one Rho</h2>
       <p>Builds is home for your RHOBEAR account: the app on your phone and computer, a private shell for your work, one memory, and one usage bank that the connector draws from.</p>
       <img class="card-shot" src="/assets/front/shots/builds.webp" alt="A Builds chat with Rho on the phone" width="150" loading="lazy" />
-      <a class="card-cta" href="https://builds.rhobear.ai">Open Builds →</a>
+      <a class="card-cta" href="/builds.html">Builds preview →</a>
     </section>
 
     <section class="beat-card has-shot" data-card="designs">
@@ -130,7 +131,8 @@
     <section class="beat-card" data-card="reviews">
       <div class="card-top"><img class="card-mark" src="/assets/front/marks/reviews.webp" alt="" width="40" height="40" /><span class="step">05</span><span class="label">RHOBEAR <span class="name-reviews">Reviews</span></span></div>
       <h2>Review it. Merge it with proof.</h2>
-      <p>Apollo reads a change and gives a verdict tied to the exact commit it read, and Zeus is the step that fixes and merges. Reviews is switched off while we finish building, so it is not open yet.</p>
+      <p>Sign in with GitHub to open your RHOBEAR Reviews dashboard.</p>
+      <a class="card-cta" href="https://reviews.rhobear.ai/">Open Reviews →</a>
     </section>
 
     <section class="beat-card has-shot" data-card="plans">
@@ -150,17 +152,17 @@
     </section>
 
     <section class="beat-card card-pricing" data-card="pricing">
-      <div class="card-top"><span class="step">08</span><span class="label">Price first · no games</span></div>
+      <div class="card-top"><span class="step">08</span><span class="label">AI usage · clear prices</span></div>
       <h2>The connector comes<br/>with a RHOBEAR plan.</h2>
-      <p>Tool use draws from your plan's included credit, then from top-ups. Every tool tells your app what it costs before it runs, and a call that never ran costs nothing.</p>
+      <p>AI usage draws from your plan's included credit, then from top-ups. Every tool tells your app what it costs before it runs, and a call that never ran costs nothing.</p>
       <div class="tiers">
         <div class="tier"><b>Free</b><i>$0</i><s>Builds on your own devices. No hosted tools.</s></div>
-        <div class="tier"><b>Shell</b><i>$23.99 / month</i><s>Includes $14.40 of usage. 1.5 GB RAM, 0.8 CPU, 15 GB disk.</s></div>
-        <div class="tier"><b>Shell Plus</b><i>$50.99 / month</i><s>Includes $39.60 of usage. 4 GB RAM, 2 CPU, 40 GB disk.</s></div>
-        <div class="tier"><b>Space</b><i>$69.99 / month</i><s>Includes $39.60 of usage. A whole server: 8 GB RAM, 4 CPU.</s></div>
-        <div class="tier"><b>Top-up</b><i>$9.99</i><s>Adds $9.99 of usage to any plan.</s></div>
+        <div class="tier"><b>Shell</b><i>$23.99 / month</i><s>Includes $14.40 of AI usage. RHOBEAR-managed shell on a shared server: 1.5 GB RAM, 0.8 CPU, 15 GB disk.</s></div>
+        <div class="tier"><b>Shell Plus</b><i>$50.99 / month</i><s>Includes $39.60 of AI usage. RHOBEAR-managed shell on a shared server: 4 GB RAM, 2 CPU, 40 GB disk.</s></div>
+        <div class="tier"><b>Space</b><i>$69.99 / month</i><s>Includes $39.60 of AI usage. Dedicated server with SSH access: 8 GB RAM, 4 CPU.</s></div>
+        <div class="tier"><b>Top-up</b><i>$9.99</i><s>Adds $9.99 of AI usage to any paid plan.</s></div>
       </div>
-      <p class="fine-print">Monthly. US only, 18+.</p>
+      <p class="fine-print">Monthly. US only, 18+. Support hours and administrative server access depend on the plan terms; no 24/7 or root-access promise is made here.</p>
     </section>
 
     <section class="beat-card card-final" data-card="cta">
@@ -223,7 +225,7 @@
       <h2>Your work, your devices, one Rho</h2>
       <p>Builds is home for your RHOBEAR account: the app on your phone and computer, a private shell for your work, one memory, and one usage bank that the connector draws from.</p>
       <img class="card-shot" src="/assets/front/shots/builds.webp" alt="A Builds chat with Rho on the phone" width="150" loading="lazy" />
-      <a class="card-cta" href="https://builds.rhobear.ai">Open Builds →</a>
+      <a class="card-cta" href="/builds.html">Builds preview →</a>
     </div>
     </section>
     <section class="m-slide" data-slide="designs">
@@ -251,7 +253,8 @@
       <div class="m-card">
       <div class="card-top"><img class="card-mark" src="/assets/front/marks/reviews.webp" alt="" width="40" height="40" /><span class="step">05</span><span class="label">RHOBEAR <span class="name-reviews">Reviews</span></span></div>
       <h2>Review it. Merge it with proof.</h2>
-      <p>Apollo reads a change and gives a verdict tied to the exact commit it read, and Zeus is the step that fixes and merges. Reviews is switched off while we finish building, so it is not open yet.</p>
+      <p>Sign in with GitHub to open your RHOBEAR Reviews dashboard.</p>
+      <a class="card-cta" href="https://reviews.rhobear.ai/">Open Reviews →</a>
     </div>
     </section>
     <section class="m-slide" data-slide="plans">
@@ -277,17 +280,17 @@
     <section class="m-slide" data-slide="pricing">
       <img src="/beats/08-pricing.webp?v=2" alt="" loading="lazy" style="object-position:50% 50%" />
       <div class="m-card card-pricing">
-      <div class="card-top"><span class="step">08</span><span class="label">Price first · no games</span></div>
+      <div class="card-top"><span class="step">08</span><span class="label">AI usage · clear prices</span></div>
       <h2>The connector comes<br/>with a RHOBEAR plan.</h2>
-      <p>Tool use draws from your plan's included credit, then from top-ups. Every tool tells your app what it costs before it runs, and a call that never ran costs nothing.</p>
+      <p>AI usage draws from your plan's included credit, then from top-ups. Every tool tells your app what it costs before it runs, and a call that never ran costs nothing.</p>
       <div class="tiers">
         <div class="tier"><b>Free</b><i>$0</i><s>Builds on your own devices. No hosted tools.</s></div>
-        <div class="tier"><b>Shell</b><i>$23.99 / month</i><s>Includes $14.40 of usage. 1.5 GB RAM, 0.8 CPU, 15 GB disk.</s></div>
-        <div class="tier"><b>Shell Plus</b><i>$50.99 / month</i><s>Includes $39.60 of usage. 4 GB RAM, 2 CPU, 40 GB disk.</s></div>
-        <div class="tier"><b>Space</b><i>$69.99 / month</i><s>Includes $39.60 of usage. A whole server: 8 GB RAM, 4 CPU.</s></div>
-        <div class="tier"><b>Top-up</b><i>$9.99</i><s>Adds $9.99 of usage to any plan.</s></div>
+        <div class="tier"><b>Shell</b><i>$23.99 / month</i><s>Includes $14.40 of AI usage. RHOBEAR-managed shell on a shared server: 1.5 GB RAM, 0.8 CPU, 15 GB disk.</s></div>
+        <div class="tier"><b>Shell Plus</b><i>$50.99 / month</i><s>Includes $39.60 of AI usage. RHOBEAR-managed shell on a shared server: 4 GB RAM, 2 CPU, 40 GB disk.</s></div>
+        <div class="tier"><b>Space</b><i>$69.99 / month</i><s>Includes $39.60 of AI usage. Dedicated server with SSH access: 8 GB RAM, 4 CPU.</s></div>
+        <div class="tier"><b>Top-up</b><i>$9.99</i><s>Adds $9.99 of AI usage to any paid plan.</s></div>
       </div>
-      <p class="fine-print">Monthly. US only, 18+.</p>
+      <p class="fine-print">Monthly. US only, 18+. Support hours and administrative server access depend on the plan terms; no 24/7 or root-access promise is made here.</p>
     </div>
     </section>
     <section class="m-slide" data-slide="cta">
@@ -322,11 +325,33 @@
         <p class="note">Works with ChatGPT and any app that speaks MCP over OAuth. Needs an active RHOBEAR plan.</p>
         <div class="hero-ctas">
           <a class="btn-primary" href="/testing-grounds.html">Try it in the testing grounds →</a>
-          <a class="btn-ghost" href="https://builds.rhobear.ai">Get a plan in Builds →</a>
+          <a class="btn-ghost" href="https://builds.rhobear.ai/cloud/buy">Get a plan in Builds →</a>
         </div>
       </div>
       <div class="reveal">
         <img class="connect-shot" src="/assets/front/shots/connectors.webp" alt="The RHOBEAR connectors in Builds, each with what it does and what it costs" loading="lazy" />
+      </div>
+    </div>
+  </section>
+
+  <!-- Public family entries: independent of the fixed ten-beat mountain. -->
+  <section id="family-entries" aria-labelledby="family-heading">
+    <div class="family-inner">
+      <p class="family-eyebrow">MORE FROM THE FAMILY</p>
+      <h2 id="family-heading">Two more ways to work with Rho.</h2>
+      <div class="family-grid">
+        <article class="family-entry">
+          <span class="family-status">Public overview · sign-in required for app</span>
+          <h3>RHOBEAR <span class="family-herald">Herald</span></h3>
+          <p>Your named business assistant, designed for calls, contacts and bookings. See what is planned and what is accessible today.</p>
+          <a href="/herald.html">Explore Herald →</a>
+        </article>
+        <article class="family-entry">
+          <span class="family-status">Public overview · prototype</span>
+          <h3>RHOBEAR <span class="family-regent">Regent</span></h3>
+          <p>A sales desk for agency teams, with setter-to-closer handoffs, coaching and manager workflows. Not a live agency dialer.</p>
+          <a href="/regent.html">Explore Regent →</a>
+        </article>
       </div>
     </div>
   </section>
@@ -348,8 +373,11 @@
       <div class="reveal">
         <h4>The family</h4>
         <ul>
-          <li><a href="https://builds.rhobear.ai">RHOBEAR Builds</a></li>
+          <li><a href="/builds.html">RHOBEAR Builds</a></li>
           <li><a href="https://forge.rhobear.ai">RHOBEAR Forge</a></li>
+          <li><a href="https://reviews.rhobear.ai/">RHOBEAR Reviews</a></li>
+          <li><a href="/herald.html">RHOBEAR Herald</a></li>
+          <li><a href="/regent.html">RHOBEAR Regent</a></li>
           <li><a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></li>
         </ul>
       </div>
@@ -361,7 +389,7 @@
   <script>
   (function () {
     var MAP = {
-      workbench: 'https://builds.rhobear.ai', capturd: 'https://forge.rhobear.ai'
+      workbench: '/builds.html', capturd: 'https://forge.rhobear.ai', reviews: 'https://reviews.rhobear.ai/'
     };
     function activeUrl() {
       var c = document.querySelector('#cards .beat-card.active');
