@@ -1,0 +1,26 @@
+/* /tools.html: the North Star tools-page layout (title, a three-up grid of tool cards, the Forge section) on the
+   front door's own colours and type from /mcp/mcp.css. */
+.tools-page .top{position:relative}
+.tools-page main{padding-top:8px}
+.stitle h1{font-size:clamp(2rem,4.4vw,3.2rem);margin-bottom:10px}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:16px;margin-top:28px}
+.tool{display:flex;flex-direction:column;gap:12px;padding:20px;border:1px solid var(--line);border-radius:20px;background:var(--panel)}
+.tool.app{border-color:rgba(42,143,168,.7)}
+.tool .h{display:flex;gap:14px;align-items:center}
+.tool .h img,.tool .h .mark{width:48px;height:48px;border-radius:12px;flex:none}
+.tool .h .mark{display:grid;place-items:center;background:rgba(255,255,255,.06);border:1px solid var(--line);font-weight:800;font-size:.85rem;letter-spacing:.06em}
+.tool .h b{display:block;font-size:1.15rem;line-height:1.2}
+.tool .h code{font-family:var(--mono);font-size:.85rem;color:var(--teal);font-weight:700}
+.tool p{color:var(--dim);font-size:.95rem;flex:1}
+.tool .ex{font-family:var(--mono);font-size:.82rem;color:var(--dim);background:rgba(255,255,255,.04);border-radius:10px;padding:10px 12px;overflow-wrap:anywhere}
+.tool .links{display:flex;flex-wrap:wrap;gap:6px 18px}
+.tool .links a{color:var(--teal);font-weight:700;font-size:.9rem;text-decoration:none;min-height:44px;display:inline-flex;align-items:center}
+.tool .links a:hover{text-decoration:underline}
+.forge{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:28px;align-items:center;margin-top:64px;scroll-margin-top:24px}
+.forge .words{display:flex;flex-direction:column;gap:14px}
+.forge h2{margin-bottom:0}
+.forge code{font-family:var(--mono);color:var(--teal);font-weight:700}
+.forge .row{display:flex;flex-wrap:wrap;gap:10px}
+.forge .iso{width:100%;height:auto;border-radius:16px;box-shadow:0 20px 50px #0008}
+@media (max-width:760px){.forge{grid-template-columns:1fr}.tools-page .top nav a:not(.pill){display:inline}.tools-page .top nav{gap:12px}}
+@media (max-width:420px){.tools-page .top nav a[href="https://builds.rhobear.ai"]{display:none}}

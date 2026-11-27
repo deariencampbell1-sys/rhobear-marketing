@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Rho’s tools, in every harness — RHOBEAR</title>
+  <meta name="description" content="Every RHOBEAR MCP on one page: Forge, Imagine, Spaces, Designs, Search, Teams and World Builder. Rho uses them in Builds, and an app that connects to remote MCP servers over HTTP with OAuth sign-in, such as Claude Code or Codex, adds them with one address." />
+  <link rel="canonical" href="https://rhobear.ai/tools.html" />
+  <meta property="og:title" content="Rho’s tools, in every harness — RHOBEAR" />
+  <meta property="og:description" content="Every RHOBEAR MCP on one page: Forge, Imagine, Spaces, Designs, Search, Teams and World Builder. Rho uses them in Builds, and an app that connects to remote MCP servers over HTTP with OAuth sign-in, such as Claude Code or Codex, adds them with one address." />
+  <meta property="og:url" content="https://rhobear.ai/tools.html" />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="stylesheet" href="/fonts/family/family.css" />
+  <link rel="stylesheet" href="/mcp/mcp.css?v=4" />
+  <link rel="stylesheet" href="/assets/front/tools.css?v=1" />
+</head>
+<body class="tools-page">
+  <!-- North Star desk.js flow tools-page ("rhobear.ai/tools: every RHOBEAR MCP on one page"), in the front door's own look.
+       Every tool and line traces to rhobear-builds cloud/src/mcp (engine manifests, tools/*.mjs) and the MCP pages here. -->
+  <header class="top">
+    <a class="home" href="/">RHOBEAR</a>
+    <nav aria-label="Tools">
+      <a href="/tools.html" aria-current="page">Tools</a>
+      <a href="/mcp/">MCPs</a>
+      <a href="https://builds.rhobear.ai">Builds</a>
+      <a class="pill" href="/mcp/#connect">Connect →</a>
+    </nav>
+  </header>
+  <main>
+    <div class="stitle">
+      <h1>Rho’s tools, in every harness</h1>
+      <p class="lead">They’re MCPs. Rho uses them in Builds, and an app that connects to remote MCP servers over HTTP with OAuth sign-in, such as Claude Code or Codex, adds them with one address and one sign-in. Call one by name with @, or let the agent reach for it. Every tool shows its price before it runs.</p>
+    </div>
+
+    <section aria-label="The tools" class="tgrid">
+      <article class="tool app" id="tool-forge">
+        <div class="h"><img src="/assets/front/marks/forge.webp" alt="" width="48" height="48" /><div><b>Forge</b><code>@forge</code></div></div>
+        <p>3D for your printers: a printable model from words or a picture, fixed in plain words, then split into single-colour pieces and plates.</p>
+        <div class="ex">› @forge make Pikachu a proper figure on a round base</div>
+        <div class="links"><a href="https://forge.rhobear.ai">Open the Forge app ↗</a><a href="/mcp/forge.html">How Forge works →</a></div>
+      </article>
+      <article class="tool" id="tool-imagine">
+        <div class="h"><img src="/assets/front/tools/imagine.png" alt="" width="48" height="48" /><div><b>Imagine</b><code>@imagine</code></div></div>
+        <p>Pictures from your words: concept art, references and variations, and new versions of a picture you made earlier.</p>
+        <div class="ex">› @imagine a concept of Johnny 5 in a garage, warm light</div>
+        <div class="links"><a href="/mcp/designs.html">Part of Designs →</a></div>
+      </article>
+      <article class="tool" id="tool-spaces">
+        <div class="h"><img src="/assets/front/tools/spaces.png" alt="" width="48" height="48" /><div><b>Spaces</b><code>@spaces</code></div></div>
+        <p>Your RHOBEAR threads and your bank, for any agent you allow: read a thread to pick up where another agent left off, or check what’s left this month.</p>
+        <div class="ex">› @spaces where did Claude leave the arm wiring?</div>
+      </article>
+      <article class="tool" id="tool-designs">
+        <div class="h"><img src="/assets/front/marks/designs.webp" alt="" width="48" height="48" /><div><b><span class="name-designs">Designs</span></b><code>@designs</code></div></div>
+        <p>Keeps the site you built true to its own design: checks installs against your never-list and proposes a clean-up from your own tokens.</p>
+        <div class="ex">› @designs clean up the styles on the dojo mailbox page</div>
+        <div class="links"><a href="/mcp/designs.html">How Designs works →</a></div>
+      </article>
+      <article class="tool" id="tool-search">
+        <div class="h"><img src="/assets/front/marks/search.webp" alt="" width="48" height="48" /><div><b>Search</b><code>@search</code></div></div>
+        <p>Ranked passages from your decisions, handoffs, code, GitHub and the web, each with its source attached.</p>
+        <div class="ex">› @search where we decided the hinge tolerance</div>
+        <div class="links"><a href="/mcp/search.html">How Search works →</a></div>
+      </article>
+      <article class="tool" id="tool-teams">
+        <div class="h"><img src="/assets/front/marks/teams.webp" alt="" width="48" height="48" /><div><b><span class="name-teams">Teams</span></b><code>@teams</code></div></div>
+        <p>Plan it, run it, diagram it: a build becomes a Blueprint of steps and lanes you can see as a map, approve and run.</p>
+        <div class="ex">› @teams plan Johnny 5 phase 3, the head</div>
+        <div class="links"><a href="/mcp/teams.html">How Teams works →</a></div>
+      </article>
+      <article class="tool" id="tool-world-builder">
+        <div class="h"><span class="mark" aria-hidden="true">WB</span><div><b>World Builder</b><code>RHOBEAR Games</code></div></div>
+        <p>Build a block world with your AI assistant, preview it, and play it in your browser.</p>
+        <div class="ex">› build a floating arena with three lanes</div>
+        <div class="links"><a href="/mcp/world-builder.html">How World Builder works →</a></div>
+      </article>
+    </section>
+
+    <section class="forge" id="forge" aria-labelledby="forge-h">
+      <div class="words">
+        <div class="eyebrow"><img src="/assets/front/marks/forge.webp" alt="" width="44" height="44" />Tools · Forge</div>
+        <h2 id="forge-h">Forge has its own app</h2>
+        <p class="dim">Open, fix and split 3D models for your printers. Every agent can drive Forge through <code>@forge</code>; the app is where you see the model and take over. The app is a separate membership.</p>
+        <div class="row"><a class="btn" href="https://forge.rhobear.ai">Get the Forge app</a><a class="btn ghost" href="https://builds.rhobear.ai">Use @forge in a thread</a></div>
+      </div>
+      <img class="iso" src="/assets/front/tools/forge-iso.jpg" alt="A figure on a round base in Forge, ready to print"  width="560" height="350" />
+    </section>
+
+    <section id="connect" aria-labelledby="connect-h">
+      <h2 id="connect-h">Add them once</h2>
+      <ol class="steps">
+        <li><b>Add the address.</b> In an app that connects to remote MCP servers over HTTP with OAuth sign-in (Claude Code and Codex do), add a custom MCP server: <span class="addr">https://api.rhobear.ai/mcp</span></li>
+        <li><b>Sign in and allow.</b> The RHOBEAR sign-in opens once; the app acts as you, on your account, and you can remove it any time.</li>
+        <li><b>Ask by name.</b> “@forge, make a wall mount for this board.” Your app sees each tool and its price before it runs.</li>
+      </ol>
+      <p class="dim" style="margin-top:16px">Needs an active RHOBEAR plan. <a href="https://builds.rhobear.ai">Get a plan in Builds →</a> · <a href="/testing-grounds.html">Try them in the testing grounds →</a></p>
+    </section>
+  </main>
+  <footer>
+    <span>RHOBEAR · one connector for the AI you already use</span>
+    <span><a href="/mcp/">All MCPs</a> · <a href="/mcp/#connect">How to connect</a> · <a href="https://builds.rhobear.ai">Builds</a> · <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a></span>
+  </footer>
+</body>
+</html>
